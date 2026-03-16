@@ -132,6 +132,9 @@ webcoding/
 │   ├── codex.json          # Codex 独立配置（运行时生成）
 │   ├── notify.json         # 通知渠道配置（运行时生成）
 │   └── auth.json           # 密码配置（运行时生成）
+├── deploy/
+│   └── macos/
+│       └── com.webcoding.server.plist  # macOS LaunchAgent 模板
 ├── sessions/               # 对话历史 JSON 文件（运行时生成）
 ├── logs/                   # 进程生命周期日志（运行时生成）
 ├── scripts/
@@ -216,6 +219,33 @@ WantedBy=multi-user.target
 ```bash
 sudo systemctl enable webcoding
 sudo systemctl start webcoding
+```
+
+### macOS LaunchAgent
+
+项目内提供模板文件：
+
+```text
+deploy/macos/com.webcoding.server.plist
+```
+
+使用前，把模板中的这些占位路径改成你机器上的真实路径：
+
+- `/absolute/path/to/npm`
+- `/absolute/path/to/node/bin`
+- `/absolute/path/to/webcoding`
+
+然后复制到 `~/Library/LaunchAgents/com.webcoding.server.plist`，再加载：
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.webcoding.server.plist
+launchctl kickstart -k gui/$(id -u)/com.webcoding.server
+```
+
+如果你之前用过旧名字 `com.ccweb.server`，先卸载旧项，避免同一个端口被两个启动项争抢：
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.ccweb.server.plist 2>/dev/null || true
 ```
 
 ### Nginx 反向代理

@@ -1,5 +1,16 @@
 # 更新记录
 
+## v1.3.0
+
+### 新功能
+
+- **macOS LaunchAgent 模板** — 新增 `deploy/macos/com.webcoding.server.plist`，项目内直接提供自动启动模板
+
+### 改进
+
+- 启动项名称统一为 `com.webcoding.server`，与项目名保持一致
+- npm 包名从 `cc-web` 调整为 `webcoding`，启动日志中的名称同步更新
+
 ## v1.2.8
 
 ### 新功能

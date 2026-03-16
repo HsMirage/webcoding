@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.webcoding.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/absolute/path/to/npm</string>
+        <string>start</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/absolute/path/to/webcoding</string>
+    <key>StandardOutPath</key>
+    <string>/absolute/path/to/webcoding/logs/launch-agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/absolute/path/to/webcoding/logs/launch-agent.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/absolute/path/to/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

@@ -115,6 +115,9 @@ webcoding/
 ├── config/
 │   ├── notify.json         # Notification channel config (generated at runtime)
 │   └── auth.json           # Auth config (generated at runtime)
+├── deploy/
+│   └── macos/
+│       └── com.webcoding.server.plist  # macOS LaunchAgent template
 ├── sessions/               # Chat history JSON files (generated at runtime)
 ├── logs/                   # Process lifecycle logs (generated at runtime)
 ├── lib/                    # Agent runtime + Codex rollout parsing helpers
@@ -199,6 +202,33 @@ sudo systemctl enable webcoding
 sudo systemctl start webcoding
 ```
 
+### macOS LaunchAgent
+
+The repository includes a template:
+
+```text
+deploy/macos/com.webcoding.server.plist
+```
+
+Before using it, replace these placeholder paths with real paths from your machine:
+
+- `/absolute/path/to/npm`
+- `/absolute/path/to/node/bin`
+- `/absolute/path/to/webcoding`
+
+Then copy it to `~/Library/LaunchAgents/com.webcoding.server.plist` and load it:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.webcoding.server.plist
+launchctl kickstart -k gui/$(id -u)/com.webcoding.server
+```
+
+If you previously used the old label `com.ccweb.server`, unload it first so two launch items do not compete for the same port:
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.ccweb.server.plist 2>/dev/null || true
+```
+
 ### Nginx Reverse Proxy
 
 ```nginx
@@ -246,6 +276,11 @@ node server.js
 - Alternative: [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (requires domain setup).
 
 ## Release Notes
+
+- **v1.3.0**
+  - Added a macOS LaunchAgent template at `deploy/macos/com.webcoding.server.plist`.
+  - Renamed the LaunchAgent label to `com.webcoding.server` so it matches the project name.
+  - Renamed the npm package metadata from `cc-web` to `webcoding`, so startup logs no longer show `cc-web@1.2.8 start`.
 
 - **v1.2.8**
   - **Dual-agent (Codex)**: create Claude or Codex sessions on the same backend; agent-isolated sidebar, settings, and import
