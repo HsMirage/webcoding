@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -332,14 +333,134 @@ const activeProcesses = new Map();
 // Track which session each ws is viewing: ws -> sessionId
 const wsSessionMap = new Map();
 
-// Default fallback MODEL_MAP (overridden by model config at runtime)
-let MODEL_MAP = {
+const DEFAULT_CLAUDE_MODEL_MAP = {
   opus: 'claude-opus-4-6',
   sonnet: 'claude-sonnet-4-6',
-  haiku: 'claude-haiku-4-5-20251001',
+  haiku: 'claude-haiku-4-5',
 };
 
+// Default fallback MODEL_MAP (overridden by model config at runtime)
+let MODEL_MAP = { ...DEFAULT_CLAUDE_MODEL_MAP };
+
+const CLAUDE_MODEL_MENU_ENTRIES = [
+  {
+    alias: 'default',
+    label: 'Default (recommended)',
+    desc: 'Use the default model (currently Sonnet 4.6)',
+    pricing: '$3/$15 per Mtok',
+  },
+  {
+    alias: 'sonnet[1m]',
+    label: 'Sonnet (1M context)',
+    desc: 'Sonnet 4.6 for long sessions',
+    pricing: '$3/$15 per Mtok',
+  },
+  {
+    alias: 'opus',
+    label: 'Opus',
+    desc: 'Opus 4.6 · Most capable for complex work',
+    pricing: '$5/$25 per Mtok',
+  },
+  {
+    alias: 'opus[1m]',
+    label: 'Opus (1M context)',
+    desc: 'Opus 4.6 with 1M context [NEW] · Most capable for complex work',
+    pricing: '$5/$25 per Mtok',
+  },
+  {
+    alias: 'haiku',
+    label: 'Haiku',
+    desc: 'Haiku 4.5 · Fastest for quick answers',
+    pricing: '$1/$5 per Mtok',
+  },
+];
+
 const VALID_AGENTS = new Set(['claude', 'codex']);
+
+// === Models API fetch ===
+let _modelCache = null; // { models: [{id, display_name}], fetchedAt: number, source: 'anthropic'|'openai' }
+
+function resolveActiveApiCredentials() {
+  // Check active custom template first
+  try {
+    const config = loadModelConfig();
+    if (config.mode === 'custom' && config.activeTemplate) {
+      const tpl = (config.templates || []).find(t => t.name === config.activeTemplate);
+      if (tpl && tpl.apiKey) {
+        return { apiKey: tpl.apiKey, apiBase: tpl.apiBase || 'https://api.anthropic.com' };
+      }
+    }
+  } catch {}
+  // Check ~/.claude/settings.json env block
+  try {
+    const settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
+    const env = settings.env || {};
+    const key = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
+    if (key) return { apiKey: key, apiBase: env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' };
+  } catch {}
+  // Fall back to process.env
+  const key = process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+  if (key) return { apiKey: key, apiBase: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' };
+  return null;
+}
+
+function fetchModelsFromApi(credentials) {
+  return new Promise((resolve, reject) => {
+    const base = (credentials.apiBase || 'https://api.anthropic.com').replace(/\/$/, '');
+    const url = new URL(base + '/v1/models');
+    const isAnthropic = url.hostname.includes('anthropic.com');
+    const options = {
+      hostname: url.hostname,
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
+      path: url.pathname + (url.search || '') + (url.search ? '&' : '?') + 'limit=100',
+      method: 'GET',
+      headers: {
+        'x-api-key': credentials.apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+    };
+    const proto = url.protocol === 'https:' ? https : http;
+    const req = proto.request(options, (res) => {
+      let body = '';
+      res.on('data', d => { body += d; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`));
+        try {
+          const json = JSON.parse(body);
+          // Anthropic format: { data: [{id, display_name, ...}] }
+          // OpenAI-compat format: { data: [{id, object, ...}] }
+          const raw = json.data || json.models || [];
+          const models = raw
+            .filter(m => typeof m.id === 'string' && m.id.toLowerCase().includes('claude'))
+            .map(m => ({ id: m.id, display_name: m.display_name || m.id }));
+          const source = isAnthropic ? 'anthropic' : 'openai';
+          resolve({ models, source });
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(8000, () => { req.destroy(new Error('timeout')); });
+    req.end();
+  });
+}
+
+async function getModelList() {
+  const now = Date.now();
+  if (_modelCache && now - _modelCache.fetchedAt < 3600_000) return _modelCache;
+  const creds = resolveActiveApiCredentials();
+  if (!creds) return null; // no credentials — caller uses hardcoded fallback
+  try {
+    const { models, source } = await fetchModelsFromApi(creds);
+    if (models.length > 0) {
+      _modelCache = { models, fetchedAt: now, source };
+      return _modelCache;
+    }
+  } catch (e) {
+    console.error('[model-api] fetch failed:', e.message);
+  }
+  return null; // caller uses hardcoded fallback
+}
 
 // === Model Config ===
 const DEFAULT_MODEL_CONFIG = {
@@ -484,6 +605,169 @@ function prepareCodexCustomRuntime(config) {
     apiKey: activeProfile.apiKey,
     apiBase: activeProfile.apiBase,
     profileName: activeProfile.name,
+  };
+}
+
+function normalizeCodexModelEntries(rawModels) {
+  const entries = [];
+  for (const raw of Array.isArray(rawModels) ? rawModels : []) {
+    const value = String(raw?.slug || raw?.id || raw?.name || raw || '').trim();
+    if (!value) continue;
+    const visibility = String(raw?.visibility || '').toLowerCase();
+    if (visibility && visibility !== 'list') continue;
+    const label = String(raw?.display_name || raw?.name || value).trim() || value;
+    const desc = String(raw?.description || '').trim() || 'Codex 模型';
+    entries.push({
+      value,
+      label,
+      desc,
+      priority: Number.isFinite(raw?.priority) ? raw.priority : 999,
+    });
+  }
+  entries.sort((a, b) => (a.priority - b.priority) || a.label.localeCompare(b.label));
+  const seen = new Set();
+  return entries.filter((entry) => {
+    if (seen.has(entry.value)) return false;
+    seen.add(entry.value);
+    delete entry.priority;
+    return true;
+  });
+}
+
+function loadCodexModelsCacheEntries(cachePath) {
+  try {
+    if (!cachePath || !fs.existsSync(cachePath)) return null;
+    const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    const entries = normalizeCodexModelEntries(parsed.models);
+    if (!entries.length) return null;
+    return {
+      entries,
+      source: 'codex-cache',
+      fetchedAt: parsed.fetched_at || null,
+      clientVersion: parsed.client_version || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getCodexModelsCachePaths(config) {
+  const paths = [];
+  if (config?.mode === 'custom') {
+    paths.push(path.join(CODEX_RUNTIME_HOME, 'models_cache.json'));
+  }
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  if (home) {
+    paths.push(path.join(home, '.codex', 'models_cache.json'));
+  }
+  return paths;
+}
+
+function fetchCodexModelsFromApi(profile) {
+  return new Promise((resolve, reject) => {
+    const base = String(profile?.apiBase || '').trim().replace(/\/$/, '');
+    const token = String(profile?.apiKey || '').trim();
+    if (!base || !token) {
+      return resolve(null);
+    }
+    let url;
+    try {
+      url = new URL(base + '/models');
+    } catch (error) {
+      return reject(error);
+    }
+    const options = {
+      hostname: url.hostname,
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
+      path: url.pathname + (url.search || ''),
+      method: 'GET',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+    };
+    const proto = url.protocol === 'https:' ? https : http;
+    const req = proto.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          return reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`));
+        }
+        try {
+          const json = JSON.parse(body);
+          const entries = normalizeCodexModelEntries(json.data || json.models || []);
+          resolve(entries.length ? { entries, source: 'provider-api' } : null);
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(1500, () => req.destroy(new Error('timeout')));
+    req.end();
+  });
+}
+
+async function getCodexModelMenuPayload(session) {
+  const currentFull = session?.model || '';
+  const current = currentFull || 'default';
+  const codexConfig = loadCodexConfig();
+  let dynamicEntries = [];
+  let source = null;
+
+  if (codexConfig.mode === 'custom') {
+    const activeProfile = (codexConfig.profiles || []).find((profile) => profile.name === codexConfig.activeProfile) || null;
+    if (activeProfile?.apiBase && activeProfile?.apiKey) {
+      try {
+        const fetched = await fetchCodexModelsFromApi(activeProfile);
+        if (fetched?.entries?.length) {
+          dynamicEntries = fetched.entries;
+          source = fetched.source;
+        }
+      } catch (error) {
+        plog('WARN', 'codex_model_fetch_failed', { error: error.message });
+      }
+    }
+  }
+
+  if (!dynamicEntries.length) {
+    for (const cachePath of getCodexModelsCachePaths(codexConfig)) {
+      const cached = loadCodexModelsCacheEntries(cachePath);
+      if (cached?.entries?.length) {
+        dynamicEntries = cached.entries;
+        source = cached.source;
+        break;
+      }
+    }
+  }
+
+  const entries = [{
+    value: 'default',
+    label: 'Default',
+    desc: '使用当前 Codex 默认模型',
+  }];
+  const seen = new Set(entries.map((entry) => entry.value));
+  for (const entry of dynamicEntries) {
+    if (seen.has(entry.value)) continue;
+    seen.add(entry.value);
+    entries.push(entry);
+  }
+  if (currentFull && !seen.has(currentFull)) {
+    entries.push({
+      value: currentFull,
+      label: currentFull,
+      desc: '当前会话模型',
+    });
+  }
+
+  return {
+    type: 'model_list',
+    agent: 'codex',
+    entries,
+    current,
+    currentFull,
+    source,
   };
 }
 
@@ -800,10 +1084,77 @@ function saveSession(session) {
   fs.writeFileSync(sessionPath(session.id), JSON.stringify(session, null, 2));
 }
 
+function normalizeClaudeModelAliasInput(modelInput) {
+  const raw = String(modelInput || '').trim();
+  const lower = raw.toLowerCase();
+  if (lower === 'opus-1m' || lower === 'opus_1m') return 'opus[1m]';
+  if (lower === 'sonnet-1m' || lower === 'sonnet_1m') return 'sonnet[1m]';
+  return raw;
+}
+
 function modelShortName(fullModel) {
   if (!fullModel) return null;
-  const entry = Object.entries(MODEL_MAP).find(([, v]) => v === fullModel);
-  return entry ? entry[0] : null;
+  const normalized = normalizeClaudeModelAliasInput(fullModel);
+  const lower = normalized.toLowerCase();
+  if (lower === 'opus' || lower === 'sonnet' || lower === 'haiku' || lower === 'opus[1m]' || lower === 'sonnet[1m]') {
+    return lower;
+  }
+  const isOneM = lower.endsWith('[1m]');
+  const baseModel = isOneM ? normalized.slice(0, -4) : normalized;
+  const baseLower = baseModel.toLowerCase();
+  const entry = Object.entries(MODEL_MAP).find(([, value]) => String(value || '').toLowerCase() === baseLower);
+  return entry ? (isOneM ? `${entry[0]}[1m]` : entry[0]) : null;
+}
+
+function getClaudeModelMenuEntries() {
+  const config = loadModelConfig();
+  const useResolvedIds = config.mode === 'custom' && !!config.activeTemplate;
+  return CLAUDE_MODEL_MENU_ENTRIES.map((entry) => {
+    if (entry.alias === 'default') {
+      return { ...entry, value: 'default' };
+    }
+    const isOneM = entry.alias.endsWith('[1m]');
+    const baseAlias = isOneM ? entry.alias.slice(0, -4) : entry.alias;
+    let value = entry.alias;
+    if (useResolvedIds && MODEL_MAP[baseAlias]) {
+      value = isOneM ? `${MODEL_MAP[baseAlias]}[1m]` : MODEL_MAP[baseAlias];
+    }
+    return { ...entry, value };
+  });
+}
+
+function resolveClaudeModelInput(modelInput) {
+  const raw = String(modelInput || '').trim();
+  if (!raw) return null;
+  const normalized = normalizeClaudeModelAliasInput(raw);
+  const lower = normalized.toLowerCase();
+  if (lower === 'default') {
+    return { resolvedModel: null, resolvedAlias: 'default' };
+  }
+  if (lower.endsWith('[1m]')) {
+    const baseAlias = lower.slice(0, -4);
+    if (MODEL_MAP[baseAlias]) {
+      return {
+        resolvedModel: `${MODEL_MAP[baseAlias]}[1m]`,
+        resolvedAlias: `${baseAlias}[1m]`,
+      };
+    }
+  }
+  if (MODEL_MAP[lower]) {
+    return { resolvedModel: MODEL_MAP[lower], resolvedAlias: lower };
+  }
+  const exactEntry = Object.entries(MODEL_MAP).find(([, value]) => String(value || '').toLowerCase() === lower);
+  if (exactEntry) {
+    return { resolvedModel: exactEntry[1], resolvedAlias: exactEntry[0] };
+  }
+  const oneMEntry = Object.entries(MODEL_MAP).find(([, value]) => `${String(value || '').toLowerCase()}[1m]` === lower);
+  if (oneMEntry) {
+    return {
+      resolvedModel: `${oneMEntry[1]}[1m]`,
+      resolvedAlias: `${oneMEntry[0]}[1m]`,
+    };
+  }
+  return { resolvedModel: normalized, resolvedAlias: modelShortName(normalized) || normalized };
 }
 
 function sessionModelLabel(session) {
@@ -1519,6 +1870,9 @@ wss.on('connection', (ws) => {
       case 'fetch_models':
         handleFetchModels(ws, msg);
         break;
+      case 'get_model_list':
+        wsSend(ws, { type: 'model_list', models: MODEL_MAP });
+        break;
       case 'check_update':
         handleCheckUpdate(ws);
         break;
@@ -1666,7 +2020,7 @@ function handleSaveModelConfig(ws, newConfig) {
   saveModelConfig(merged);
 
   // Re-apply at runtime
-  MODEL_MAP = { opus: 'claude-opus-4-6', sonnet: 'claude-sonnet-4-6', haiku: 'claude-haiku-4-5-20251001' };
+  MODEL_MAP = { ...DEFAULT_CLAUDE_MODEL_MAP };
   applyModelConfig();
   // custom mode: write to ~/.claude/settings.json immediately on save
   if (merged.mode === 'custom' && merged.activeTemplate) {
@@ -1828,37 +2182,81 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent) {
     }
 
     case '/model': {
-      const modelInput = parts[1];
+      const modelInput = parts.slice(1).join(' ').trim();
       if (agent === 'codex') {
         if (!modelInput) {
-          const current = session?.model || '配置默认模型';
-          wsSend(ws, { type: 'system_message', message: `当前 Codex 模型: ${current}\n用法: /model <模型名>` });
+          getCodexModelMenuPayload(session).then((payload) => {
+            wsSend(ws, payload);
+          }).catch((error) => {
+            plog('WARN', 'codex_model_menu_failed', { error: error.message });
+            wsSend(ws, {
+              type: 'model_list',
+              agent: 'codex',
+              entries: [{
+                value: 'default',
+                label: 'Default',
+                desc: '使用当前 Codex 默认模型',
+              }],
+              current: session?.model || 'default',
+              currentFull: session?.model || '',
+              source: null,
+            });
+          });
         } else {
+          const normalizedInput = modelInput.toLowerCase();
           if (session) {
-            session.model = modelInput;
+            session.model = normalizedInput === 'default' ? null : modelInput;
             session.updated = new Date().toISOString();
             saveSession(session);
           }
-          wsSend(ws, { type: 'model_changed', model: modelInput });
-          wsSend(ws, { type: 'system_message', message: `Codex 模型已切换为: ${modelInput}` });
+          wsSend(ws, { type: 'model_changed', model: normalizedInput === 'default' ? '' : modelInput });
+          wsSend(ws, {
+            type: 'system_message',
+            message: normalizedInput === 'default'
+              ? 'Codex 模型已切换为: Default (使用当前配置默认模型)'
+              : `Codex 模型已切换为: ${modelInput}`,
+          });
         }
       } else if (!modelInput) {
-        const current = session?.model ? modelShortName(session.model) || session.model : 'opus (默认)';
-        wsSend(ws, { type: 'system_message', message: `当前模型: ${current}\n可选: opus, sonnet, haiku` });
+        const currentAlias = session?.model ? modelShortName(session.model) || session.model : 'default';
+        const currentFull = session?.model || '';
+        wsSend(ws, {
+          type: 'model_list',
+          agent: 'claude',
+          models: MODEL_MAP,
+          entries: getClaudeModelMenuEntries(),
+          current: currentAlias,
+          currentFull,
+          source: 'claude-cli',
+        });
       } else {
-        const modelKey = modelInput.toLowerCase();
-        if (!MODEL_MAP[modelKey]) {
-          wsSend(ws, { type: 'system_message', message: `无效模型: ${modelInput}\n可选: opus, sonnet, haiku` });
-        } else {
-          const model = MODEL_MAP[modelKey];
+        const resolved = resolveClaudeModelInput(modelInput);
+        if (!resolved) {
+          wsSend(ws, { type: 'system_message', message: '模型名称不能为空' });
+          break;
+        }
+        const { resolvedModel, resolvedAlias } = resolved;
+
+        // Handle 'default' — use CLI default (no --model flag)
+        if (!resolvedModel) {
           if (session) {
-            session.model = model;
+            session.model = null;
             session.updated = new Date().toISOString();
             saveSession(session);
           }
-          wsSend(ws, { type: 'model_changed', model: modelKey });
-          wsSend(ws, { type: 'system_message', message: `模型已切换为: ${modelKey}` });
+          wsSend(ws, { type: 'model_changed', model: '' });
+          wsSend(ws, { type: 'system_message', message: '模型已切换为: Default (使用 CLI 默认模型)' });
+          break;
         }
+
+        if (session) {
+          session.model = resolvedModel;
+          session.updated = new Date().toISOString();
+          saveSession(session);
+        }
+        const displayName = modelShortName(resolvedModel) || resolvedModel;
+        wsSend(ws, { type: 'model_changed', model: resolvedAlias });
+        wsSend(ws, { type: 'system_message', message: `模型已切换为: ${displayName} (${resolvedModel})` });
       }
       break;
     }
@@ -1936,7 +2334,7 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent) {
         type: 'system_message',
         message: agent === 'codex'
           ? base + '\n/model [名称] — 查看/切换 Codex 模型（自由输入）\n/compact — 执行 Codex /compact 压缩上下文'
-          : base + '\n/model [名称] — 查看/切换模型（opus, sonnet, haiku）\n/compact — 执行 Claude 原生上下文压缩（保留压缩计划并可自动续跑）',
+          : base + '\n/model [名称] — 查看/切换模型（支持别名或完整模型 ID）\n/compact — 执行 Claude 原生上下文压缩（保留压缩计划并可自动续跑）',
       });
       break;
     }

@@ -6,6 +6,15 @@
   const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   const RENDER_DEBOUNCE = 100;
 
+  // Claude Code model entries — matches real /model output
+  const CLAUDE_MODEL_ENTRIES = [
+    { alias: 'default', value: 'default', label: 'Default (recommended)', desc: 'Use the default model (currently Sonnet 4.6)', pricing: '$3/$15 per Mtok' },
+    { alias: 'sonnet[1m]', value: 'sonnet[1m]', label: 'Sonnet (1M context)', desc: 'Sonnet 4.6 for long sessions', pricing: '$3/$15 per Mtok' },
+    { alias: 'opus', value: 'opus', label: 'Opus', desc: 'Opus 4.6 \u00b7 Most capable for complex work', pricing: '$5/$25 per Mtok' },
+    { alias: 'opus[1m]', value: 'opus[1m]', label: 'Opus (1M context)', desc: 'Opus 4.6 with 1M context [NEW] \u00b7 Most capable for complex work', pricing: '$5/$25 per Mtok' },
+    { alias: 'haiku', value: 'haiku', label: 'Haiku', desc: 'Haiku 4.5 \u00b7 Fastest for quick answers', pricing: '$1/$5 per Mtok' },
+  ];
+
   const SLASH_COMMANDS = [
     { cmd: '/clear', desc: '清除当前会话' },
     { cmd: '/model', desc: '查看/切换模型' },
@@ -37,21 +46,6 @@
   const SIDEBAR_MAX_WIDTH = 560;
   const DESKTOP_INSIGHTS_BREAKPOINT = 1280;
 
-  const MODEL_OPTIONS = [
-    { value: 'opus', label: 'Opus', desc: '最强大，适合复杂任务' },
-    { value: 'sonnet', label: 'Sonnet', desc: '平衡性能与速度' },
-    { value: 'haiku', label: 'Haiku', desc: '最快速，适合简单任务' },
-  ];
-
-  const DEFAULT_CODEX_MODEL_OPTIONS = [
-    { value: 'gpt-5.4', label: 'GPT-5.4', desc: '当前主力 Codex 模型' },
-    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', desc: '偏工程执行场景' },
-    { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', desc: '兼容旧路由与旧配置' },
-    { value: 'gpt-5.2', label: 'GPT-5.2', desc: '通用 OpenAI 兼容模型' },
-    { value: 'o3', label: 'o3', desc: '偏强推理路径' },
-    { value: 'o4-mini', label: 'o4-mini', desc: '轻量快速响应' },
-  ];
-
   const MODE_PICKER_OPTIONS = [
     { value: 'yolo', label: 'YOLO', desc: '跳过所有权限检查' },
     { value: 'plan', label: 'Plan', desc: '执行前需确认计划' },
@@ -75,7 +69,7 @@
   let hasGrouped = false;  // 本次输出是否已触发过折叠
   let cmdMenuIndex = -1;
   let currentMode = 'yolo';
-  let currentModel = 'opus';
+  let currentModel = '';
   let currentAgent = AGENT_LABELS[localStorage.getItem('cc-web-agent')] ? localStorage.getItem('cc-web-agent') : DEFAULT_AGENT;
   let codexConfigCache = null;
   let loadedHistorySessionId = null;
@@ -231,7 +225,7 @@
     const currentMessageCount = getCurrentMessageCount();
     const usageText = costDisplay?.textContent || (currentAgent === 'codex' ? '暂无 token 统计' : '暂无费用统计');
     const modeLabel = MODE_LABELS[currentMode] || currentMode;
-    const modelLabel = currentModel || (currentAgent === 'codex' ? '会话内决定' : 'Opus');
+    const modelLabel = currentModel || (currentAgent === 'codex' ? '会话内决定' : 'Default');
     const runtimeLabel = currentSessionRunning ? '运行中' : currentMeta ? '待命中' : '未开始';
     const projectSessionCount = getCurrentProjectSessionCount(activeProject);
     const actionButtons = buildWorkspaceActionButtons([
@@ -828,7 +822,7 @@
     clearSessionLoading();
     setCurrentSessionRunningState(false);
     currentCwd = null;
-    currentModel = currentAgent === 'claude' ? 'opus' : '';
+    currentModel = '';
     isGenerating = false;
     pendingText = '';
     pendingAttachments = [];
@@ -1031,11 +1025,11 @@
       options.push({ value: v, label: label || v, desc: desc || 'Codex 模型' });
     }
 
-    DEFAULT_CODEX_MODEL_OPTIONS.forEach((opt) => addOption(opt.value, opt.label, opt.desc));
+    addOption('default', 'Default', '使用当前 Codex 默认模型');
     addOption(currentModel, currentModel, '当前会话模型');
     sessions
-      .filter((s) => normalizeAgent(s.agent) === 'codex' && s.id === currentSessionId)
-      .forEach((s) => addOption(s.model, s.model, '当前会话已保存模型'));
+      .filter((s) => normalizeAgent(s.agent) === 'codex')
+      .forEach((s) => addOption(s.model, s.model, s.id === currentSessionId ? '当前会话已保存模型' : '其他 Codex 会话模型'));
 
     return options;
   }
@@ -1292,12 +1286,24 @@
         break;
 
       case 'model_changed':
-        if (msg.model) {
-          currentModel = msg.model;
+        if (msg.model !== undefined) {
+          currentModel = msg.model || '';
           if (currentSessionId) {
             updateCachedSession(currentSessionId, (snapshot) => { snapshot.model = msg.model; });
           }
           renderWorkspaceInsights();
+        }
+        break;
+
+      case 'model_list':
+        if ((msg.agent || currentAgent) === 'codex') {
+          const options = Array.isArray(msg.entries) && msg.entries.length > 0 ? msg.entries : getCodexModelOptions();
+          const activeValue = msg.currentFull || currentModel || 'default';
+          showOptionPicker('选择 Codex 模型', options, activeValue, (value) => {
+            send({ type: 'message', text: `/model ${value}`, sessionId: currentSessionId, mode: currentMode, agent: 'codex' });
+          });
+        } else if (msg.models) {
+          showClaudeModelPicker(msg.entries, msg.models, msg.current, msg.currentFull);
         }
         break;
 
@@ -2975,7 +2981,10 @@
 
   function hideOptionPicker() {
     const picker = document.getElementById('option-picker');
-    if (picker) picker.remove();
+    if (picker) {
+      if (picker._keyHandler) document.removeEventListener('keydown', picker._keyHandler);
+      picker.remove();
+    }
     document.removeEventListener('click', _pickerOutsideClick);
     document.removeEventListener('keydown', _pickerEscape);
   }
@@ -2995,15 +3004,147 @@
 
   function showModelPicker() {
     if (currentAgent === 'codex') {
-      const options = getCodexModelOptions();
-      showOptionPicker('选择 Codex 模型', options, currentModel || '', (value) => {
-        send({ type: 'message', text: `/model ${value}`, sessionId: currentSessionId, mode: currentMode, agent: currentAgent });
-      });
+      send({ type: 'message', text: '/model', sessionId: currentSessionId, mode: currentMode, agent: currentAgent });
       return;
     }
-    showOptionPicker('选择模型', MODEL_OPTIONS, currentModel, (value) => {
-      send({ type: 'message', text: `/model ${value}`, sessionId: currentSessionId, mode: currentMode, agent: currentAgent });
+    // Request real model list from server — server responds with model_list event
+    send({ type: 'message', text: '/model', sessionId: currentSessionId, mode: currentMode, agent: currentAgent });
+  }
+
+  function showClaudeModelPicker(menuEntries, models, currentAlias, currentFull) {
+    hideOptionPicker();
+
+    const picker = document.createElement('div');
+    picker.className = 'option-picker model-picker-claude';
+    picker.id = 'option-picker';
+
+    // Determine which entry is currently active
+    let activeAlias = 'default';
+    if (currentFull) {
+      const fullToAlias = {};
+      if (models.opus) fullToAlias[models.opus] = 'opus';
+      if (models.sonnet) fullToAlias[models.sonnet] = 'sonnet';
+      if (models.haiku) fullToAlias[models.haiku] = 'haiku';
+      activeAlias = fullToAlias[currentFull] || currentAlias || currentFull;
+    } else if (currentAlias && currentAlias !== 'default' && currentAlias !== '') {
+      activeAlias = currentAlias;
+    }
+
+    const entries = (Array.isArray(menuEntries) && menuEntries.length > 0)
+      ? menuEntries.map((entry) => Object.assign({}, entry, { value: entry.value || entry.alias }))
+      : CLAUDE_MODEL_ENTRIES.map((entry) => Object.assign({}, entry));
+
+    // If current model isn't in the list, add it
+    const isStandard = entries.some((e) => e.alias === activeAlias || (currentFull && (e.value || e.alias) === currentFull));
+    if (!isStandard && currentFull) {
+      entries.push({
+        alias: currentAlias || currentFull,
+        value: currentFull,
+        label: currentAlias || currentFull,
+        desc: currentFull,
+        pricing: '',
+      });
+    }
+
+    let focusIdx = entries.findIndex((e) => e.alias === activeAlias || (currentFull && (e.value || e.alias) === currentFull));
+    if (focusIdx < 0) focusIdx = 0;
+
+    // Build items HTML
+    const itemsHtml = entries.map((e, i) => {
+      const itemValue = e.value || e.alias;
+      const isCurrent = e.alias === activeAlias || (currentFull && itemValue === currentFull);
+      const isFocused = i === focusIdx;
+      const descText = e.desc + (e.pricing ? ' \u00b7 ' + e.pricing : '');
+      return `
+        <div class="option-picker-item${isCurrent ? ' active' : ''}${isFocused ? ' focused' : ''}" data-value="${escapeHtml(itemValue)}" data-index="${i}">
+          <span class="mp-cursor">${isFocused ? '\u276f' : '\u2003'}</span>
+          <span class="mp-num">${i + 1}.</span>
+          <div class="option-picker-item-info">
+            <div class="option-picker-item-label">${escapeHtml(e.label)}${isCurrent ? ' <span class="mp-check">\u2714</span>' : ''}</div>
+            <div class="option-picker-item-desc">${escapeHtml(descText)}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    picker.innerHTML = `
+      <div class="mp-header">
+        <div class="option-picker-title">Select model</div>
+        <div class="mp-subtitle">Switch between Claude models. Applies to this session.<br>For other/previous model names, specify with --model.</div>
+      </div>
+      <div class="mp-items">${itemsHtml}</div>
+      <div class="mp-custom">
+        <input type="text" id="model-custom-input" placeholder="Enter custom model ID (e.g. claude-sonnet-4-6)"
+          style="width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--border-color,#ccc);border-radius:4px;font-size:12px;font-family:var(--font-mono);background:var(--input-bg,#fff);color:var(--text-primary,#333);outline:none">
+      </div>
+      <div class="mp-hint">Enter to confirm \u00b7 Esc to exit</div>
+    `;
+
+    const chatMain = document.querySelector('.chat-main');
+    chatMain.appendChild(picker);
+
+    // Update focus indicators without full re-render
+    function updateFocus(newIdx) {
+      focusIdx = newIdx;
+      picker.querySelectorAll('.option-picker-item').forEach((el, i) => {
+        el.classList.toggle('focused', i === focusIdx);
+        const cur = el.querySelector('.mp-cursor');
+        if (cur) cur.textContent = i === focusIdx ? '\u276f' : '\u2003';
+      });
+    }
+
+    // Click & hover on items
+    picker.querySelectorAll('.option-picker-item').forEach(el => {
+      el.addEventListener('click', () => {
+        send({ type: 'message', text: `/model ${el.dataset.value}`, sessionId: currentSessionId, mode: currentMode, agent: currentAgent });
+        hideOptionPicker();
+      });
+      el.addEventListener('mouseenter', () => updateFocus(parseInt(el.dataset.index)));
     });
+
+    // Keyboard navigation
+    function handleKeyDown(e) {
+      const customInput = picker.querySelector('#model-custom-input');
+      if (document.activeElement === customInput) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const val = customInput.value.trim();
+          if (val) {
+            send({ type: 'message', text: `/model ${val}`, sessionId: currentSessionId, mode: currentMode, agent: currentAgent });
+            hideOptionPicker();
+          }
+        } else if (e.key === 'Escape') {
+          hideOptionPicker();
+        }
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'j') {
+        e.preventDefault();
+        updateFocus((focusIdx + 1) % entries.length);
+      } else if (e.key === 'ArrowUp' || e.key === 'k') {
+        e.preventDefault();
+        updateFocus((focusIdx - 1 + entries.length) % entries.length);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        send({ type: 'message', text: `/model ${entries[focusIdx].value || entries[focusIdx].alias}`, sessionId: currentSessionId, mode: currentMode, agent: currentAgent });
+        hideOptionPicker();
+      } else if (e.key === 'Escape') {
+        hideOptionPicker();
+      } else if (e.key >= '1' && e.key <= '9') {
+        const idx = parseInt(e.key) - 1;
+        if (idx < entries.length) {
+          e.preventDefault();
+          updateFocus(idx);
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    picker._keyHandler = handleKeyDown;
+
+    setTimeout(() => {
+      document.addEventListener('click', _pickerOutsideClick);
+    }, 0);
   }
 
   function showModePicker() {
@@ -3278,11 +3419,12 @@
         return;
       }
 
-      e.preventDefault();
       if (!cmdMenu.hidden) {
+        e.preventDefault();
         // If menu is open and user presses Enter, select the item
         selectCmdMenuItem();
-      } else {
+      } else if (e.ctrlKey) {
+        e.preventDefault();
         sendMessage();
       }
     }
@@ -4101,7 +4243,7 @@
         </div>
         <div class="settings-field">
           <label>Haiku 模型名</label>
-          <input type="text" id="tpl-ed-haiku" list="tpl-dl-models" placeholder="claude-haiku-4-5-20251001" value="${escapeHtml(tpl.haikuModel || '')}" autocomplete="off">
+          <input type="text" id="tpl-ed-haiku" list="tpl-dl-models" placeholder="claude-haiku-4-5" value="${escapeHtml(tpl.haikuModel || '')}" autocomplete="off">
         </div>
         <datalist id="tpl-dl-models"></datalist>
         <div class="settings-actions">

@@ -153,6 +153,31 @@ function createFakeClaudeHistory(homeDir) {
 }
 
 function createFakeCodexHistory(homeDir) {
+  const modelsCachePath = path.join(homeDir, '.codex', 'models_cache.json');
+  mkdirp(path.dirname(modelsCachePath));
+  fs.writeFileSync(modelsCachePath, JSON.stringify({
+    fetched_at: '2026-03-12T00:00:00.000Z',
+    client_version: '0.114.0',
+    models: [
+      {
+        slug: 'custom-regression-model',
+        display_name: 'custom-regression-model',
+        description: 'Regression-only Codex model.',
+        visibility: 'list',
+        supported_in_api: true,
+        priority: 0,
+      },
+      {
+        slug: 'gpt-5.3-codex',
+        display_name: 'gpt-5.3-codex',
+        description: 'Latest frontier agentic coding model.',
+        visibility: 'list',
+        supported_in_api: true,
+        priority: 1,
+      },
+    ],
+  }, null, 2));
+
   const sessionsDir = path.join(homeDir, '.codex', 'sessions', '2026', '03', '12');
   mkdirp(sessionsDir);
   const threadId = 'codex-import-thread';
@@ -342,9 +367,12 @@ async function main() {
     assert(codexSession.mode === 'plan', 'Codex new_session should follow requested mode');
     assert(codexSession.model === null, 'Codex new_session should not inject a default model');
 
-    ws.send(JSON.stringify({ type: 'message', text: '/model gpt-5.3-codex', sessionId: codexSession.sessionId, mode: 'plan', agent: 'codex' }));
-    const codexModelChanged = await nextMessage(messages, ws, (msg) => msg.type === 'model_changed' && msg.model === 'gpt-5.3-codex');
-    assert(codexModelChanged.model === 'gpt-5.3-codex', 'Codex /model should accept arbitrary Codex model names');
+    ws.send(JSON.stringify({ type: 'message', text: '/model', sessionId: codexSession.sessionId, mode: 'plan', agent: 'codex' }));
+    const codexModelList = await nextMessage(messages, ws, (msg) => msg.type === 'model_list' && msg.agent === 'codex');
+    assert(Array.isArray(codexModelList.entries) && codexModelList.entries.some((entry) => entry.value === 'custom-regression-model'), 'Codex /model should return real model entries from Codex cache');
+    ws.send(JSON.stringify({ type: 'message', text: '/model custom-regression-model', sessionId: codexSession.sessionId, mode: 'plan', agent: 'codex' }));
+    const codexModelChanged = await nextMessage(messages, ws, (msg) => msg.type === 'model_changed' && msg.model === 'custom-regression-model');
+    assert(codexModelChanged.model === 'custom-regression-model', 'Codex /model should accept real Codex model names from fetched list');
 
     const codexAttachment = await uploadAttachment(port, token, {
       filename: 'codex-test.png',
@@ -388,6 +416,27 @@ async function main() {
     assert(/继续执行/.test(autoCompactResume.message || ''), 'Codex auto /compact should announce retry');
     const autoCompactRetryText = await nextMessage(messages, ws, (msg) => msg.type === 'text_delta' && /trigger codex context limit/.test(msg.text || ''), 8000);
     assert(/trigger codex context limit/.test(autoCompactRetryText.text || ''), 'Codex auto /compact should replay the failed prompt after compact');
+
+    const claudeOneMCwd = path.join(tempRoot, 'claude-1m-space');
+    mkdirp(claudeOneMCwd);
+    ws.send(JSON.stringify({ type: 'new_session', agent: 'claude', cwd: claudeOneMCwd, mode: 'yolo' }));
+    const claudeModelSession = await nextMessage(messages, ws, (msg) => msg.type === 'session_info' && msg.agent === 'claude' && msg.cwd === claudeOneMCwd);
+    ws.send(JSON.stringify({ type: 'message', text: '/model', sessionId: claudeModelSession.sessionId, mode: 'yolo', agent: 'claude' }));
+    const claudeModelList = await nextMessage(messages, ws, (msg) => msg.type === 'model_list' && msg.agent === 'claude' && msg.current === 'default');
+    assert(Array.isArray(claudeModelList.entries) && claudeModelList.entries.some((entry) => entry.alias === 'sonnet[1m]'), 'Claude /model should expose Sonnet 1M option');
+    assert(claudeModelList.entries.some((entry) => entry.alias === 'opus[1m]'), 'Claude /model should expose Opus 1M option');
+    ws.send(JSON.stringify({ type: 'message', text: '/model sonnet[1m]', sessionId: claudeModelSession.sessionId, mode: 'yolo', agent: 'claude' }));
+    const claudeModelChanged = await nextMessage(messages, ws, (msg) => msg.type === 'model_changed' && msg.model === 'sonnet[1m]');
+    assert(claudeModelChanged.model === 'sonnet[1m]', 'Claude /model should accept Sonnet 1M alias');
+    ws.send(JSON.stringify({ type: 'message', text: 'use sonnet 1m', sessionId: claudeModelSession.sessionId, mode: 'yolo', agent: 'claude' }));
+    await nextMessage(messages, ws, (msg) => msg.type === 'done' && msg.sessionId === claudeModelSession.sessionId);
+    const claudeOneMSpawnLine = fs.readFileSync(path.join(logsDir, 'process.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .find((line) => line.includes(`"event":"process_spawn"`) && line.includes(claudeModelSession.sessionId.slice(0, 8)));
+    assert(claudeOneMSpawnLine && claudeOneMSpawnLine.includes('claude-sonnet-4-6[1m]'), 'Claude /model Sonnet 1M should pass the real 1M model value to CLI');
+    const storedClaudeOneMSession = JSON.parse(fs.readFileSync(path.join(sessionsDir, `${claudeModelSession.sessionId}.json`), 'utf8'));
+    assert(storedClaudeOneMSession.model === 'claude-sonnet-4-6[1m]', 'Claude /model should persist the real 1M model value');
 
     const claudeAttachment = await uploadAttachment(port, token, {
       filename: 'claude-test.png',
