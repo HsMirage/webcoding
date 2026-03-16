@@ -327,7 +327,7 @@ const pendingSlashCommands = new Map();
 // Pending compact retry metadata: sessionId -> { text: string, mode: string, reason: string }
 const pendingCompactRetries = new Map();
 
-// Active processes: sessionId -> { pid, ws, fullText, toolCalls, lastCost, tailer }
+// Active processes: sessionId -> { pid, ws, fullText, toolCalls, segments, lastCost, tailer }
 const activeProcesses = new Map();
 
 // Track which session each ws is viewing: ws -> sessionId
@@ -1461,11 +1461,12 @@ function handleProcessComplete(sessionId, exitCode, signal) {
 
   // Save result to session
   const session = loadSession(sessionId);
-  if (session && entry.fullText) {
+  if (session && (entry.fullText || (entry.toolCalls && entry.toolCalls.length > 0))) {
     session.messages.push({
       role: 'assistant',
       content: entry.fullText,
       toolCalls: entry.toolCalls || [],
+      segments: entry.segments || [],
       timestamp: new Date().toISOString(),
     });
     session.updated = new Date().toISOString();
@@ -1609,7 +1610,7 @@ function recoverProcesses() {
       if (isProcessRunning(pid)) {
         console.log(`[recovery] Re-attaching to session ${sessionId} (PID ${pid})`);
         plog('INFO', 'recovery_alive', { sessionId: sessionId.slice(0, 8), pid, agent });
-        const entry = { pid, ws: null, agent, fullText: '', toolCalls: [], lastCost: null, lastUsage: null, lastError: null, errorSent: false, tailer: null };
+        const entry = { pid, ws: null, agent, fullText: '', toolCalls: [], segments: [], lastCost: null, lastUsage: null, lastError: null, errorSent: false, tailer: null };
         activeProcesses.set(sessionId, entry);
 
         if (fs.existsSync(outputPath)) {
@@ -1626,7 +1627,7 @@ function recoverProcesses() {
         console.log(`[recovery] Processing completed output for session ${sessionId}`);
         plog('INFO', 'recovery_dead', { sessionId: sessionId.slice(0, 8), pid, agent });
         if (fs.existsSync(outputPath)) {
-          const tempEntry = { pid: 0, ws: null, agent, fullText: '', toolCalls: [], lastCost: null, lastUsage: null, lastError: null, errorSent: false, tailer: null };
+          const tempEntry = { pid: 0, ws: null, agent, fullText: '', toolCalls: [], segments: [], lastCost: null, lastUsage: null, lastError: null, errorSent: false, tailer: null };
           const content = fs.readFileSync(outputPath, 'utf8');
           for (const line of content.split('\n')) {
             if (!line.trim()) continue;
@@ -1635,11 +1636,12 @@ function recoverProcesses() {
               processRuntimeEvent(tempEntry, event, sessionId);
             } catch {}
           }
-          if (session && tempEntry.fullText) {
+          if (session && (tempEntry.fullText || (tempEntry.toolCalls && tempEntry.toolCalls.length > 0))) {
             session.messages.push({
               role: 'assistant',
               content: tempEntry.fullText,
               toolCalls: tempEntry.toolCalls || [],
+              segments: tempEntry.segments || [],
               timestamp: new Date().toISOString(),
             });
             session.updated = new Date().toISOString();
@@ -2466,6 +2468,7 @@ function handleLoadSession(ws, sessionId) {
       sessionId,
       text: entry.fullText || '',
       toolCalls: entry.toolCalls || [],
+      segments: entry.segments || [],
     });
   }
 }
@@ -2845,6 +2848,7 @@ function handleMessage(ws, msg, options = {}) {
     fullText: '',
     attachments: resolvedAttachments,
     toolCalls: [],
+    segments: [],
     lastCost: null,
     lastUsage: null,
     lastError: null,
@@ -3034,16 +3038,32 @@ function parseJsonlToMessages(lines) {
       if (!Array.isArray(blocks)) continue;
       let content = '';
       const toolCalls = [];
+      const segments = [];
       for (const b of blocks) {
         if (b.type === 'text' && b.text) {
           content += b.text;
+          const last = segments[segments.length - 1];
+          if (last && last.type === 'text') last.text = `${last.text || ''}${b.text}`;
+          else segments.push({ type: 'text', text: b.text });
         } else if (b.type === 'tool_use') {
-          toolCalls.push({ name: b.name, id: b.id, input: b.input, done: true });
+          const tc = { name: b.name, id: b.id, input: b.input, done: true };
+          toolCalls.push(tc);
+          segments.push({ type: 'tool_call', ...tc });
+        } else if (b.type === 'tool_result') {
+          const resultText = typeof b.content === 'string'
+            ? b.content
+            : Array.isArray(b.content)
+              ? b.content.map((item) => item.text || '').join('\n')
+              : JSON.stringify(b.content || '');
+          const tc = toolCalls.find((item) => item.id === b.tool_use_id);
+          if (tc) tc.result = resultText.slice(0, 2000);
+          const segment = segments.find((item) => item.type === 'tool_call' && item.id === b.tool_use_id);
+          if (segment) segment.result = resultText.slice(0, 2000);
         }
         // skip thinking blocks
       }
       if (content.trim() || toolCalls.length > 0) {
-        messages.push({ role: 'assistant', content, toolCalls, timestamp: entry.timestamp || null });
+        messages.push({ role: 'assistant', content, toolCalls, segments, timestamp: entry.timestamp || null });
       }
     }
     // skip other types

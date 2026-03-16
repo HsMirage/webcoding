@@ -55,6 +55,7 @@
 
   // --- State ---
   let ws = null;
+  const TOOL_GROUP_THRESHOLD = 2;
   let authToken = localStorage.getItem('cc-web-token');
   let currentSessionId = null;
   let sessions = [];
@@ -65,12 +66,11 @@
   let pendingText = '';
   let renderTimer = null;
   let activeToolCalls = new Map();
-  let toolGroupCount = 0;   // 当前 .msg-tools 直接子节点数（含已有父目录）
-  let hasGrouped = false;  // 本次输出是否已触发过折叠
   let cmdMenuIndex = -1;
   let currentMode = 'yolo';
   let currentModel = '';
-  let currentAgent = AGENT_LABELS[localStorage.getItem('cc-web-agent')] ? localStorage.getItem('cc-web-agent') : DEFAULT_AGENT;
+  let selectedAgent = AGENT_LABELS[localStorage.getItem('cc-web-agent')] ? localStorage.getItem('cc-web-agent') : DEFAULT_AGENT;
+  let currentAgent = selectedAgent;
   let codexConfigCache = null;
   let loadedHistorySessionId = null;
   let activeSessionLoad = null;
@@ -111,6 +111,7 @@
   const importSessionBtn = $('#import-session-btn');
   const sessionList = $('#session-list');
   const chatTitle = $('#chat-title');
+  const chatAgentContext = $('#chat-agent-context');
   const chatRuntimeState = $('#chat-runtime-state');
   const chatCwd = $('#topbar-chat-cwd');
   const costDisplay = $('#topbar-cost-display');
@@ -226,6 +227,8 @@
     const usageText = costDisplay?.textContent || (currentAgent === 'codex' ? '暂无 token 统计' : '暂无费用统计');
     const modeLabel = MODE_LABELS[currentMode] || currentMode;
     const modelLabel = currentModel || (currentAgent === 'codex' ? '会话内决定' : 'Default');
+    const selectedAgentLabel = AGENT_LABELS[selectedAgent] || selectedAgent;
+    const currentAgentLabel = AGENT_LABELS[currentAgent] || currentAgent;
     const runtimeLabel = currentSessionRunning ? '运行中' : currentMeta ? '待命中' : '未开始';
     const projectSessionCount = getCurrentProjectSessionCount(activeProject);
     const actionButtons = buildWorkspaceActionButtons([
@@ -242,8 +245,8 @@
         <section class="insights-hero">
           <div class="insights-hero-stats">
             <div class="insights-hero-stat">
-              <span>代理</span>
-              <strong>${escapeHtml(AGENT_LABELS[currentAgent] || currentAgent)}</strong>
+              <span>新对话</span>
+              <strong>${escapeHtml(selectedAgentLabel)}</strong>
             </div>
             <div class="insights-hero-stat">
               <span>会话数</span>
@@ -265,6 +268,7 @@
             <span class="insights-status-pill${currentSessionRunning ? ' running' : ''}">${runtimeLabel}</span>
           </div>
           <div class="insights-detail-list">
+            <div class="insights-detail-item"><span>当前代理</span><strong>${escapeHtml(currentAgentLabel)}</strong></div>
             <div class="insights-detail-item"><span>模型</span><strong>${escapeHtml(modelLabel)}</strong></div>
             <div class="insights-detail-item"><span>模式</span><strong>${escapeHtml(modeLabel)}</strong></div>
             <div class="insights-detail-item"><span>消息数</span><strong>${currentMessageCount > 0 ? `${currentMessageCount} 条` : '暂无'}</strong></div>
@@ -378,7 +382,8 @@
   function estimateSessionMessageWeight(message) {
     const content = typeof message?.content === 'string' ? message.content.length : JSON.stringify(message?.content || '').length;
     const toolCalls = Array.isArray(message?.toolCalls) ? JSON.stringify(message.toolCalls).length : 0;
-    return content + toolCalls + 64;
+    const segments = Array.isArray(message?.segments) ? JSON.stringify(message.segments).length : 0;
+    return content + toolCalls + segments + 64;
   }
 
   function estimateSessionSnapshotWeight(snapshot) {
@@ -755,7 +760,7 @@
   }
 
   function getVisibleSessions() {
-    return sessions.filter((s) => normalizeAgent(s.agent) === currentAgent);
+    return sessions;
   }
 
   function shouldOverlayRuntimeBadge() {
@@ -788,9 +793,11 @@
   }
 
   function updateAgentScopedUI() {
+    const selectedAgentLabel = AGENT_LABELS[selectedAgent] || selectedAgent;
+    const currentAgentLabel = currentSessionId ? (AGENT_LABELS[currentAgent] || currentAgent) : '未开始';
     // Sync agent tabs
     document.querySelectorAll('.agent-tab').forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.agent === currentAgent);
+      btn.classList.toggle('active', btn.dataset.agent === selectedAgent);
     });
     // Sync mode tabs
     document.querySelectorAll('.mode-tab').forEach((btn) => {
@@ -799,24 +806,74 @@
     // Sync mobile selects
     const mas = document.getElementById('mobile-agent-select');
     const mms = document.getElementById('mobile-mode-select');
-    if (mas) mas.value = currentAgent;
+    if (mas) mas.value = selectedAgent;
     if (mms) mms.value = currentMode;
     if (importSessionBtn) {
-      importSessionBtn.textContent = currentAgent === 'codex' ? '导入本地 Codex 会话' : '导入本地 Claude 会话';
+      importSessionBtn.textContent = selectedAgent === 'codex' ? '导入本地 Codex 会话' : '导入本地 Claude 会话';
     }
+    if (chatAgentContext) {
+      chatAgentContext.textContent = `当前对话：${currentAgentLabel} · 新建默认：${selectedAgentLabel}`;
+    }
+  }
+
+  function getSavedModeForAgent(agent) {
+    return localStorage.getItem(getAgentModeStorageKey(agent)) || 'yolo';
+  }
+
+  function setSelectedAgent(agent, options = {}) {
+    selectedAgent = normalizeAgent(agent);
+    localStorage.setItem('cc-web-agent', selectedAgent);
+    if (options.syncMode) {
+      currentMode = getSavedModeForAgent(selectedAgent);
+      modeSelect.value = currentMode;
+    }
+    updateAgentScopedUI();
   }
 
   function setCurrentAgent(agent) {
     currentAgent = normalizeAgent(agent);
-    localStorage.setItem('cc-web-agent', currentAgent);
-    currentMode = localStorage.getItem(getAgentModeStorageKey(currentAgent)) || 'yolo';
-    modeSelect.value = currentMode;
     updateAgentScopedUI();
+  }
+
+  function handleAgentSelectionChange(agent) {
+    const targetAgent = normalizeAgent(agent);
+    if (targetAgent === selectedAgent) return;
+    const hadOpenSession = !!currentSessionId;
+    setSelectedAgent(targetAgent, { syncMode: !hadOpenSession });
+    if (!hadOpenSession) {
+      resetChatView(targetAgent);
+      return;
+    }
+    renderSessionList();
+    highlightActiveSession();
     renderWorkspaceInsights();
   }
 
+  function restoreInitialSession(agent = selectedAgent) {
+    const targetAgent = normalizeAgent(agent);
+    setSelectedAgent(targetAgent, { syncMode: true });
+    renderSessionList();
+
+    const lastOpenedId = localStorage.getItem('cc-web-session');
+    const lastOpenedMeta = lastOpenedId ? getSessionMeta(lastOpenedId) : null;
+    if (lastOpenedMeta) {
+      openSession(lastOpenedId);
+      return;
+    }
+
+    const lastSessionId = getLastSessionForAgent(targetAgent);
+    const lastMeta = lastSessionId ? getSessionMeta(lastSessionId) : null;
+    if (lastMeta && normalizeAgent(lastMeta.agent) === targetAgent) {
+      openSession(lastSessionId);
+      return;
+    }
+
+    resetChatView(targetAgent);
+  }
+
   function resetChatView(agent) {
-    setCurrentAgent(agent);
+    const baseAgent = normalizeAgent(agent || selectedAgent);
+    setCurrentAgent(baseAgent);
     currentSessionId = null;
     loadedHistorySessionId = null;
     clearSessionLoading();
@@ -830,9 +887,12 @@
     activeToolCalls.clear();
     sendBtn.hidden = false;
     abortBtn.hidden = true;
+    currentMode = getSavedModeForAgent(baseAgent);
+    modeSelect.value = currentMode;
+    updateAgentScopedUI();
     chatTitle.textContent = '新会话';
     updateCwdBadge();
-    messagesDiv.innerHTML = buildWelcomeMarkup(currentAgent);
+    messagesDiv.innerHTML = buildWelcomeMarkup(baseAgent);
     setStatsDisplay(null);
     renderPendingAttachments();
     highlightActiveSession();
@@ -863,6 +923,7 @@
       modeSelect.value = currentMode;
       localStorage.setItem(getAgentModeStorageKey(currentAgent), currentMode);
     }
+    updateAgentScopedUI();
     currentModel = snapshot.model || '';
     if (!preserveStreaming) {
       renderMessages(snapshot.messages || [], { immediate: !!options.immediate });
@@ -874,32 +935,6 @@
       showToast('后台任务已完成', snapshot.sessionId);
     }
     renderWorkspaceInsights();
-  }
-
-  function syncViewForAgent(agent, options = {}) {
-    const targetAgent = normalizeAgent(agent);
-    const { preserveCurrent = true, loadLast = true } = options;
-    setCurrentAgent(targetAgent);
-    renderSessionList();
-
-    const currentMeta = currentSessionId ? getSessionMeta(currentSessionId) : null;
-    if (preserveCurrent && currentMeta && normalizeAgent(currentMeta.agent) === targetAgent) {
-      highlightActiveSession();
-      return;
-    }
-
-    if (currentSessionId && (!currentMeta || normalizeAgent(currentMeta.agent) !== targetAgent)) {
-      send({ type: 'detach_view' });
-    }
-
-    resetChatView(targetAgent);
-
-    if (!loadLast) return;
-    const lastSessionId = getLastSessionForAgent(targetAgent);
-    const lastMeta = lastSessionId ? getSessionMeta(lastSessionId) : null;
-    if (lastMeta && normalizeAgent(lastMeta.agent) === targetAgent) {
-      openSession(lastSessionId);
-    }
   }
 
   function getSessionLoadLabel(sessionId) {
@@ -1173,9 +1208,9 @@
         }
         if (pendingInitialSessionLoad) {
           pendingInitialSessionLoad = false;
-          syncViewForAgent(currentAgent, { preserveCurrent: false, loadLast: true });
+          restoreInitialSession(selectedAgent);
         } else if (currentSessionId && !getSessionMeta(currentSessionId)) {
-          resetChatView(currentAgent);
+          resetChatView(selectedAgent);
         }
         break;
 
@@ -1232,6 +1267,7 @@
 
       case 'tool_start':
         if (!isGenerating) startGenerating();
+        if (pendingText) flushRender();
         activeToolCalls.set(msg.toolUseId, { name: msg.name, input: msg.input, kind: msg.kind || null, meta: msg.meta || null, done: false });
         appendToolCall(msg.toolUseId, msg.name, msg.input, false, msg.kind || null, msg.meta || null);
         break;
@@ -1278,6 +1314,7 @@
           currentMode = msg.mode;
           modeSelect.value = currentMode;
           localStorage.setItem(getAgentModeStorageKey(currentAgent), currentMode);
+          updateAgentScopedUI();
           if (currentSessionId) {
             updateCachedSession(currentSessionId, (snapshot) => { snapshot.mode = msg.mode; });
           }
@@ -1315,27 +1352,42 @@
         } else {
           sendBtn.hidden = true;
           abortBtn.hidden = false;
-          toolGroupCount = 0;
-          hasGrouped = false;
           activeToolCalls.clear();
-          const toolsDiv = document.querySelector('#streaming-msg .msg-tools');
-          if (toolsDiv) toolsDiv.innerHTML = '';
+          const bubble = document.querySelector('#streaming-msg .msg-bubble');
+          if (bubble) bubble.innerHTML = '';
         }
-        pendingText = msg.text || '';
-        flushRender();
-        if (msg.toolCalls && msg.toolCalls.length > 0) {
-          for (const tc of msg.toolCalls) {
-            activeToolCalls.set(tc.id, {
-              name: tc.name,
-              input: tc.input,
-              result: tc.result,
-              kind: tc.kind || null,
-              meta: tc.meta || null,
-              done: tc.done,
+        const resumedSegments = Array.isArray(msg.segments) && msg.segments.length > 0 ? msg.segments : null;
+        if (resumedSegments) {
+          renderStreamingSegments(resumedSegments);
+          for (const segment of resumedSegments) {
+            if (segment?.type !== 'tool_call' || !segment.id) continue;
+            activeToolCalls.set(segment.id, {
+              name: segment.name,
+              input: segment.input,
+              result: segment.result,
+              kind: segment.kind || null,
+              meta: segment.meta || null,
+              done: segment.done !== false,
             });
-            appendToolCall(tc.id, tc.name, tc.input, tc.done, tc.kind || null, tc.meta || null);
-            if (tc.done && tc.result) {
-              updateToolCall(tc.id, tc.result);
+          }
+          pendingText = '';
+        } else {
+          pendingText = msg.text || '';
+          flushRender();
+          if (msg.toolCalls && msg.toolCalls.length > 0) {
+            for (const tc of msg.toolCalls) {
+              activeToolCalls.set(tc.id, {
+                name: tc.name,
+                input: tc.input,
+                result: tc.result,
+                kind: tc.kind || null,
+                meta: tc.meta || null,
+                done: tc.done,
+              });
+              appendToolCall(tc.id, tc.name, tc.input, tc.done, tc.kind || null, tc.meta || null);
+              if (tc.done && tc.result) {
+                updateToolCall(tc.id, tc.result);
+              }
             }
           }
         }
@@ -1421,8 +1473,6 @@
     setCurrentSessionRunningState(true);
     pendingText = '';
     activeToolCalls.clear();
-    toolGroupCount = 0;
-    hasGrouped = false;
     sendBtn.hidden = true;
     abortBtn.hidden = false;
     // 不禁用输入框，允许用户继续输入（但无法发送）
@@ -1432,16 +1482,9 @@
 
     const msgEl = createMsgElement('assistant', '');
     msgEl.id = 'streaming-msg';
-    // 流式消息 bubble 拆为 .msg-text 和 .msg-tools 两个子容器
     const bubble = msgEl.querySelector('.msg-bubble');
     bubble.innerHTML = '';
-    const textDiv = document.createElement('div');
-    textDiv.className = 'msg-text';
-    textDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
-    const toolsDiv = document.createElement('div');
-    toolsDiv.className = 'msg-tools';
-    bubble.appendChild(textDiv);
-    bubble.appendChild(toolsDiv);
+    bubble.appendChild(createStreamingPlaceholder());
     messagesDiv.appendChild(msgEl);
     scrollToBottom();
   }
@@ -1455,43 +1498,12 @@
 
     if (pendingText) flushRender();
 
-    const typing = document.querySelector('.typing-indicator');
-    if (typing) typing.remove();
-
     const streamEl = document.getElementById('streaming-msg');
-    if (streamEl) {
-      // 若本轮出现过父目录，把末尾散落的 .tool-call 也一并收入同一父节点
-      if (hasGrouped) {
-        const toolsDiv = streamEl.querySelector('.msg-tools');
-        if (toolsDiv) {
-          const loose = Array.from(toolsDiv.children).filter(c => c.classList.contains('tool-call'));
-          if (loose.length > 0) {
-            let group = toolsDiv.querySelector(':scope > .tool-group');
-            if (!group) {
-              group = document.createElement('details');
-              group.className = 'tool-group';
-              const gs = document.createElement('summary');
-              gs.className = 'tool-group-summary';
-              group.appendChild(gs);
-              const inner = document.createElement('div');
-              inner.className = 'tool-group-inner';
-              group.appendChild(inner);
-              toolsDiv.insertBefore(group, toolsDiv.firstChild);
-            }
-            const inner = group.querySelector('.tool-group-inner');
-            loose.forEach(c => inner.appendChild(c));
-            _refreshGroupSummary(group);
-          }
-        }
-      }
-      streamEl.removeAttribute('id');
-    }
+    if (streamEl) streamEl.removeAttribute('id');
 
     if (sessionId) currentSessionId = sessionId;
     pendingText = '';
     activeToolCalls.clear();
-    toolGroupCount = 0;
-    hasGrouped = false;
   }
 
   // --- Rendering ---
@@ -1504,13 +1516,13 @@
   }
 
   function flushRender() {
-    const streamEl = document.getElementById('streaming-msg');
-    if (!streamEl) return;
-    const bubble = streamEl.querySelector('.msg-bubble');
-    if (!bubble) return;
-    let textDiv = bubble.querySelector('.msg-text');
-    if (!textDiv) { textDiv = bubble; }
-    textDiv.innerHTML = renderMarkdown(pendingText);
+    if (!pendingText) return;
+    const textDiv = ensureStreamingTextSegment();
+    if (!textDiv) return;
+    const nextText = `${textDiv.dataset.rawText || ''}${pendingText}`;
+    textDiv.dataset.rawText = nextText;
+    textDiv.innerHTML = renderMarkdown(nextText);
+    pendingText = '';
     scrollToBottom();
   }
 
@@ -1518,6 +1530,46 @@
     if (!text) return '<div class="typing-indicator"><span></span><span></span><span></span></div>';
     try { return marked.parse(text); }
     catch { return escapeHtml(text); }
+  }
+
+  function createStreamingPlaceholder() {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'msg-segment msg-segment-pending';
+    placeholder.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+    return placeholder;
+  }
+
+  function createTextSegmentElement(text = '') {
+    const textDiv = document.createElement('div');
+    textDiv.className = 'msg-text msg-segment msg-segment-text';
+    textDiv.dataset.rawText = text;
+    textDiv.innerHTML = text ? renderMarkdown(text) : '';
+    return textDiv;
+  }
+
+  function appendMessageAttachments(bubble, attachments = []) {
+    if (!bubble || !Array.isArray(attachments) || attachments.length === 0) return;
+    bubble.insertAdjacentHTML('beforeend', renderAttachmentLabels(attachments));
+  }
+
+  function getStreamingBubble() {
+    return document.querySelector('#streaming-msg .msg-bubble');
+  }
+
+  function clearStreamingPlaceholder(bubble) {
+    const placeholder = bubble?.querySelector('.msg-segment-pending');
+    if (placeholder) placeholder.remove();
+  }
+
+  function ensureStreamingTextSegment() {
+    const bubble = getStreamingBubble();
+    if (!bubble) return null;
+    clearStreamingPlaceholder(bubble);
+    const last = bubble.lastElementChild;
+    if (last && last.classList.contains('msg-segment-text')) return last;
+    const textDiv = createTextSegmentElement('');
+    bubble.appendChild(textDiv);
+    return textDiv;
   }
 
   function createMsgElement(role, content, attachments = []) {
@@ -1650,50 +1702,160 @@
     return section;
   }
 
-  function buildMsgElement(m) {
-    const el = createMsgElement(m.role, m.content, m.attachments || []);
-    if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-      const bubble = el.querySelector('.msg-bubble');
-      const FOLD_AT = 5;
-      let grouped = false;
-      for (const tc of m.toolCalls) {
-        const details = createToolCallElement(tc.id || `saved-${Math.random().toString(36).slice(2)}`, tc, true);
-
-        // 散落的 .tool-call 达到 FOLD_AT 个时，移入唯一 .tool-group
-        const loose = Array.from(bubble.children).filter(c => c.classList.contains('tool-call'));
-        if (loose.length >= FOLD_AT) {
-          let group = bubble.querySelector(':scope > .tool-group');
-          if (!group) {
-            group = document.createElement('details');
-            group.className = 'tool-group';
-            const gs = document.createElement('summary');
-            gs.className = 'tool-group-summary';
-            group.appendChild(gs);
-            const inner = document.createElement('div');
-            inner.className = 'tool-group-inner';
-            group.appendChild(inner);
-            bubble.insertBefore(group, bubble.firstChild);
-            grouped = true;
+  function normalizeMessageSegments(message) {
+    if (Array.isArray(message?.segments) && message.segments.length > 0) {
+      const normalized = message.segments
+        .filter(Boolean)
+        .map((segment) => {
+          if (segment.type === 'tool_call') {
+            return {
+              ...segment,
+              type: 'tool_call',
+              done: segment.done !== false,
+            };
           }
-          const inner = group.querySelector('.tool-group-inner');
-          loose.forEach(c => inner.appendChild(c));
-          _refreshGroupSummary(group);
-        }
-        bubble.appendChild(details);
-      }
-      // 结束时若出现过父目录，收尾散落项
-      if (grouped) {
-        const loose = Array.from(bubble.children).filter(c => c.classList.contains('tool-call'));
-        if (loose.length > 0) {
-          const group = bubble.querySelector(':scope > .tool-group');
-          if (group) {
-            const inner = group.querySelector('.tool-group-inner');
-            loose.forEach(c => inner.appendChild(c));
-            _refreshGroupSummary(group);
-          }
-        }
-      }
+          return {
+            type: 'text',
+            text: typeof segment.text === 'string' ? segment.text : '',
+          };
+        })
+        .filter((segment) => segment.type === 'tool_call' || segment.text);
+      return collapseToolSegmentsForDisplay(normalized);
     }
+
+    const fallback = [];
+    if (typeof message?.content === 'string' && message.content) {
+      fallback.push({ type: 'text', text: message.content });
+    }
+    if (Array.isArray(message?.toolCalls)) {
+      message.toolCalls.forEach((tool) => {
+        if (!tool) return;
+        fallback.push({ type: 'tool_call', ...tool, done: tool.done !== false });
+      });
+    }
+    return collapseToolSegmentsForDisplay(fallback);
+  }
+
+  function collapseToolSegmentsForDisplay(segments) {
+    const source = Array.isArray(segments) ? segments.filter(Boolean) : [];
+    const collapsed = [];
+    let toolRun = [];
+
+    function flushToolRun() {
+      if (toolRun.length === 0) return;
+      if (toolRun.length > TOOL_GROUP_THRESHOLD) {
+        collapsed.push({
+          type: 'tool_group',
+          items: toolRun.map((tool) => ({ ...tool, done: tool.done !== false })),
+        });
+      } else {
+        collapsed.push(...toolRun.map((tool) => ({ ...tool, done: tool.done !== false })));
+      }
+      toolRun = [];
+    }
+
+    source.forEach((segment) => {
+      if (segment.type === 'tool_call') {
+        toolRun.push(segment);
+        return;
+      }
+      flushToolRun();
+      collapsed.push(segment);
+    });
+
+    flushToolRun();
+    return collapsed;
+  }
+
+  function toolGroupSummaryText(toolItems) {
+    const items = Array.isArray(toolItems) ? toolItems : [];
+    const total = items.length;
+    const running = items.filter((item) => item?.done === false).length;
+    const failed = items.filter((item) => toolKind(item) === 'command_execution' && typeof item?.meta?.exitCode === 'number' && item.meta.exitCode !== 0).length;
+    if (running > 0) return `${total} 个工具调用 · ${running} 个运行中`;
+    if (failed > 0) return `${total} 个工具调用 · ${failed} 个异常`;
+    return `${total} 个工具调用`;
+  }
+
+  function refreshToolGroupSummary(group) {
+    if (!group) return;
+    const summary = group.querySelector('.tool-group-summary');
+    const inner = group.querySelector('.tool-group-inner');
+    if (!summary || !inner) return;
+    const items = Array.from(inner.querySelectorAll(':scope > .tool-call')).map((call) => {
+      const toolUseId = call.id ? call.id.replace(/^tool-/, '') : '';
+      const active = toolUseId ? activeToolCalls.get(toolUseId) : null;
+      const fallbackTool = {
+        id: toolUseId,
+        name: call.dataset.toolName || '',
+        kind: call.dataset.toolKind || null,
+        done: !call.querySelector('.tool-call-state.running'),
+        meta: active?.meta || null,
+      };
+      return active ? { ...active, id: toolUseId } : fallbackTool;
+    });
+    summary.textContent = toolGroupSummaryText(items);
+  }
+
+  function createToolGroupElement(toolItems = []) {
+    const group = document.createElement('details');
+    group.className = 'tool-group msg-segment';
+    const summary = document.createElement('summary');
+    summary.className = 'tool-group-summary';
+    group.appendChild(summary);
+    const inner = document.createElement('div');
+    inner.className = 'tool-group-inner';
+    group.appendChild(inner);
+
+    toolItems.forEach((tool) => {
+      const details = createToolCallElement(tool.id || `saved-${Math.random().toString(36).slice(2)}`, tool, tool.done !== false);
+      inner.appendChild(details);
+    });
+
+    if (toolItems.some((tool) => tool?.name === 'AskUserQuestion')) group.open = true;
+    refreshToolGroupSummary(group);
+    return group;
+  }
+
+  function buildMessageSegmentElement(segment) {
+    if (!segment) return null;
+    if (segment.type === 'tool_group') {
+      return createToolGroupElement(segment.items || []);
+    }
+    if (segment.type === 'tool_call') {
+      const details = createToolCallElement(segment.id || `saved-${Math.random().toString(36).slice(2)}`, segment, segment.done !== false);
+      details.classList.add('msg-segment');
+      return details;
+    }
+    const text = typeof segment.text === 'string' ? segment.text : '';
+    if (!text) return null;
+    return createTextSegmentElement(text);
+  }
+
+  function renderAssistantSegments(bubble, message) {
+    if (!bubble) return;
+    bubble.innerHTML = '';
+    normalizeMessageSegments(message).forEach((segment) => {
+      const segmentEl = buildMessageSegmentElement(segment);
+      if (segmentEl) bubble.appendChild(segmentEl);
+    });
+    appendMessageAttachments(bubble, message?.attachments || []);
+  }
+
+  function renderStreamingSegments(segments) {
+    const bubble = getStreamingBubble();
+    if (!bubble) return;
+    bubble.innerHTML = '';
+    segments.forEach((segment) => {
+      const segmentEl = buildMessageSegmentElement(segment);
+      if (segmentEl) bubble.appendChild(segmentEl);
+    });
+  }
+
+  function buildMsgElement(m) {
+    if (m.role !== 'assistant') return createMsgElement(m.role, m.content, m.attachments || []);
+    const el = createMsgElement('assistant', '');
+    renderAssistantSegments(el.querySelector('.msg-bubble'), m);
     return el;
   }
 
@@ -1985,7 +2147,7 @@
 
   function createToolCallElement(toolUseId, tool, done) {
     const details = document.createElement('details');
-    details.className = 'tool-call';
+    details.className = 'tool-call msg-segment';
     details.id = `tool-${toolUseId}`;
     details.dataset.toolName = tool.name || '';
     if (toolKind(tool)) {
@@ -2002,49 +2164,44 @@
   }
 
   function appendToolCall(toolUseId, name, input, done, kind = null, meta = null) {
-    const streamEl = document.getElementById('streaming-msg');
-    if (!streamEl) return;
-    const bubble = streamEl.querySelector('.msg-bubble');
+    const bubble = getStreamingBubble();
     if (!bubble) return;
-    let toolsDiv = bubble.querySelector('.msg-tools');
-    if (!toolsDiv) { toolsDiv = bubble; }
+    clearStreamingPlaceholder(bubble);
 
     const tool = { id: toolUseId, name, input, kind, meta, done };
-
     const details = createToolCallElement(toolUseId, tool, done);
 
-    // 折叠策略：只维护唯一一个 .tool-group 父节点
-    // 散落的 .tool-call 直接子节点达到5个时，将它们全部移入父节点；之后继续散落，再达5个再移入
-    const FOLD_AT = 5;
-    const looseBefore = Array.from(toolsDiv.children).filter(c => c.classList.contains('tool-call'));
-    if (looseBefore.length >= FOLD_AT) {
-      // 确保存在唯一的 .tool-group
-      let group = toolsDiv.querySelector(':scope > .tool-group');
-      if (!group) {
-        group = document.createElement('details');
-        group.className = 'tool-group';
-        const gs = document.createElement('summary');
-        gs.className = 'tool-group-summary';
-        group.appendChild(gs);
-        const inner = document.createElement('div');
-        inner.className = 'tool-group-inner';
-        group.appendChild(inner);
-        toolsDiv.insertBefore(group, toolsDiv.firstChild);
-        hasGrouped = true;
+    const trailingCluster = [];
+    for (let node = bubble.lastElementChild; node; node = node.previousElementSibling) {
+      if (node.classList.contains('tool-call') || node.classList.contains('tool-group')) {
+        trailingCluster.unshift(node);
+        continue;
       }
-      const inner = group.querySelector('.tool-group-inner');
-      looseBefore.forEach(c => inner.appendChild(c));
-      _refreshGroupSummary(group);
+      break;
     }
-    toolsDiv.appendChild(details);
-    scrollToBottom();
-  }
 
-  function _refreshGroupSummary(group) {
-    const inner = group.querySelector('.tool-group-inner');
-    const count = inner ? inner.childElementCount : 0;
-    const summary = group.querySelector('.tool-group-summary');
-    if (summary) summary.textContent = `展开 ${count} 个工具调用`;
+    const trailingGroup = trailingCluster.length === 1 && trailingCluster[0].classList.contains('tool-group')
+      ? trailingCluster[0]
+      : null;
+
+    if (trailingGroup) {
+      const inner = trailingGroup.querySelector('.tool-group-inner');
+      inner.appendChild(details);
+      if (tool.name === 'AskUserQuestion') trailingGroup.open = true;
+      refreshToolGroupSummary(trailingGroup);
+    } else if (trailingCluster.length + 1 > TOOL_GROUP_THRESHOLD) {
+      const group = createToolGroupElement([]);
+      if (trailingCluster[0]) bubble.insertBefore(group, trailingCluster[0]);
+      else bubble.appendChild(group);
+      const inner = group.querySelector('.tool-group-inner');
+      trailingCluster.forEach((child) => inner.appendChild(child));
+      inner.appendChild(details);
+      if (tool.name === 'AskUserQuestion') group.open = true;
+      refreshToolGroupSummary(group);
+    } else {
+      bubble.appendChild(details);
+    }
+    scrollToBottom();
   }
 
   function updateToolCall(toolUseId, result) {
@@ -2060,10 +2217,12 @@
     if (result !== undefined) tool.result = result;
     const summary = el.querySelector('summary');
     if (summary) applyToolSummary(summary, tool, true);
-    if (tool.name === 'AskUserQuestion') return;
-    const nextContent = buildToolContentElement(tool);
-    const content = el.querySelector('.tool-call-content');
-    if (content) content.replaceWith(nextContent);
+    if (tool.name !== 'AskUserQuestion') {
+      const nextContent = buildToolContentElement(tool);
+      const content = el.querySelector('.tool-call-content');
+      if (content) content.replaceWith(nextContent);
+    }
+    refreshToolGroupSummary(el.closest('.tool-group'));
   }
 
   function getDeleteConfirmMessage(agent) {
@@ -2376,13 +2535,15 @@
       if (actionBtn?.classList.contains('delete')) {
         e.stopPropagation();
         const doDelete = () => {
-          if (getLastSessionForAgent(currentAgent) === s.id) {
-            localStorage.removeItem(getAgentSessionStorageKey(currentAgent));
+          const sessionAgent = normalizeAgent(s.agent);
+          if (getLastSessionForAgent(sessionAgent) === s.id) {
+            localStorage.removeItem(getAgentSessionStorageKey(sessionAgent));
           }
+          if (localStorage.getItem('cc-web-session') === s.id) localStorage.removeItem('cc-web-session');
           invalidateSessionCache(s.id);
           send({ type: 'delete_session', sessionId: s.id });
           if (s.id === currentSessionId) {
-            resetChatView(currentAgent);
+            resetChatView(selectedAgent);
           }
         };
         if (skipDeleteConfirm) {
@@ -2462,9 +2623,10 @@
       createBtn.textContent = '+';
       createBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        const nextMode = getSavedModeForAgent(selectedAgent);
         send(isVirtualCwd
-          ? { type: 'new_session', cwd: project.path, agent: currentAgent, mode: currentMode }
-          : { type: 'new_session', projectId: project.id, agent: currentAgent, mode: currentMode });
+          ? { type: 'new_session', cwd: project.path, agent: selectedAgent, mode: nextMode }
+          : { type: 'new_session', projectId: project.id, agent: selectedAgent, mode: nextMode });
       });
       actions.appendChild(createBtn);
       if (!isVirtualCwd) {
@@ -2569,7 +2731,7 @@
     if (visibleSessions.length === 0 && !hasProjects) {
       const empty = document.createElement('div');
       empty.className = 'session-list-empty';
-      empty.textContent = `暂无 ${AGENT_LABELS[currentAgent]} 会话，点击“新建/打开项目”开始。`;
+      empty.textContent = '暂无会话，点击“新建/打开项目”开始。';
       sessionList.appendChild(empty);
       renderWorkspaceInsights();
       return;
@@ -2578,7 +2740,7 @@
     if (visibleSessions.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'session-list-empty';
-      empty.textContent = `当前没有 ${AGENT_LABELS[currentAgent]} 会话，你可以从下面任意项目继续新建。`;
+      empty.textContent = '当前还没有会话，你可以从下面任意项目继续新建。';
       sessionList.appendChild(empty);
     }
 
@@ -3256,8 +3418,7 @@
   document.querySelectorAll('.agent-tab').forEach((btn) => {
     btn.addEventListener('click', () => {
       const targetAgent = normalizeAgent(btn.dataset.agent);
-      if (targetAgent === currentAgent) return;
-      syncViewForAgent(targetAgent, { preserveCurrent: false, loadLast: true });
+      handleAgentSelectionChange(targetAgent);
     });
   });
 
@@ -3267,7 +3428,7 @@
   if (mobileAgentSelect) {
     mobileAgentSelect.addEventListener('change', () => {
       const targetAgent = normalizeAgent(mobileAgentSelect.value);
-      if (targetAgent !== currentAgent) syncViewForAgent(targetAgent, { preserveCurrent: false, loadLast: true });
+      handleAgentSelectionChange(targetAgent);
     });
   }
   if (mobileModeSelect) {
@@ -3276,7 +3437,7 @@
       currentMode = mode;
       modeSelect.value = mode;
       localStorage.setItem(getAgentModeStorageKey(currentAgent), currentMode);
-      document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+      updateAgentScopedUI();
       if (currentSessionId) send({ type: 'set_mode', sessionId: currentSessionId, mode: currentMode });
       renderWorkspaceInsights();
     });
@@ -3292,7 +3453,7 @@
       return;
     }
     if (action === 'import-session') {
-      if (currentAgent === 'codex') {
+      if (selectedAgent === 'codex') {
         showImportCodexSessionModal();
       } else {
         showImportSessionModal();
@@ -3333,7 +3494,7 @@
   });
   importSessionBtn.addEventListener('click', () => {
     newChatDropdown.hidden = true;
-    if (currentAgent === 'codex') {
+    if (selectedAgent === 'codex') {
       showImportCodexSessionModal();
     } else {
       showImportSessionModal();
@@ -3374,7 +3535,7 @@
       currentMode = mode;
       modeSelect.value = mode;
       localStorage.setItem(getAgentModeStorageKey(currentAgent), currentMode);
-      document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+      updateAgentScopedUI();
       if (currentSessionId) {
         send({ type: 'set_mode', sessionId: currentSessionId, mode: currentMode });
       }
@@ -3384,7 +3545,7 @@
   modeSelect.addEventListener('change', () => {
     currentMode = modeSelect.value;
     localStorage.setItem(getAgentModeStorageKey(currentAgent), currentMode);
-    document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === currentMode));
+    updateAgentScopedUI();
     if (currentSessionId) {
       send({ type: 'set_mode', sessionId: currentSessionId, mode: currentMode });
     }
@@ -4019,7 +4180,7 @@
   }
 
   function showSettingsPanel() {
-    if (currentAgent === 'codex') {
+    if (selectedAgent === 'codex') {
       showCodexSettingsPanel();
       return;
     }
@@ -4563,7 +4724,7 @@
       const fcOverlay = document.getElementById('force-change-overlay');
       if (fcOverlay) {
         hideForceChangePassword();
-        syncViewForAgent(currentAgent, { preserveCurrent: false, loadLast: true });
+        restoreInitialSession(selectedAgent);
         showToast('密码修改成功');
       }
 
@@ -4595,8 +4756,7 @@
   let _onDirectoryListing = null;
 
   function showNewSessionModal() {
-    const targetAgent = currentAgent;
-    const targetLabel = AGENT_LABELS[targetAgent] || AGENT_LABELS.claude;
+    const targetAgent = selectedAgent;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.id = 'new-session-overlay';
@@ -4606,29 +4766,36 @@
     let addProjectMode = false; // true = save as project after selecting dir
 
     overlay.innerHTML = `
-      <div class="modal-panel modal-panel-wide">
+      <div class="modal-panel modal-panel-wide modal-panel-project">
         <div class="modal-header">
-          <span class="modal-title">项目列表</span>
+          <span class="modal-title">新建 / 打开项目</span>
           <button class="modal-close-btn" id="ns-close-btn">\u2715</button>
         </div>
-        <div class="modal-body">
-          ${buildAgentContextCard(targetAgent, `先整理项目，再在项目下创建多个 ${targetLabel} 会话`, `项目会长期保存在左侧列表里。选中或新建项目后，可在对应项目下反复点“新建会话”。`)}
-
+        <div class="modal-body modal-body-project">
           <!-- Step 1: Project Picker -->
-          <div class="modal-stack" id="ns-step-projects">
-            <div>
-              <label class="modal-field-label">已保存项目</label>
-              <div class="project-picker-list" id="ns-project-list"></div>
-              <div class="project-picker-actions">
-                <button class="project-picker-action-btn" id="ns-add-project-btn">添加新项目…</button>
-                <button class="project-picker-action-btn" id="ns-browse-btn">临时会话…</button>
+          <div class="modal-stack project-flow-shell" id="ns-step-projects">
+            <div class="project-picker-head">
+              <div class="project-picker-head-copy">
+                <label class="modal-field-label">已保存项目</label>
+                <div class="project-picker-summary" id="ns-project-summary">这里展示你已经保存的工作目录。</div>
               </div>
-              <div class="project-picker-helper">点击项目后会定位到左侧项目卡片；真正的新会话在项目卡片里创建。</div>
+              <div class="project-picker-total" id="ns-project-count">0 个项目</div>
             </div>
+            <div class="project-picker-list" id="ns-project-list"></div>
+            <div class="project-picker-actions">
+              <button class="project-picker-action-btn primary" id="ns-add-project-btn">添加新项目</button>
+              <button class="project-picker-action-btn secondary" id="ns-browse-btn">临时会话</button>
+            </div>
+            <div class="project-picker-helper">点击项目后会直接定位到左侧项目卡片；真正的新会话仍然在左侧项目卡片里创建。</div>
           </div>
 
           <!-- Step 2: Directory Browser -->
-          <div class="modal-stack" id="ns-step-browser" style="display:none">
+          <div class="modal-stack dir-browser-shell" id="ns-step-browser" style="display:none">
+            <div class="dir-browser-current">
+              <div class="dir-browser-current-label">当前目录</div>
+              <div class="dir-browser-current-name" id="ns-current-name">正在定位…</div>
+              <div class="dir-browser-current-path" id="ns-current-path">载入后会在这里显示你当前选中的完整路径。</div>
+            </div>
             <div>
               <label class="modal-field-label">工作目录</label>
               <div class="dir-browser-pathbar" id="ns-pathbar">
@@ -4647,6 +4814,7 @@
                   <input type="checkbox" id="ns-show-hidden">
                   <span>显示隐藏目录</span>
                 </label>
+                <div class="dir-browser-selection-hint" id="ns-selection-hint">选中后会直接使用当前目录。</div>
               </div>
             </div>
           </div>
@@ -4664,6 +4832,8 @@
     const stepProjects = overlay.querySelector('#ns-step-projects');
     const stepBrowser = overlay.querySelector('#ns-step-browser');
     const projectListEl = overlay.querySelector('#ns-project-list');
+    const projectSummaryEl = overlay.querySelector('#ns-project-summary');
+    const projectCountEl = overlay.querySelector('#ns-project-count');
     const backBtn = overlay.querySelector('#ns-back-btn');
     const selectBtn = overlay.querySelector('#ns-select-btn');
     const crumbsEl = overlay.querySelector('#ns-crumbs');
@@ -4671,22 +4841,63 @@
     const manualRow = overlay.querySelector('#ns-manual-row');
     const manualInput = overlay.querySelector('#ns-manual-input');
     const pathbar = overlay.querySelector('#ns-pathbar');
+    const currentNameEl = overlay.querySelector('#ns-current-name');
+    const currentPathEl = overlay.querySelector('#ns-current-path');
+    const selectionHintEl = overlay.querySelector('#ns-selection-hint');
+
+    function getPathLeaf(pathValue) {
+      const normalized = String(pathValue || '').trim();
+      if (!normalized || normalized === '/') return '/';
+      const parts = normalized.split('/').filter(Boolean);
+      return parts[parts.length - 1] || normalized;
+    }
+
+    function updateBrowserChrome() {
+      const isSavingProject = Boolean(addProjectMode);
+      selectionHintEl.textContent = isSavingProject
+        ? '确认后会把当前目录加入左侧项目列表。'
+        : '确认后会立刻用当前目录创建一次临时会话。';
+      selectBtn.textContent = isSavingProject ? '保存为项目' : '创建临时会话';
+    }
+
+    function updateCurrentPathCard(pathValue, hasError = false) {
+      if (!pathValue) {
+        currentNameEl.textContent = '正在定位…';
+        currentPathEl.textContent = '载入后会在这里显示你当前选中的完整路径。';
+        return;
+      }
+      currentNameEl.textContent = getPathLeaf(pathValue);
+      currentPathEl.textContent = hasError
+        ? `${pathValue}（当前不可用，请换一个目录）`
+        : pathValue;
+    }
 
     // --- Step 1: Render project list ---
     function renderProjectPicker() {
       projectListEl.innerHTML = '';
+      projectCountEl.textContent = `${projects.length} 个项目`;
+      projectSummaryEl.textContent = projects.length > 0
+        ? '点击任意项目会直接定位到左侧对应项目卡片。'
+        : '还没有保存项目，先选一个目录加入左侧列表。';
       if (projects.length === 0) {
         addProjectMode = true;
         showBrowserStep(false);
         return;
       }
       for (const p of projects) {
-        const card = document.createElement('div');
+        const sessionCount = getCurrentProjectSessionCount(p);
+        const card = document.createElement('button');
+        card.type = 'button';
         card.className = 'project-picker-item';
         card.innerHTML = `
+          <span class="project-picker-item-top">
+            <span class="project-picker-item-tag">项目</span>
+            <span class="project-picker-item-count">${sessionCount > 0 ? `${sessionCount} 个会话` : '暂无会话'}</span>
+          </span>
           <span class="project-picker-item-name">${escapeHtml(p.name)}</span>
           <span class="project-picker-item-path">${escapeHtml(p.path)}</span>
-          <span class="project-picker-item-note">点击后定位到左侧项目，再在项目下新建会话</span>
+          <span class="project-picker-item-note">定位到左侧项目卡片后，可直接点右侧“+”继续新建会话。</span>
+          <span class="project-picker-item-arrow" aria-hidden="true">\u203A</span>
         `;
         card.addEventListener('click', () => {
           close();
@@ -4702,8 +4913,10 @@
       stepBrowser.style.display = '';
       selectBtn.style.display = '';
       backBtn.style.display = canGoBack ? '' : 'none';
-      selectBtn.textContent = addProjectMode ? '保存为项目' : '创建临时会话';
-      navigateTo(null);
+      selectBtn.disabled = true;
+      updateBrowserChrome();
+      updateCurrentPathCard(currentBrowsePath);
+      navigateTo(currentBrowsePath);
     }
 
     function showProjectStep() {
@@ -4715,6 +4928,8 @@
     }
 
     function navigateTo(dirPath) {
+      selectBtn.disabled = true;
+      updateCurrentPathCard(dirPath || currentBrowsePath);
       dirListEl.innerHTML = '<div class="dir-browser-empty">正在加载…</div>';
       send({ type: 'browse_directory', path: dirPath, showHidden });
     }
@@ -4723,7 +4938,8 @@
       crumbsEl.innerHTML = '';
       if (!fullPath) return;
       const parts = fullPath.split('/').filter(Boolean);
-      const rootSpan = document.createElement('span');
+      const rootSpan = document.createElement(parts.length > 0 ? 'button' : 'span');
+      if (parts.length > 0) rootSpan.type = 'button';
       rootSpan.className = parts.length > 0 ? 'dir-browser-crumb' : 'dir-browser-crumb-current';
       rootSpan.textContent = '/';
       if (parts.length > 0) {
@@ -4738,7 +4954,8 @@
         crumbsEl.appendChild(sep);
 
         const isLast = i === parts.length - 1;
-        const span = document.createElement('span');
+        const span = document.createElement(isLast ? 'span' : 'button');
+        if (!isLast) span.type = 'button';
         span.className = isLast ? 'dir-browser-crumb-current' : 'dir-browser-crumb';
         span.textContent = seg;
         if (!isLast) {
@@ -4751,6 +4968,38 @@
       crumbsEl.scrollLeft = crumbsEl.scrollWidth;
     }
 
+    function createDirItem(name, note, onClick, extraClass = '') {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `dir-browser-item${extraClass ? ` ${extraClass}` : ''}`;
+
+      const icon = document.createElement('span');
+      icon.className = 'dir-browser-item-icon';
+
+      const copy = document.createElement('span');
+      copy.className = 'dir-browser-item-copy';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'dir-browser-item-name';
+      nameSpan.textContent = name;
+
+      const noteSpan = document.createElement('span');
+      noteSpan.className = 'dir-browser-item-note';
+      noteSpan.textContent = note;
+
+      const arrow = document.createElement('span');
+      arrow.className = 'dir-browser-item-arrow';
+      arrow.textContent = '\u203A';
+
+      copy.appendChild(nameSpan);
+      copy.appendChild(noteSpan);
+      item.appendChild(icon);
+      item.appendChild(copy);
+      item.appendChild(arrow);
+      item.addEventListener('click', onClick);
+      return item;
+    }
+
     function renderDirList(dirs, parentPath, error) {
       dirListEl.innerHTML = '';
       if (error) {
@@ -4758,7 +5007,8 @@
         errDiv.className = 'dir-browser-error';
         errDiv.textContent = error;
         if (parentPath) {
-          const backLink = document.createElement('div');
+          const backLink = document.createElement('button');
+          backLink.type = 'button';
           backLink.className = 'dir-browser-error-back';
           backLink.textContent = '返回上级目录';
           backLink.addEventListener('click', () => navigateTo(parentPath));
@@ -4766,6 +5016,9 @@
         }
         dirListEl.appendChild(errDiv);
         return;
+      }
+      if (parentPath) {
+        dirListEl.appendChild(createDirItem('..', '返回上一级目录', () => navigateTo(parentPath), 'is-parent'));
       }
       if (!dirs || dirs.length === 0) {
         const emptyDiv = document.createElement('div');
@@ -4775,17 +5028,7 @@
         return;
       }
       for (const name of dirs) {
-        const item = document.createElement('div');
-        item.className = 'dir-browser-item';
-        const icon = document.createElement('span');
-        icon.className = 'dir-browser-item-icon';
-        icon.textContent = '\uD83D\uDCC1';
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'dir-browser-item-name';
-        nameSpan.textContent = name;
-        item.appendChild(icon);
-        item.appendChild(nameSpan);
-        item.addEventListener('click', () => {
+        const item = createDirItem(name, '进入这个目录继续浏览', () => {
           const childPath = currentBrowsePath === '/' ? '/' + name : currentBrowsePath + '/' + name;
           navigateTo(childPath);
         });
@@ -4797,6 +5040,8 @@
       currentBrowsePath = msg.path || '/';
       renderCrumbs(currentBrowsePath);
       renderDirList(msg.dirs || [], msg.parent, msg.error);
+      updateCurrentPathCard(currentBrowsePath, Boolean(msg.error));
+      selectBtn.disabled = Boolean(msg.error);
     };
 
     // Manual path toggle
@@ -4876,7 +5121,7 @@
         queueProjectFocus(projectId, '项目已加入左侧列表，后续可在项目下反复新建会话。');
         send({ type: 'save_project', id: projectId, path: cwd });
       } else {
-        send({ type: 'new_session', cwd, agent: targetAgent, mode: currentMode });
+        send({ type: 'new_session', cwd, agent: targetAgent, mode: getSavedModeForAgent(targetAgent) });
       }
     });
 
@@ -4888,7 +5133,7 @@
   let _onNativeSessions = null;
 
   function showImportSessionModal() {
-    if (currentAgent !== 'claude') return;
+    if (selectedAgent !== 'claude') return;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.id = 'import-session-overlay';
@@ -4974,7 +5219,7 @@
   }
 
   function showImportCodexSessionModal() {
-    if (currentAgent !== 'codex') return;
+    if (selectedAgent !== 'codex') return;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.id = 'import-codex-session-overlay';
@@ -5090,8 +5335,8 @@
   }
 
   // --- Init ---
-  setCurrentAgent(currentAgent);
-  renderSessionList();
+  setSelectedAgent(selectedAgent, { syncMode: true });
+  resetChatView(selectedAgent);
   connect();
   window.addEventListener('resize', updateCwdBadge);
 
