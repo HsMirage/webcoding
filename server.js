@@ -2427,7 +2427,7 @@ function handleCheckUpdate(ws) {
   const https = require('https');
   const options = {
     hostname: 'raw.githubusercontent.com',
-    path: '/ZgDaniel/cc-web/main/CHANGELOG.md',
+    path: '/HsMirage/webcoding/main/CHANGELOG.md',
     headers: { 'User-Agent': 'cc-web-update-check' },
     timeout: 10000,
   };
@@ -2450,7 +2450,7 @@ function handleCheckUpdate(ws) {
         localVersion,
         latestVersion: latest,
         hasUpdate,
-        releaseUrl: 'https://github.com/ZgDaniel/cc-web',
+        releaseUrl: 'https://github.com/HsMirage/webcoding',
       });
     });
   });

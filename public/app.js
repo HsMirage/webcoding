@@ -246,16 +246,13 @@
     return `
       <div class="insights-shell">
         <section class="insights-hero">
-          <div class="insights-kicker">Workspace Summary</div>
-          <h2>${currentMeta ? '当前任务已经进入持续工作态' : '先选项目，再进入持续工作态'}</h2>
-          <p>${currentMeta ? '右侧把会话、项目和关键操作集中在一个地方，避免在宽屏里反复来回找。' : '左边负责组织项目，中间负责推进对话，右边负责保留状态与操作入口。'}</p>
           <div class="insights-hero-stats">
             <div class="insights-hero-stat">
-              <span>当前代理</span>
+              <span>代理</span>
               <strong>${escapeHtml(AGENT_LABELS[currentAgent] || currentAgent)}</strong>
             </div>
             <div class="insights-hero-stat">
-              <span>会话总数</span>
+              <span>会话数</span>
               <strong>${visibleSessions.length}</strong>
             </div>
             <div class="insights-hero-stat">
@@ -285,41 +282,10 @@
         <section class="insights-card">
           <div class="insights-card-header">
             <div>
-              <div class="insights-card-kicker">项目上下文</div>
-              <h3>${escapeHtml(activeProject?.name || '未关联项目')}</h3>
-            </div>
-            <span class="insights-status-pill muted">${activeProject ? (activeProject.isVirtualCwd ? '临时目录' : '已保存') : '建议创建'}</span>
-          </div>
-          <div class="insights-path-block">${escapeHtml(activeProject?.path || currentCwd || '当前还没有可复用的项目路径')}</div>
-          <div class="insights-detail-list">
-            <div class="insights-detail-item"><span>项目会话</span><strong>${activeProject ? `${projectSessionCount} 个` : '暂无'}</strong></div>
-            <div class="insights-detail-item"><span>项目总数</span><strong>${projects.length}</strong></div>
-            <div class="insights-detail-item"><span>工作目录</span><strong>${escapeHtml(currentCwd ? '已设置' : '未设置')}</strong></div>
-          </div>
-        </section>
-
-        <section class="insights-card">
-          <div class="insights-card-header">
-            <div>
               <div class="insights-card-kicker">快捷操作</div>
-              <h3>常用入口</h3>
             </div>
           </div>
           ${actionButtons}
-        </section>
-
-        <section class="insights-card">
-          <div class="insights-card-header">
-            <div>
-              <div class="insights-card-kicker">输入建议</div>
-              <h3>更适合长期任务的提问方式</h3>
-            </div>
-          </div>
-          <ul class="insights-list">
-            <li>先说目标，再给限制条件和你要的最终产物。</li>
-            <li>同一项目里持续补充下一步，比频繁新开会话更省上下文。</li>
-            <li>涉及界面、报错或设计时，优先附图，定位会更快。</li>
-          </ul>
         </section>
       </div>
     `;
@@ -335,57 +301,45 @@
     const sessionCount = typeof getVisibleSessions === 'function' ? getVisibleSessions().length : 0;
     const projectCount = Array.isArray(projects) ? projects.length : 0;
     return `
-      <div class="welcome-msg">
-        <section class="welcome-panel welcome-panel-main">
-          <div class="welcome-panel-kicker">工作台总览</div>
-          <div class="welcome-icon">✦</div>
+      <div class=”welcome-msg”>
+        <div class=”welcome-header”>
+          <div class=”welcome-icon”>✦</div>
           <h3>${label} 工作区</h3>
-          <p>这里更适合持续推进一个项目任务，而不是一次性聊天。左边整理项目与会话，中间专注对话，右边固定显示当前上下文和关键操作。</p>
-          <div class="welcome-stats">
-            <div class="welcome-stat">
-              <span class="welcome-stat-label">会话数</span>
-              <strong>${sessionCount}</strong>
-              <small>当前 ${label}</small>
-            </div>
-            <div class="welcome-stat">
-              <span class="welcome-stat-label">项目数</span>
-              <strong>${projectCount}</strong>
-              <small>已加入工作区</small>
-            </div>
-            <div class="welcome-stat">
-              <span class="welcome-stat-label">模式</span>
-              <strong>${MODE_LABELS[currentMode] || currentMode}</strong>
-              <small>当前权限配置</small>
-            </div>
+        </div>
+        <div class=”welcome-stats”>
+          <div class=”welcome-stat”>
+            <strong>${sessionCount}</strong>
+            <span>会话数</span>
           </div>
+          <div class=”welcome-stat”>
+            <strong>${projectCount}</strong>
+            <span>项目数</span>
+          </div>
+          <div class=”welcome-stat”>
+            <strong>${MODE_LABELS[currentMode] || currentMode}</strong>
+            <span>模式</span>
+          </div>
+        </div>
+        <div class=”welcome-actions”>
           ${buildWorkspaceActionButtons([
             { action: 'new-session', label: '新建会话', primary: true },
             { action: 'import-session', label: '导入历史' },
             { action: 'switch-model', label: '切换模型' },
           ], { compact: true })}
-        </section>
-        <div class="welcome-panels">
-          <section class="welcome-panel">
-            <div class="welcome-panel-kicker">开始方式</div>
-            <ul class="welcome-list">
-              <li>先在左侧找到项目，或点击“新建/打开项目”。</li>
-              <li>再描述目标、限制条件和你希望的输出结果。</li>
-              <li>需要继续执行时，直接在底部输入区补充下一步即可。</li>
-            </ul>
-          </section>
-          <section class="welcome-panel">
-            <div class="welcome-panel-kicker">常用指令</div>
-            <ul class="welcome-list">
+        </div>
+        <div class=”welcome-panels”>
+          <section class=”welcome-panel”>
+            <div class=”welcome-panel-kicker”>常用指令</div>
+            <ul class=”welcome-list”>
               <li><code>/model</code> 查看或切换模型</li>
               <li><code>/mode</code> 切换权限模式</li>
               <li><code>/compact</code> 压缩上下文</li>
             </ul>
           </section>
-          <section class="welcome-panel">
-            <div class="welcome-panel-kicker">多模态协作</div>
-            <ul class="welcome-list">
+          <section class=”welcome-panel”>
+            <div class=”welcome-panel-kicker”>多模态协作</div>
+            <ul class=”welcome-list”>
               <li>支持随消息附带图片，适合 UI、截图和报错定位。</li>
-              <li>运行中状态、工作目录和会话信息会持续显示在顶部。</li>
             </ul>
           </section>
         </div>
@@ -848,6 +802,11 @@
     document.querySelectorAll('.mode-tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.mode === currentMode);
     });
+    // Sync mobile selects
+    const mas = document.getElementById('mobile-agent-select');
+    const mms = document.getElementById('mobile-mode-select');
+    if (mas) mas.value = currentAgent;
+    if (mms) mms.value = currentMode;
     if (importSessionBtn) {
       importSessionBtn.textContent = currentAgent === 'codex' ? '导入本地 Codex 会话' : '导入本地 Claude 会话';
     }
@@ -2546,8 +2505,6 @@
     body.className = 'project-group-body' + (isCollapsed ? ' collapsed' : '');
     if (!isCollapsed) {
       const sortedSessions = [...groupSessions].sort((a, b) => {
-        if (a.id === currentSessionId) return -1;
-        if (b.id === currentSessionId) return 1;
         return getLatestSessionTimestamp([b]) - getLatestSessionTimestamp([a]);
       });
       for (const s of sortedSessions) {
@@ -2598,6 +2555,7 @@
   }
 
   function renderSessionList() {
+    const savedScrollTop = sessionList.scrollTop;
     sessionList.innerHTML = '';
     const visibleSessions = getVisibleSessions();
     const hasProjects = projects.length > 0;
@@ -2687,6 +2645,7 @@
       renderProjectGroup(entry.project, entry.groupSessions, sessionList);
     }
     renderWorkspaceInsights();
+    sessionList.scrollTop = savedScrollTop;
   }
 
   function startEditSessionTitle(itemEl, session) {
@@ -3161,6 +3120,27 @@
     });
   });
 
+  // Mobile agent select
+  const mobileAgentSelect = document.getElementById('mobile-agent-select');
+  const mobileModeSelect = document.getElementById('mobile-mode-select');
+  if (mobileAgentSelect) {
+    mobileAgentSelect.addEventListener('change', () => {
+      const targetAgent = normalizeAgent(mobileAgentSelect.value);
+      if (targetAgent !== currentAgent) syncViewForAgent(targetAgent, { preserveCurrent: false, loadLast: true });
+    });
+  }
+  if (mobileModeSelect) {
+    mobileModeSelect.addEventListener('change', () => {
+      const mode = mobileModeSelect.value;
+      currentMode = mode;
+      modeSelect.value = mode;
+      localStorage.setItem(getAgentModeStorageKey(currentAgent), currentMode);
+      document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+      if (currentSessionId) send({ type: 'set_mode', sessionId: currentSessionId, mode: currentMode });
+      renderWorkspaceInsights();
+    });
+  }
+
   document.addEventListener('click', (e) => {
     const actionBtn = e.target instanceof Element ? e.target.closest('[data-workspace-action]') : null;
     if (!actionBtn) return;
@@ -3352,7 +3332,7 @@
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.ready.then((reg) => {
-        reg.showNotification('CC-Web', {
+        reg.showNotification('Webcoding', {
           body: `「${title}」任务完成`,
           tag: 'cc-web-task',
           renotify: true,

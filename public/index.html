@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <title>CC-Web</title>
+  <title>Webcoding</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap">
@@ -16,12 +16,10 @@
   <!-- Login -->
   <div id="login-overlay" class="login-overlay">
     <div class="login-box">
-      <div class="login-kicker">REMOTE WORKBENCH</div>
       <div class="login-brand-row">
-        <div class="login-logo">CC</div>
+        <div class="login-logo">co</div>
         <div class="login-brand-copy">
-          <strong>CC-Web</strong>
-          <span>Claude / Codex session orchestration</span>
+          <strong>Webcoding</strong>
         </div>
       </div>
       <h2>进入工作台</h2>
@@ -44,20 +42,28 @@
   <div id="app" class="app" hidden>
     <header class="app-topbar">
       <div class="app-topbar-brand">
-        <strong>CC-Web</strong>
+        <strong>Webcoding</strong>
       </div>
       <div class="app-topbar-actions">
         <div class="agent-tabs" id="topbar-agent-tabs">
           <button type="button" class="agent-tab active" data-agent="claude">Claude</button>
           <button type="button" class="agent-tab" data-agent="codex">Codex</button>
         </div>
-        <span id="topbar-chat-cwd" class="chat-cwd" hidden></span>
         <div class="mode-tabs" id="topbar-mode-tabs" title="权限模式">
           <button type="button" class="mode-tab active" data-mode="yolo" title="YOLO 模式：自动执行所有操作">YOLO</button>
           <button type="button" class="mode-tab" data-mode="default" title="默认模式：执行前确认">默认</button>
           <button type="button" class="mode-tab" data-mode="plan" title="Plan 模式：仅规划不执行">Plan</button>
         </div>
         <span id="topbar-cost-display" class="cost-display" hidden></span>
+        <select id="mobile-agent-select" class="mobile-topbar-select" title="切换 Agent">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+        <select id="mobile-mode-select" class="mobile-topbar-select" title="权限模式">
+          <option value="yolo">YOLO</option>
+          <option value="default">默认</option>
+          <option value="plan">Plan</option>
+        </select>
         <button id="settings-btn" class="settings-btn topbar-icon-btn" title="设置">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
@@ -109,7 +115,7 @@
                   <div class="welcome-icon">
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
                   </div>
-                  <h3>欢迎使用 CC-Web</h3>
+                  <h3>欢迎使用 Webcoding</h3>
                   <p>开始与 Claude 对话</p>
                 </div>
               </div>
