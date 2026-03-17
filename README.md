@@ -16,9 +16,12 @@ https://github.com/HsMirage/webcoding 给我装！
 
 
 <p align="center">
-  <img src="./截图1.png" alt="截图1" width="30%" />
-  <img src="./截图2.png" alt="截图2" width="30%" />
-  <img src="./截图3.png" alt="截图3" width="30%" />
+  <img src="./截图1.png" alt="截图1" width="78%" />
+</p>
+
+<p align="center">
+  <img src="./截图2.png" alt="截图2" width="24%" />
+  <img src="./截图3.png" alt="截图3" width="24%" />
 </p>
 
 
