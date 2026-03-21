@@ -38,6 +38,13 @@ https://github.com/HsMirage/webcoding 给我装！
 - **多渠道通知** — 支持 PushPlus / Telegram / Server酱 / 飞书机器人 / QQ（Qmsg），Web UI 内可视化配置
 - **进程持久化** — detached 进程 + PID 文件，服务重启不丢失运行中的任务
 - **多 API 切换** — 可配置多个 API 方案，UI 中一键切换，即时生效
+- **本地 API 桥接** — 内置 OpenAI 兼容端点，将本地 Claude CLI 转为可供其他工具调用的 API，支持流式响应（`/v1/responses`）
+- **图片附件** — 每条消息最多 4 张图片（PNG/JPG/WebP/GIF，单张 ≤ 10 MB），7 天后自动清理
+- **斜杠命令** — 内置 `/clear`、`/model`、`/mode`、`/cost`、`/compact`、`/help` 快捷命令，客户端即时处理
+- **工作目录管理** — 顶栏实时显示当前会话 cwd，新建会话时可浏览目录选择起始路径
+- **HTML 代码预览** — 消息中的 HTML 代码块可在沙箱 iframe 中实时预览
+- **plan 模式打断** — plan 权限模式运行期间仍可发送新消息打断当前生成
+- **移动端适配** — 响应式布局 + PWA meta，手机访问时顶栏独立显示 Agent / 权限模式选择器
 - **密码认证** — 自动生成初始密码、首次登录强制改密、Web UI 修改密码
 - **隔离式回归脚本** — `npm run regression` 在临时目录中使用 mock Claude / Codex CLI 校验主路径，不污染真实数据
 
