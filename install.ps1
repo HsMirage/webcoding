@@ -170,7 +170,11 @@ switch ($choice) {
         $srv = Join-Path $INSTALL_DIR 'server.js'
         if (-not (Test-Path $srv)) { Write-Err '未找到 server.js，请先安装（选项 1）。' }
         Write-Info '启动 Webcoding...'
-        node $srv
+        $p = Start-Process -FilePath 'node' -ArgumentList $srv -WindowStyle Hidden -PassThru
+        $_port = if ($env:PORT) { $env:PORT } else { '8001' }
+        Write-Success "Webcoding 已在后台启动 (PID: $($p.Id))，访问 http://localhost:$_port"
+        Write-Info "停止服务: Stop-Process -Id $($p.Id)"
+        Pause-IfNeeded
         exit 0
     }
     '3' {

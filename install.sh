@@ -199,7 +199,11 @@ else
         error "未找到 server.js，请先安装（选项 1）。"
       fi
       info "启动 Webcoding..."
-      exec node "$INSTALL_DIR/server.js"
+      mkdir -p "$INSTALL_DIR/logs"
+      nohup node "$INSTALL_DIR/server.js" >> "$INSTALL_DIR/logs/server.log" 2>&1 &
+      success "Webcoding 已在后台启动 (PID: $!)，访问 http://localhost:${PORT:-8001}"
+      info "停止服务: kill $!"
+      exit 0
       ;;
     3)
       if [ ! -d "$INSTALL_DIR/.git" ]; then
