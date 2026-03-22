@@ -173,7 +173,7 @@ switch ($choice) {
         $logDir = Join-Path $INSTALL_DIR 'logs'
         if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
         $logFile = Join-Path $logDir 'server.log'
-        $p = Start-Process -FilePath 'node' -ArgumentList $srv -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError $logFile -PassThru
+        $p = Start-Process -FilePath 'node' -ArgumentList $srv -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError "$logDir\server.err.log" -PassThru
         $_port = if ($env:PORT) { $env:PORT } else { '8001' }
         Write-Success "Webcoding 已在后台启动 (PID: $($p.Id))，访问 http://localhost:$_port"
         Write-Info "停止服务: Stop-Process -Id $($p.Id)"
@@ -283,7 +283,7 @@ if ($startNow -notmatch '^[Nn]') {
         $logDir = Join-Path $INSTALL_DIR 'logs'
         if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
         $logFile = Join-Path $logDir 'server.log'
-        $p = Start-Process -FilePath 'node' -ArgumentList "$INSTALL_DIR\server.js" -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError $logFile -PassThru
+        $p = Start-Process -FilePath 'node' -ArgumentList "$INSTALL_DIR\server.js" -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError "$logDir\server.err.log" -PassThru
         Write-Success "Webcoding 已在后台启动 (PID: $($p.Id))，访问 http://localhost:$_port"
         Write-Info "停止服务: Stop-Process -Id $($p.Id)"
         # 等待服务初始化，提取初始密码
