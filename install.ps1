@@ -7,12 +7,32 @@
 $ErrorActionPreference = 'Stop'
 
 $REPO        = 'https://github.com/HsMirage/webcoding.git'
+$RAW_BASE    = 'https://raw.githubusercontent.com/HsMirage/webcoding/main'
 $INSTALL_DIR = if ($env:WEBCODING_DIR) { $env:WEBCODING_DIR } else { Join-Path $HOME 'webcoding' }
 
 function Write-Info    { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Cyan   }
 function Write-Success { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Green  }
 function Write-Warn    { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Yellow }
 function Write-Err     { param($msg) Write-Host "[Webcoding] ERROR: $msg" -ForegroundColor Red; exit 1 }
+
+# ── 工具函数 ──────────────────────────────────────────────────
+function Get-PackageVersion {
+    param([string]$JsonPath)
+    try {
+        $pkg = Get-Content $JsonPath -Raw | ConvertFrom-Json
+        return $pkg.version
+    } catch {
+        return ''
+    }
+}
+
+function Compare-VersionLt {
+    param([string]$a, [string]$b)
+    if ($a -eq $b) { return $false }
+    $va = [System.Version]"$a.0"
+    $vb = [System.Version]"$b.0"
+    return $va -lt $vb
+}
 
 # ── 检查依赖 ──────────────────────────────────────────────────
 Write-Info '检查依赖环境...'
@@ -45,15 +65,82 @@ if ($hasClaude -and $hasCodex) {
 }
 
 # ── 安装 / 更新 ────────────────────────────────────────────────
+$isUpdate = $false
+
 if (Test-Path (Join-Path $INSTALL_DIR '.git')) {
-    Write-Warn "检测到已有安装目录: $INSTALL_DIR"
-    $yn = Read-Host '是否拉取最新代码进行更新? (y/N)'
-    if ($yn -match '^[Yy]') {
-        Write-Info '拉取最新代码...'
-        git -C $INSTALL_DIR pull --ff-only
-    } else {
-        Write-Info '跳过更新，使用现有安装目录继续。'
+    $isUpdate = $true
+
+    # 读取本地版本
+    $localVer = ''
+    $localPkg = Join-Path $INSTALL_DIR 'package.json'
+    if (Test-Path $localPkg) {
+        $localVer = Get-PackageVersion $localPkg
     }
+
+    # 拉取远端版本
+    $remoteVer = ''
+    try {
+        $remoteJson = (Invoke-WebRequest -Uri "$RAW_BASE/package.json" -UseBasicParsing).Content
+        $remoteVer = ($remoteJson | ConvertFrom-Json).version
+    } catch {
+        Write-Warn '无法获取远端版本信息，跳过版本对比。'
+    }
+
+    Write-Host ''
+    Write-Host "已检测到现有安装  目录: $INSTALL_DIR" -ForegroundColor White
+    if ($localVer)  { Write-Host "  本地版本 : v$localVer"  -ForegroundColor Cyan }
+    if ($remoteVer) { Write-Host "  远端版本 : v$remoteVer" -ForegroundColor Cyan }
+    Write-Host ''
+
+    # 判断是否有新版本
+    $needsUpdate = $false
+    if ($localVer -and $remoteVer) {
+        if (Compare-VersionLt $localVer $remoteVer) {
+            $needsUpdate = $true
+            Write-Host "发现新版本 v$remoteVer，当前为 v$localVer" -ForegroundColor Green
+        } else {
+            Write-Success "已是最新版本 (v$localVer)"
+        }
+    }
+
+    # 交互式菜单
+    Write-Host ''
+    Write-Host '请选择操作:' -ForegroundColor White
+    if ($needsUpdate) {
+        Write-Host "  1) 更新到最新版本 v$remoteVer  [推荐]" -ForegroundColor White
+    } else {
+        Write-Host '  1) 强制重新拉取最新代码' -ForegroundColor White
+    }
+    Write-Host '  2) 跳过更新，仅重新安装依赖' -ForegroundColor White
+    Write-Host '  3) 跳过更新，直接启动'       -ForegroundColor White
+    Write-Host '  4) 退出'                      -ForegroundColor White
+    Write-Host ''
+    $choice = Read-Host '请输入选项 [1-4]'
+    if (-not $choice) { $choice = '1' }
+
+    switch ($choice) {
+        '1' {
+            Write-Info '拉取最新代码...'
+            git -C $INSTALL_DIR fetch --depth=1 origin main
+            git -C $INSTALL_DIR reset --hard origin/main
+        }
+        '2' {
+            Write-Info '跳过代码更新，重新安装依赖...'
+        }
+        '3' {
+            Write-Info '跳过更新，直接启动...'
+            node "$INSTALL_DIR\server.js"
+            exit 0
+        }
+        '4' {
+            Write-Info '已退出。'
+            exit 0
+        }
+        default {
+            Write-Warn '无效选项，跳过更新。'
+        }
+    }
+
 } elseif (Test-Path $INSTALL_DIR) {
     Write-Err "目录已存在但不是 git 仓库: $INSTALL_DIR`n请手动删除后重试: Remove-Item -Recurse -Force '$INSTALL_DIR'"
 } else {
@@ -67,7 +154,7 @@ Write-Info '安装 Node.js 依赖...'
 npm install --omit=dev
 
 # ── 写入快捷启动脚本 ───────────────────────────────────────────
-$launcherDir = $INSTALL_DIR
+$launcherDir  = $INSTALL_DIR
 $launcherPath = Join-Path $launcherDir 'webcoding.cmd'
 
 @"
@@ -85,17 +172,22 @@ if ($userPath -notlike "*$INSTALL_DIR*") {
 # ── 完成提示 ───────────────────────────────────────────────────
 Write-Host ''
 Write-Success '================================================'
-Write-Success ' Webcoding 安装完成！'
+if ($isUpdate) {
+    Write-Success ' Webcoding 更新完成！'
+} else {
+    Write-Success ' Webcoding 安装完成！'
+}
 Write-Success '================================================'
 Write-Host ''
-Write-Host "  启动命令 : webcoding"                      -ForegroundColor White
+Write-Host '  启动命令 : webcoding'                       -ForegroundColor White
 Write-Host "  或双击   : $INSTALL_DIR\webcoding.cmd"      -ForegroundColor White
 Write-Host "  或直接   : node $INSTALL_DIR\server.js"     -ForegroundColor White
-Write-Host "  访问地址 : http://localhost:8001"            -ForegroundColor White
+Write-Host '  访问地址 : http://localhost:8001'            -ForegroundColor White
 Write-Host ''
 Write-Info '首次启动时会自动生成登录密码并打印在控制台。'
 Write-Host ''
 
+# ── 询问是否立即启动 ───────────────────────────────────────────
 $startNow = Read-Host '现在立即启动 Webcoding? (Y/n)'
 if ($startNow -notmatch '^[Nn]') {
     node "$INSTALL_DIR\server.js"

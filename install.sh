@@ -8,6 +8,7 @@
 set -e
 
 REPO="https://github.com/HsMirage/webcoding.git"
+RAW_BASE="https://raw.githubusercontent.com/HsMirage/webcoding/main"
 INSTALL_DIR="${1:-$HOME/webcoding}"
 
 # ── 颜色 ──────────────────────────────────────────────────────
@@ -15,11 +16,51 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 info()    { printf "%b[Webcoding]%b %s\n" "$CYAN" "$NC" "$*"; }
 success() { printf "%b[Webcoding]%b %s\n" "$GREEN" "$NC" "$*"; }
 warn()    { printf "%b[Webcoding]%b %s\n" "$YELLOW" "$NC" "$*"; }
 error()   { printf "%b[Webcoding] ERROR:%b %s\n" "$RED" "$NC" "$*" >&2; exit 1; }
+
+# ── 工具函数 ──────────────────────────────────────────────────
+# 从 package.json 内容中提取版本号
+extract_version() {
+  # 用 node 或 grep+sed 提取，兼容无 jq 环境
+  if command -v node >/dev/null 2>&1; then
+    node -e "var fs=require('fs');try{var p=JSON.parse(fs.readFileSync('$1','utf8'));process.stdout.write(p.version||'')}catch(e){}"
+  else
+    grep '"version"' "$1" | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+  fi
+}
+
+# 比较版本号，若 $1 < $2 返回 0（有更新）
+version_lt() {
+  [ "$1" = "$2" ] && return 1
+  local IFS=.
+  # shellcheck disable=SC2206
+  local a=($1) b=($2)
+  for i in 0 1 2; do
+    local ai=${a[$i]:-0} bi=${b[$i]:-0}
+    [ "$ai" -lt "$bi" ] && return 0
+    [ "$ai" -gt "$bi" ] && return 1
+  done
+  return 1
+}
+
+# 交互式 yes/no，$1=提示语 $2=默认(y/n)
+ask_yn() {
+  local prompt="$1" default="${2:-n}"
+  local yn
+  if [ "$default" = "y" ]; then
+    printf "%b%s%b (Y/n) " "$BOLD" "$prompt" "$NC"
+  else
+    printf "%b%s%b (y/N) " "$BOLD" "$prompt" "$NC"
+  fi
+  read -r yn
+  yn="${yn:-$default}"
+  case $yn in [Yy]*) return 0;; *) return 1;; esac
+}
 
 # ── 检查依赖 ──────────────────────────────────────────────────
 info "检查依赖环境..."
@@ -54,24 +95,97 @@ else
 fi
 
 # ── 安装 / 更新 ────────────────────────────────────────────────
+IS_UPDATE=false
+
 if [ -d "$INSTALL_DIR/.git" ]; then
-  warn "检测到已有安装目录: $INSTALL_DIR"
-  if [ -t 0 ]; then
-    printf "是否拉取最新代码进行更新? (y/N) "
-    read -r yn
-  else
-    yn="n"
-    warn "通过管道运行，跳过交互，默认不更新。如需更新请直接运行脚本文件。"
+  IS_UPDATE=true
+
+  # 读取本地版本
+  LOCAL_VER=""
+  if [ -f "$INSTALL_DIR/package.json" ]; then
+    LOCAL_VER=$(extract_version "$INSTALL_DIR/package.json")
   fi
-  case $yn in
-    [Yy]*)
-      info "拉取最新代码..."
-      git -C "$INSTALL_DIR" pull --ff-only
-      ;;
-    *)
-      info "跳过更新，使用现有安装目录继续。"
-      ;;
-  esac
+
+  # 拉取远端版本（不依赖 jq，直接 curl raw package.json）
+  REMOTE_VER=""
+  if command -v curl >/dev/null 2>&1; then
+    REMOTE_VER=$(curl -fsSL "$RAW_BASE/package.json" 2>/dev/null \
+      | grep '"version"' | head -1 \
+      | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+  elif command -v wget >/dev/null 2>&1; then
+    REMOTE_VER=$(wget -qO- "$RAW_BASE/package.json" 2>/dev/null \
+      | grep '"version"' | head -1 \
+      | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+  fi
+
+  echo ""
+  printf "%b已检测到现有安装%b  目录: %s\n" "$BOLD" "$NC" "$INSTALL_DIR"
+  if [ -n "$LOCAL_VER" ]; then
+    printf "  本地版本 : %bv%s%b\n" "$CYAN" "$LOCAL_VER" "$NC"
+  fi
+  if [ -n "$REMOTE_VER" ]; then
+    printf "  远端版本 : %bv%s%b\n" "$CYAN" "$REMOTE_VER" "$NC"
+  fi
+  echo ""
+
+  # 判断是否有新版本
+  NEEDS_UPDATE=false
+  if [ -n "$LOCAL_VER" ] && [ -n "$REMOTE_VER" ]; then
+    if version_lt "$LOCAL_VER" "$REMOTE_VER"; then
+      NEEDS_UPDATE=true
+      printf "%b发现新版本 v%s，当前为 v%s%b\n" "$GREEN" "$REMOTE_VER" "$LOCAL_VER" "$NC"
+    else
+      success "已是最新版本 (v$LOCAL_VER)"
+    fi
+  fi
+
+  # 交互决策
+  if [ -t 0 ]; then
+    echo ""
+    printf "%b请选择操作:%b\n" "$BOLD" "$NC"
+    if [ "$NEEDS_UPDATE" = true ]; then
+      echo "  1) 更新到最新版本 v$REMOTE_VER  [推荐]"
+    else
+      echo "  1) 强制重新拉取最新代码"
+    fi
+    echo "  2) 跳过更新，仅重新安装依赖"
+    echo "  3) 跳过更新，直接启动"
+    echo "  4) 退出"
+    echo ""
+    printf "%b请输入选项 [1-4]:%b " "$BOLD" "$NC"
+    read -r choice
+    case "${choice:-1}" in
+      1)
+        info "拉取最新代码..."
+        git -C "$INSTALL_DIR" fetch --depth=1 origin main
+        git -C "$INSTALL_DIR" reset --hard origin/main
+        ;;
+      2)
+        info "跳过代码更新，重新安装依赖..."
+        ;;
+      3)
+        info "跳过更新，直接启动..."
+        exec node "$INSTALL_DIR/server.js"
+        ;;
+      4)
+        info "已退出。"
+        exit 0
+        ;;
+      *)
+        warn "无效选项，跳过更新。"
+        ;;
+    esac
+  else
+    # 管道模式：有新版本则自动更新，否则跳过
+    if [ "$NEEDS_UPDATE" = true ]; then
+      warn "管道模式检测到新版本，自动更新..."
+      git -C "$INSTALL_DIR" fetch --depth=1 origin main
+      git -C "$INSTALL_DIR" reset --hard origin/main
+    else
+      warn "管道模式，版本已是最新，跳过更新。"
+    fi
+  fi
+
 elif [ -d "$INSTALL_DIR" ]; then
   error "目录已存在但不是 git 仓库: $INSTALL_DIR — 请手动删除后重试: rm -rf $INSTALL_DIR"
 else
@@ -118,7 +232,11 @@ esac
 # ── 完成提示 ───────────────────────────────────────────────────
 echo ""
 success "================================================"
-success " Webcoding 安装完成！"
+if [ "$IS_UPDATE" = true ]; then
+  success " Webcoding 更新完成！"
+else
+  success " Webcoding 安装完成！"
+fi
 success "================================================"
 echo ""
 echo "  启动命令 : webcoding"
@@ -128,14 +246,13 @@ echo ""
 info "首次启动时会自动生成登录密码并打印在控制台。"
 echo ""
 
-# 询问是否立即启动（管道模式下跳过交互）
+# ── 询问是否立即启动 ───────────────────────────────────────────
 if [ -t 0 ]; then
-  printf "现在立即启动 Webcoding? (Y/n) "
-  read -r start_now
-  case $start_now in
-    [Nn]*) info "安装完成，稍后运行 'webcoding' 启动。" ;;
-    *)     exec node "$INSTALL_DIR/server.js" ;;
-  esac
+  if ask_yn "现在立即启动 Webcoding?" "y"; then
+    exec node "$INSTALL_DIR/server.js"
+  else
+    info "安装完成，稍后运行 'webcoding' 启动。"
+  fi
 else
   info "通过管道运行，跳过交互。稍后运行 'webcoding' 启动。"
 fi
