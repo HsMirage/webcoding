@@ -1916,6 +1916,12 @@
     notify_test_result: (msg) => {
       emitWsEvent('notify_test_result', msg);
     },
+    tunnel_status: (msg) => {
+      emitWsEvent('tunnel_status', msg);
+    },
+    tunnel_install_progress: (msg) => {
+      emitWsEvent('tunnel_install_progress', msg);
+    },
     model_config: handleModelConfigMessage,
     codex_config: handleCodexConfigMessage,
     fetch_models_result: (msg) => {
@@ -4352,6 +4358,23 @@
         <button class="btn-test" id="check-update-btn" style="padding:6px 16px">检查更新</button>
       </div>
       <div class="settings-status" id="update-status" style="margin-top:8px"></div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-section-title">远程访问 (Cloudflare Tunnel)</div>
+      <div id="tunnel-panel-content">
+        <div class="settings-status" id="tunnel-install-status" style="margin-bottom:8px"></div>
+        <div class="settings-actions" style="margin-top:0;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn-save" id="tunnel-install-btn" style="padding:6px 16px;display:none">一键安装 cloudflared</button>
+          <button class="btn-save" id="tunnel-start-btn" style="padding:6px 16px;display:none">开启 Tunnel</button>
+          <button class="btn-test" id="tunnel-stop-btn" style="padding:6px 16px;display:none">关闭 Tunnel</button>
+        </div>
+        <div class="settings-status" id="tunnel-status" style="margin-top:8px"></div>
+        <div id="tunnel-qr-area" style="margin-top:12px;display:none;text-align:center">
+          <div id="tunnel-qr-canvas" style="display:inline-block;padding:10px;background:#fff;border-radius:8px"></div>
+          <div style="font-size:11px;color:var(--text-secondary,#888);margin-top:6px">扫码访问</div>
+        </div>
+      </div>
     `;
   }
 
@@ -4468,6 +4491,80 @@
     const pwOpenModalBtn = panel.querySelector('#pw-open-modal-btn');
     const checkUpdateBtn = panel.querySelector('#check-update-btn');
     const updateStatusEl = panel.querySelector('#update-status');
+
+    const tunnelInstallBtn = panel.querySelector('#tunnel-install-btn');
+    const tunnelStartBtn = panel.querySelector('#tunnel-start-btn');
+    const tunnelStopBtn = panel.querySelector('#tunnel-stop-btn');
+    const tunnelStatusEl = panel.querySelector('#tunnel-status');
+    const tunnelInstallStatusEl = panel.querySelector('#tunnel-install-status');
+    const tunnelQrArea = panel.querySelector('#tunnel-qr-area');
+    const tunnelQrCanvas = panel.querySelector('#tunnel-qr-canvas');
+
+    function drawQrCode(url) {
+      tunnelQrCanvas.innerHTML = '';
+      try {
+        if (typeof QRCode === 'undefined') throw new Error('QRCode not loaded');
+        new QRCode(tunnelQrCanvas, {
+          text: url,
+          width: 160,
+          height: 160,
+          colorDark: '#000000',
+          colorLight: '#ffffff',
+          correctLevel: QRCode.CorrectLevel.M,
+        });
+        tunnelQrArea.style.display = 'block';
+      } catch (e) {
+        console.error('[tunnel] QR generation failed:', e);
+        tunnelQrArea.style.display = 'none';
+      }
+    }
+
+    function applyTunnelStatus({ running, url, installed }) {
+      tunnelInstallBtn.style.display = (!installed) ? '' : 'none';
+      tunnelStartBtn.style.display = (installed && !running) ? '' : 'none';
+      tunnelStopBtn.style.display = (installed && running) ? '' : 'none';
+
+      if (!installed) {
+        tunnelInstallStatusEl.textContent = 'cloudflared 未安装，点击下方按钮自动安装（约 30-50 MB）';
+        tunnelInstallStatusEl.className = 'settings-status';
+        tunnelStatusEl.textContent = '';
+        tunnelQrArea.style.display = 'none';
+      } else if (running) {
+        tunnelInstallStatusEl.textContent = '';
+        if (url) {
+          tunnelStatusEl.innerHTML = '<div style="margin-top:4px"><div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">公网地址</div><div style="display:flex;align-items:stretch;border:2px solid var(--line)"><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" style="flex:1;min-width:0;font-size:11px;word-break:break-all;padding:6px 8px;background:var(--bg-secondary);color:var(--text-primary);font-family:var(--font-mono)">' + escapeHtml(url) + '</a><button id="tunnel-copy-btn">复制</button></div></div>';
+          tunnelStatusEl.className = 'settings-status';
+          const copyBtn = tunnelStatusEl.querySelector('#tunnel-copy-btn');
+          if (copyBtn) copyBtn.addEventListener('click', () => { navigator.clipboard?.writeText(url); copyBtn.textContent = '已复制'; setTimeout(() => { copyBtn.textContent = '复制'; }, 2000); });
+          drawQrCode(url);
+        } else {
+          tunnelStatusEl.textContent = '正在获取公网 URL...';
+          tunnelStatusEl.className = 'settings-status';
+          tunnelQrArea.style.display = 'none';
+        }
+      } else {
+        tunnelInstallStatusEl.textContent = '';
+        tunnelStatusEl.textContent = '';
+        tunnelQrArea.style.display = 'none';
+      }
+    }
+
+    tunnelInstallBtn.addEventListener('click', () => {
+      tunnelInstallBtn.disabled = true;
+      tunnelInstallStatusEl.textContent = '正在下载安装，请稍候...';
+      tunnelInstallStatusEl.className = 'settings-status';
+      send({ type: 'install_cloudflared' });
+    });
+    tunnelStartBtn.addEventListener('click', () => {
+      tunnelStartBtn.disabled = true;
+      tunnelStatusEl.textContent = '正在启动，请稍候（首次可能需要 30 秒）...';
+      tunnelStatusEl.className = 'settings-status';
+      send({ type: 'tunnel_start' });
+    });
+    tunnelStopBtn.addEventListener('click', () => {
+      tunnelStopBtn.disabled = true;
+      send({ type: 'tunnel_stop' });
+    });
 
     let currentNotifyConfig = null;
     let currentCodexConfig = null;
@@ -4907,6 +5004,25 @@
       renderTemplateArea();
     });
 
+    registerSettingsPanelHandler('tunnel_status', (msg) => {
+      applyTunnelStatus(msg);
+    });
+
+    registerSettingsPanelHandler('tunnel_install_progress', (msg) => {
+      if (msg.error) {
+        tunnelInstallStatusEl.textContent = '安装失败：' + msg.error;
+        tunnelInstallStatusEl.className = 'settings-status error';
+        tunnelInstallBtn.disabled = false;
+      } else if (msg.done) {
+        tunnelInstallStatusEl.textContent = msg.message || '安装完成！';
+        tunnelInstallStatusEl.className = 'settings-status success';
+        tunnelInstallBtn.disabled = false;
+      } else {
+        tunnelInstallStatusEl.textContent = msg.message || '安装中...';
+        tunnelInstallStatusEl.className = 'settings-status';
+      }
+    });
+
     closeBtn.addEventListener('click', hideSettingsPanel);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) hideSettingsPanel(); });
     window._ccOnUpdateInfo = (info) => { if (_onUpdateInfo) _onUpdateInfo(info); };
@@ -4919,6 +5035,7 @@
     send({ type: 'get_notify_config' });
     send({ type: 'get_model_config' });
     send({ type: 'get_codex_config' });
+    send({ type: 'get_tunnel_status' });
   }
 
   function buildNotifyFieldsHtml(config, provider) {
@@ -5931,6 +6048,7 @@
   }
 
   // --- Helpers ---
+
   function escapeHtml(str) {
     if (!str) return '';
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

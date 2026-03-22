@@ -46,6 +46,7 @@ https://github.com/HsMirage/webcoding 给我装！
 - **plan 模式打断** — plan 权限模式运行期间仍可发送新消息打断当前生成
 - **移动端适配** — 响应式布局 + PWA meta，手机访问时顶栏独立显示 Agent / 权限模式选择器
 - **密码认证** — 自动生成初始密码、首次登录强制改密、Web UI 修改密码
+- **远程访问** — 内置 Cloudflare Tunnel 集成，设置面板一键安装 `cloudflared` 并开启公网 HTTPS 访问，自动显示二维码，无需域名和账号
 - **隔离式回归脚本** — `npm run regression` 在临时目录中使用 mock Claude / Codex CLI 校验主路径，不污染真实数据
 
 ## 前提条件
@@ -201,7 +202,31 @@ tail -f logs/process.log | jq .
 
 ## 生产部署
 
-### systemd 服务
+### 远程访问
+
+启动后终端会打印所有可用地址：
+
+```
+webcoding server listening on 0.0.0.0:8001
+  Local:   http://localhost:8001
+  Network: http://192.168.1.42:8001
+```
+
+**Cloudflare Tunnel（推荐，无需域名）**
+
+设置面板 → 「远程访问 (Cloudflare Tunnel)」：
+
+1. 点「一键安装 cloudflared」— 自动下载约 40 MB 二进制，安装到 `config/cloudflared`
+2. 点「开启 Tunnel」— 约 30 秒后出现公网 HTTPS 地址和二维码
+3. 手机扫码或复制链接即可远程访问
+
+> Tunnel 使用 Cloudflare 的 [Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) 服务，免费、无需账号，每次启动获得一个随机域名。
+
+**Tailscale（跨设备组网）**
+
+电脑和手机各安装 [Tailscale](https://tailscale.com/)，登录同一账号后直接用 Tailscale IP 访问，免费够用。
+
+
 
 创建 `/etc/systemd/system/webcoding.service`：
 
@@ -300,8 +325,9 @@ node server.js
 - 直接访问 `http://电脑局域网IP:8001`
 
 **远程访问**（外出时用手机控制家里电脑）：
-- 推荐使用 [Tailscale](https://tailscale.com/) — 电脑和手机各安装一个，自动组网，免费够用
-- 或使用 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)（需域名）
+- **内置 Cloudflare Tunnel**（推荐）— 设置面板 → 「远程访问」→ 一键安装 `cloudflared` → 开启 Tunnel，获得公网 HTTPS 地址和二维码，无需域名、无需账号
+- 或使用 [Tailscale](https://tailscale.com/) — 电脑和手机各安装一个，自动组网，免费够用
+- 或使用 [Nginx 反向代理](#nginx-反向代理)（需域名 + SSL）
 
 
 ## 更新记录

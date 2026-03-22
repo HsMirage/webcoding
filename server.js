@@ -1,6 +1,7 @@
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
@@ -43,6 +44,9 @@ const CODEX_CONFIG_PATH = path.join(CONFIG_DIR, 'codex.json');
 const PROJECTS_CONFIG_PATH = path.join(CONFIG_DIR, 'projects.json');
 const BRIDGE_RUNTIME_PATH = path.join(CONFIG_DIR, 'bridge-runtime.json');
 const BRIDGE_STATE_PATH = path.join(CONFIG_DIR, 'bridge-state.json');
+const TUNNEL_STATE_PATH = path.join(CONFIG_DIR, 'tunnel-state.json');
+const TUNNEL_SCRIPT_PATH = path.join(__dirname, 'lib', 'cf-tunnel.js');
+const TUNNEL_START_TIMEOUT_MS = 30000;
 const CLAUDE_SETTINGS_BACKUP_PATH = path.join(CONFIG_DIR, 'claude-settings-backup.json');
 const BRIDGE_SCRIPT_PATH = path.join(__dirname, 'lib', 'local-api-bridge.js');
 const PUBLIC_ROOT = path.resolve(PUBLIC_DIR);
@@ -2945,6 +2949,242 @@ function readBridgeState() {
   }
 }
 
+function readTunnelState() {
+  try {
+    if (!fs.existsSync(TUNNEL_STATE_PATH)) return null;
+    return JSON.parse(fs.readFileSync(TUNNEL_STATE_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// Returns the path where we store the downloaded cloudflared binary
+function getCloudflaredLocalPath() {
+  const ext = IS_WIN ? '.exe' : '';
+  return path.join(CONFIG_DIR, `cloudflared${ext}`);
+}
+
+// Check if cloudflared is available (local copy or system PATH)
+function getCloudflaredBin() {
+  const local = getCloudflaredLocalPath();
+  if (fs.existsSync(local)) return local;
+  const fromEnv = process.env.CLOUDFLARED_PATH;
+  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+  // Check system PATH via a quick execFileSync
+  try {
+    const { execFileSync } = require('child_process');
+    execFileSync(IS_WIN ? 'where' : 'which', ['cloudflared'], { stdio: 'ignore' });
+    return 'cloudflared';
+  } catch {
+    return null;
+  }
+}
+
+function getTunnelStatus() {
+  const bin = getCloudflaredBin();
+  const installed = !!bin;
+  const state = readTunnelState();
+  if (!state || !state.pid || !isProcessRunning(state.pid)) {
+    return { running: false, url: null, installed };
+  }
+  return { running: true, url: state.url || null, installed };
+}
+
+// Download cloudflared binary from GitHub releases
+function installCloudflared(ws) {
+  const platform = process.platform; // darwin / linux / win32
+  const arch = process.arch;         // x64 / arm64 / arm
+
+  let assetName;
+  if (platform === 'darwin') {
+    assetName = arch === 'arm64' ? 'cloudflared-darwin-arm64.tgz' : 'cloudflared-darwin-amd64.tgz';
+  } else if (platform === 'linux') {
+    if (arch === 'arm64') assetName = 'cloudflared-linux-arm64';
+    else if (arch === 'arm') assetName = 'cloudflared-linux-arm';
+    else assetName = 'cloudflared-linux-amd64';
+  } else if (platform === 'win32') {
+    assetName = arch === 'arm64' ? 'cloudflared-windows-arm64.exe' : 'cloudflared-windows-amd64.exe';
+  } else {
+    wsSend(ws, { type: 'tunnel_install_progress', done: true, error: `不支持的平台: ${platform}` });
+    return;
+  }
+
+  function sendProgress(msg) {
+    wsSend(ws, { type: 'tunnel_install_progress', message: msg });
+  }
+
+  sendProgress('正在查询最新版本...');
+
+  const apiReq = https.request({
+    hostname: 'api.github.com',
+    path: '/repos/cloudflare/cloudflared/releases/latest',
+    headers: { 'User-Agent': 'webcoding-cloudflared-installer' },
+    timeout: 10000,
+  }, (res) => {
+    let body = '';
+    res.on('data', (c) => { body += c; });
+    res.on('end', () => {
+      let releaseData;
+      try { releaseData = JSON.parse(body); } catch {
+        wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '解析 GitHub API 响应失败' });
+        return;
+      }
+      const asset = (releaseData.assets || []).find((a) => a.name === assetName);
+      if (!asset) {
+        wsSend(ws, { type: 'tunnel_install_progress', done: true, error: `未找到资产: ${assetName}` });
+        return;
+      }
+      sendProgress(`下载 ${assetName} (${Math.round(asset.size / 1024 / 1024 * 10) / 10} MB)...`);
+      downloadCloudflaredAsset(ws, asset.browser_download_url, assetName);
+    });
+  });
+  apiReq.on('error', (e) => {
+    wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '网络错误: ' + e.message });
+  });
+  apiReq.on('timeout', () => { apiReq.destroy(); wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '请求超时' }); });
+  apiReq.end();
+}
+
+function downloadCloudflaredAsset(ws, downloadUrl, assetName) {
+  const destPath = getCloudflaredLocalPath();
+  const tmpPath = destPath + '.tmp';
+  const isTgz = assetName.endsWith('.tgz');
+
+  function doDownload(url, redirects) {
+    if (redirects > 5) {
+      wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '重定向过多' });
+      return;
+    }
+    const parsedUrl = new URL(url);
+    const mod = parsedUrl.protocol === 'https:' ? https : http;
+    mod.get(url, { headers: { 'User-Agent': 'webcoding-cloudflared-installer' } }, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
+        res.resume();
+        doDownload(res.headers.location, redirects + 1);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        wsSend(ws, { type: 'tunnel_install_progress', done: true, error: `下载失败 HTTP ${res.statusCode}` });
+        return;
+      }
+      const total = parseInt(res.headers['content-length'] || '0', 10);
+      let received = 0;
+      let lastPct = 0;
+      const fileStream = fs.createWriteStream(tmpPath);
+      res.on('data', (chunk) => {
+        received += chunk.length;
+        if (total > 0) {
+          const pct = Math.floor(received / total * 100);
+          if (pct >= lastPct + 10) {
+            lastPct = pct;
+            wsSend(ws, { type: 'tunnel_install_progress', message: `下载中 ${pct}%...` });
+          }
+        }
+      });
+      res.pipe(fileStream);
+      fileStream.on('finish', () => {
+        fileStream.close(() => {
+          if (isTgz) {
+            extractCloudflaredFromTgz(ws, tmpPath, destPath);
+          } else {
+            try {
+              fs.renameSync(tmpPath, destPath);
+              if (!IS_WIN) fs.chmodSync(destPath, 0o755);
+              wsSend(ws, { type: 'tunnel_install_progress', done: true, message: '安装完成！' });
+              wsSend(ws, { type: 'tunnel_status', ...getTunnelStatus() });
+            } catch (e) {
+              wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '保存失败: ' + e.message });
+            }
+          }
+        });
+      });
+      fileStream.on('error', (e) => {
+        wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '写入失败: ' + e.message });
+      });
+    }).on('error', (e) => {
+      wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '下载失败: ' + e.message });
+    });
+  }
+
+  doDownload(downloadUrl, 0);
+}
+
+function extractCloudflaredFromTgz(ws, tgzPath, destPath) {
+  wsSend(ws, { type: 'tunnel_install_progress', message: '解压中...' });
+  // Use tar command (available on macOS/Linux)
+  const tmpDir = tgzPath + '_extract';
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const tar = spawn('tar', ['-xzf', tgzPath, '-C', tmpDir], { stdio: 'ignore' });
+  tar.on('close', (code) => {
+    try { fs.unlinkSync(tgzPath); } catch {}
+    if (code !== 0) {
+      wsSend(ws, { type: 'tunnel_install_progress', done: true, error: `解压失败 (exit ${code})` });
+      return;
+    }
+    // Find the cloudflared binary inside extracted dir
+    let binSrc = null;
+    try {
+      const files = fs.readdirSync(tmpDir);
+      const found = files.find((f) => f === 'cloudflared' || f.startsWith('cloudflared'));
+      if (found) binSrc = path.join(tmpDir, found);
+    } catch {}
+    if (!binSrc) {
+      wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '解压后未找到 cloudflared 二进制' });
+      return;
+    }
+    try {
+      fs.copyFileSync(binSrc, destPath);
+      fs.chmodSync(destPath, 0o755);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      wsSend(ws, { type: 'tunnel_install_progress', done: true, message: '安装完成！' });
+      wsSend(ws, { type: 'tunnel_status', ...getTunnelStatus() });
+    } catch (e) {
+      wsSend(ws, { type: 'tunnel_install_progress', done: true, error: '安装失败: ' + e.message });
+    }
+  });
+  tar.on('error', (e) => {
+    wsSend(ws, { type: 'tunnel_install_progress', done: true, error: 'tar 命令失败: ' + e.message });
+  });
+}
+
+function startTunnel() {
+  const bin = getCloudflaredBin();
+  if (!bin) return { running: false, url: null, installed: false, error: 'cloudflared 未安装' };
+
+  const existing = readTunnelState();
+  if (existing?.pid && isProcessRunning(existing.pid)) return getTunnelStatus();
+
+  const child = spawn(process.execPath, [TUNNEL_SCRIPT_PATH], {
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      CF_TUNNEL_STATE_PATH: TUNNEL_STATE_PATH,
+      CF_TUNNEL_PORT: String(PORT),
+      CF_TUNNEL_BIN: bin,
+    },
+  });
+  child.unref();
+
+  const deadline = Date.now() + TUNNEL_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const state = readTunnelState();
+    if (state?.pid && isProcessRunning(state.pid) && state.url) return getTunnelStatus();
+    sleepSync(200);
+  }
+  return getTunnelStatus();
+}
+
+function stopTunnel() {
+  const state = readTunnelState();
+  if (state?.pid && isProcessRunning(state.pid)) {
+    killProcess(state.pid, true);
+  }
+  try { fs.unlinkSync(TUNNEL_STATE_PATH); } catch { /* ok */ }
+  return { running: false, url: null, installed: !!getCloudflaredBin() };
+}
+
 function normalizeBridgeRuntimeUpstream(upstream) {
   if (!upstream || typeof upstream !== 'object') return null;
   const apiKey = String(upstream.apiKey || '');
@@ -3975,6 +4215,22 @@ wss.on('connection', (ws, req) => {
         break;
       case 'test_notify':
         handleTestNotify(ws);
+        break;
+      case 'get_tunnel_status':
+        wsSend(ws, { type: 'tunnel_status', ...getTunnelStatus() });
+        break;
+      case 'tunnel_start': {
+        const status = startTunnel();
+        wsSend(ws, { type: 'tunnel_status', ...status });
+        break;
+      }
+      case 'tunnel_stop': {
+        const status = stopTunnel();
+        wsSend(ws, { type: 'tunnel_status', ...status });
+        break;
+      }
+      case 'install_cloudflared':
+        installCloudflared(ws);
         break;
       case 'change_password':
         handleChangePassword(ws, msg);
@@ -5940,4 +6196,13 @@ plog('INFO', 'server_start', { port: PORT });
 
 server.listen(PORT, HOST, () => {
   console.log(`webcoding server listening on ${HOST}:${PORT}`);
+  console.log(`  Local:   http://localhost:${PORT}`);
+  const nets = os.networkInterfaces();
+  for (const iface of Object.values(nets)) {
+    for (const addr of iface) {
+      if (addr.family === 'IPv4' && !addr.internal) {
+        console.log(`  Network: http://${addr.address}:${PORT}`);
+      }
+    }
+  }
 });

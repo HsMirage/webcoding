@@ -521,7 +521,8 @@ body.session-loading-active {
   .modal-btn-secondary,
   .project-picker-action-btn,
   .fc-submit-btn,
-  .import-item-btn
+  .import-item-btn,
+  #tunnel-copy-btn
 ) {
   --nb-btn-bg: var(--blue);
   --nb-btn-hover-bg: var(--yellow);
@@ -552,7 +553,8 @@ body.session-loading-active {
   .modal-btn-primary,
   .modal-btn-secondary,
   .project-picker-action-btn,
-  .import-item-btn
+  .import-item-btn,
+  #tunnel-copy-btn
 ):hover {
   background: var(--nb-btn-hover-bg);
   transform: translate(var(--nb-btn-hover-shift), var(--nb-btn-hover-shift));
@@ -3986,4 +3988,14 @@ body.ws-reconnecting::before {
 
 .insights-shell .workspace-action-btn.primary:hover {
   background: var(--yellow);
+}
+
+#tunnel-copy-btn {
+  --nb-btn-bg: var(--bg-secondary);
+  border-left: 2px solid var(--line) !important;
+  border-top: none !important;
+  border-right: none !important;
+  border-bottom: none !important;
+  border-radius: 0;
+  padding: 6px 12px;
 }
