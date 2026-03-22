@@ -249,7 +249,9 @@ if ($startNow -notmatch '^[Nn]') {
             if ($_restart -notmatch '^[Nn]') {
                 Stop-Process -Id $_pid -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Seconds 1
-                node "$INSTALL_DIR\server.js"
+                $p = Start-Process -FilePath 'node' -ArgumentList "$INSTALL_DIR\server.js" -WindowStyle Hidden -PassThru
+                Write-Success "Webcoding 已在后台启动 (PID: $($p.Id))，访问 http://localhost:$_port"
+                Write-Info "停止服务: Stop-Process -Id $($p.Id)"
             } else {
                 Write-Info '已跳过启动，现有实例继续运行。'
             }
@@ -258,7 +260,9 @@ if ($startNow -notmatch '^[Nn]') {
             Write-Info "请先释放端口，或使用其他端口: `$env:PORT=<端口号>; node '$INSTALL_DIR\server.js'"
         }
     } else {
-        node "$INSTALL_DIR\server.js"
+        $p = Start-Process -FilePath 'node' -ArgumentList "$INSTALL_DIR\server.js" -WindowStyle Hidden -PassThru
+        Write-Success "Webcoding 已在后台启动 (PID: $($p.Id))，访问 http://localhost:$_port"
+        Write-Info "停止服务: Stop-Process -Id $($p.Id)"
     }
 } else {
     Write-Info "稍后运行 'webcoding' 或双击 webcoding.cmd 启动。"

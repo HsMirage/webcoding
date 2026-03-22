@@ -302,7 +302,9 @@ if ask_yn "现在立即启动 Webcoding?" "y"; then
       if ask_yn "是否重启 Webcoding?" "y"; then
         kill "$_OCCUPIED_PID" 2>/dev/null || true
         sleep 1
-        exec node "$INSTALL_DIR/server.js"
+        mkdir -p "$INSTALL_DIR/logs"
+        nohup node "$INSTALL_DIR/server.js" >> "$INSTALL_DIR/logs/server.log" 2>&1 &
+        success "Webcoding 已在后台启动 (PID: $!)，访问 http://localhost:$_PORT"
       else
         info "已跳过启动，现有实例继续运行。"
       fi
@@ -311,7 +313,10 @@ if ask_yn "现在立即启动 Webcoding?" "y"; then
       info "请先释放端口，或使用其他端口: PORT=<端口号> node $INSTALL_DIR/server.js"
     fi
   else
-    exec node "$INSTALL_DIR/server.js"
+    mkdir -p "$INSTALL_DIR/logs"
+    nohup node "$INSTALL_DIR/server.js" >> "$INSTALL_DIR/logs/server.log" 2>&1 &
+    success "Webcoding 已在后台启动 (PID: $!)，访问 http://localhost:$_PORT"
+    info "停止服务: kill $!"
   fi
 else
   info "稍后运行 'webcoding' 启动。"
