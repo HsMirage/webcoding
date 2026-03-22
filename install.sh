@@ -286,7 +286,33 @@ info "首次启动时会自动生成登录密码并打印在控制台。"
 echo ""
 
 if ask_yn "现在立即启动 Webcoding?" "y"; then
-  exec node "$INSTALL_DIR/server.js"
+  # 检测端口是否已被占用
+  _PORT="${PORT:-8001}"
+  _OCCUPIED_PID=""
+  if command -v lsof >/dev/null 2>&1; then
+    _OCCUPIED_PID=$(lsof -ti tcp:"$_PORT" 2>/dev/null | head -1 || true)
+  elif command -v ss >/dev/null 2>&1; then
+    _OCCUPIED_PID=$(ss -tlnp 2>/dev/null | awk -v p=":$_PORT" '$4 ~ p {match($0,/pid=([0-9]+)/,a); print a[1]; exit}' || true)
+  fi
+  if [ -n "$_OCCUPIED_PID" ]; then
+    # 判断占用进程是否是 Webcoding 自身
+    _OCCUPIED_CMD=$(ps -p "$_OCCUPIED_PID" -o args= 2>/dev/null || true)
+    if echo "$_OCCUPIED_CMD" | grep -q "server.js"; then
+      warn "Webcoding 已在运行 (PID: $_OCCUPIED_PID，端口 $_PORT)。"
+      if ask_yn "是否重启 Webcoding?" "y"; then
+        kill "$_OCCUPIED_PID" 2>/dev/null || true
+        sleep 1
+        exec node "$INSTALL_DIR/server.js"
+      else
+        info "已跳过启动，现有实例继续运行。"
+      fi
+    else
+      warn "端口 $_PORT 已被其他进程占用 (PID: $_OCCUPIED_PID)，无法启动。"
+      info "请先释放端口，或使用其他端口: PORT=<端口号> node $INSTALL_DIR/server.js"
+    fi
+  else
+    exec node "$INSTALL_DIR/server.js"
+  fi
 else
   info "稍后运行 'webcoding' 启动。"
 fi

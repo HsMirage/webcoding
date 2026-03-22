@@ -6,6 +6,17 @@
 
 $ErrorActionPreference = 'Stop'
 
+# 检测是否以管道方式运行（irm | iex），此时无法 pause，用 try/catch 兜底防闪退
+$_isPiped = -not [Environment]::UserInteractive -or ($Host.Name -eq 'ConsoleHost' -and $MyInvocation.InvocationName -eq '')
+
+function Pause-IfNeeded {
+    if ($_isPiped) {
+        Write-Host ''
+        Write-Host '按 Enter 键退出...' -ForegroundColor Gray
+        try { Read-Host } catch { }
+    }
+}
+
 $REPO        = 'https://github.com/HsMirage/webcoding.git'
 $RAW_BASE    = 'https://raw.githubusercontent.com/HsMirage/webcoding/main'
 $INSTALL_DIR = if ($env:WEBCODING_DIR) { $env:WEBCODING_DIR } else { Join-Path $HOME 'webcoding' }
@@ -13,7 +24,7 @@ $INSTALL_DIR = if ($env:WEBCODING_DIR) { $env:WEBCODING_DIR } else { Join-Path $
 function Write-Info    { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Cyan   }
 function Write-Success { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Green  }
 function Write-Warn    { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Yellow }
-function Write-Err     { param($msg) Write-Host "[Webcoding] ERROR: $msg" -ForegroundColor Red; exit 1 }
+function Write-Err     { param($msg) Write-Host "[Webcoding] ERROR: $msg" -ForegroundColor Red; Pause-IfNeeded; exit 1 }
 
 # ── 工具函数 ──────────────────────────────────────────────────
 function Get-PackageVersion {
@@ -49,10 +60,16 @@ function Invoke-Uninstall {
         exit 0
     }
     # 终止进程
-    Get-WmiObject Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object {
+    $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object {
         $_.CommandLine -like "*$INSTALL_DIR*server.js*"
-    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 1
+    }
+    if ($procs) {
+        $procs | ForEach-Object {
+            Write-Info "终止进程 PID $($_.ProcessId)..."
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 1
+    }
     # 删除目录
     Write-Info '删除安装目录...'
     Remove-Item -Recurse -Force $INSTALL_DIR
@@ -216,7 +233,34 @@ Write-Host ''
 
 $startNow = Read-Host '现在立即启动 Webcoding? (Y/n)'
 if ($startNow -notmatch '^[Nn]') {
-    node "$INSTALL_DIR\server.js"
+    # 检测端口是否已被占用
+    $_port = if ($env:PORT) { [int]$env:PORT } else { 8001 }
+    $_listener = $null
+    try {
+        $_listener = Get-NetTCPConnection -LocalPort $_port -State Listen -ErrorAction SilentlyContinue
+    } catch { }
+    if ($_listener) {
+        $_pid = $_listener | Select-Object -First 1 -ExpandProperty OwningProcess
+        # 判断占用进程是否是 Webcoding 自身
+        $_proc = Get-CimInstance Win32_Process -Filter "ProcessId=$_pid" -ErrorAction SilentlyContinue
+        if ($_proc -and $_proc.CommandLine -like '*server.js*') {
+            Write-Warn "Webcoding 已在运行 (PID: $_pid，端口 $_port)。"
+            $_restart = Read-Host '是否重启 Webcoding? (Y/n)'
+            if ($_restart -notmatch '^[Nn]') {
+                Stop-Process -Id $_pid -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 1
+                node "$INSTALL_DIR\server.js"
+            } else {
+                Write-Info '已跳过启动，现有实例继续运行。'
+            }
+        } else {
+            Write-Warn "端口 $_port 已被其他进程占用 (PID: $_pid)，无法启动。"
+            Write-Info "请先释放端口，或使用其他端口: `$env:PORT=<端口号>; node '$INSTALL_DIR\server.js'"
+        }
+    } else {
+        node "$INSTALL_DIR\server.js"
+    }
 } else {
     Write-Info "稍后运行 'webcoding' 或双击 webcoding.cmd 启动。"
 }
+Pause-IfNeeded
