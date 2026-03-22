@@ -9,7 +9,15 @@ set -e
 
 REPO="https://github.com/HsMirage/webcoding.git"
 RAW_BASE="https://raw.githubusercontent.com/HsMirage/webcoding/main"
+
+# 支持 --uninstall 参数
+UNINSTALL_MODE=false
+for arg in "$@"; do
+  case "$arg" in --uninstall|-u) UNINSTALL_MODE=true ;; esac
+done
 INSTALL_DIR="${1:-$HOME/webcoding}"
+# 若第一个参数是 --uninstall，使用默认目录
+[ "$INSTALL_DIR" = "--uninstall" ] || [ "$INSTALL_DIR" = "-u" ] && INSTALL_DIR="$HOME/webcoding"
 
 # ── 颜色 ──────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -61,6 +69,68 @@ ask_yn() {
   yn="${yn:-$default}"
   case $yn in [Yy]*) return 0;; *) return 1;; esac
 }
+
+# ── 卸载函数 ──────────────────────────────────────────────────
+do_uninstall() {
+  if [ ! -d "$INSTALL_DIR" ]; then
+    error "未找到安装目录: $INSTALL_DIR，无法卸载。"
+  fi
+
+  warn "即将卸载 Webcoding:"
+  warn "  安装目录 : $INSTALL_DIR"
+  warn "  启动脚本 : $HOME/.local/bin/webcoding"
+  echo ""
+
+  if [ -t 0 ]; then
+    ask_yn "确认卸载? 此操作不可撤销" "n" || { info "已取消卸载。"; exit 0; }
+  fi
+
+  # 终止运行中的 Webcoding 进程
+  if [ -f "$INSTALL_DIR/sessions" ] || true; then
+    PIDS=$(pgrep -f "node.*$INSTALL_DIR/server.js" 2>/dev/null || true)
+    if [ -n "$PIDS" ]; then
+      info "终止运行中的 Webcoding 进程 (PID: $PIDS)..."
+      kill $PIDS 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+
+  # 删除安装目录
+  info "删除安装目录..."
+  rm -rf "$INSTALL_DIR"
+
+  # 删除启动脚本
+  local launcher="$HOME/.local/bin/webcoding"
+  if [ -f "$launcher" ]; then
+    info "删除启动脚本 $launcher ..."
+    rm -f "$launcher"
+  fi
+
+  # 清理 rc 文件中写入的 PATH 条目
+  for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+    if [ -f "$rc" ] && grep -q '# Webcoding' "$rc" 2>/dev/null; then
+      info "清理 $rc 中的 PATH 条目..."
+      # 删除 '# Webcoding' 及其后一行
+      sed -i.bak '/# Webcoding/{N;d;}' "$rc" && rm -f "${rc}.bak"
+    fi
+  done
+
+  # 清理 fish
+  local fish_conf="$HOME/.config/fish/conf.d/webcoding.fish"
+  if [ -f "$fish_conf" ]; then
+    info "删除 fish 配置 $fish_conf ..."
+    rm -f "$fish_conf"
+  fi
+
+  echo ""
+  success "================================================"
+  success " Webcoding 已成功卸载！"
+  success "================================================"
+  exit 0
+}
+
+# 若传入 --uninstall 参数，直接执行卸载
+[ "$UNINSTALL_MODE" = true ] && do_uninstall
 
 # ── 检查依赖 ──────────────────────────────────────────────────
 info "检查依赖环境..."
@@ -151,8 +221,9 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     echo "  2) 跳过更新，仅重新安装依赖"
     echo "  3) 跳过更新，直接启动"
     echo "  4) 退出"
+    echo "  5) 卸载 Webcoding"
     echo ""
-    printf "%b请输入选项 [1-4]:%b " "$BOLD" "$NC"
+    printf "%b请输入选项 [1-5]:%b " "$BOLD" "$NC"
     read -r choice
     case "${choice:-1}" in
       1)
@@ -170,6 +241,9 @@ if [ -d "$INSTALL_DIR/.git" ]; then
       4)
         info "已退出。"
         exit 0
+        ;;
+      5)
+        do_uninstall
         ;;
       *)
         warn "无效选项，跳过更新。"

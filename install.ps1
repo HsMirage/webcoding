@@ -3,6 +3,11 @@
 #   irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1 | iex
 # 或指定安装目录:
 #   $env:WEBCODING_DIR = "C:\webcoding"; irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1 | iex
+# 卸载:
+#   irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1 | iex; # 选择菜单 5
+#   或: $env:WEBCODING_UNINSTALL=1; irm .../install.ps1 | iex
+
+param([switch]$Uninstall)
 
 $ErrorActionPreference = 'Stop'
 
@@ -33,6 +38,55 @@ function Compare-VersionLt {
     $vb = [System.Version]"$b.0"
     return $va -lt $vb
 }
+
+function Invoke-Uninstall {
+    if (-not (Test-Path $INSTALL_DIR)) {
+        Write-Err "未找到安装目录: $INSTALL_DIR，无法卸载。"
+    }
+
+    Write-Warn "即将卸载 Webcoding:"
+    Write-Warn "  安装目录 : $INSTALL_DIR"
+    Write-Warn "  启动脚本 : $INSTALL_DIR\webcoding.cmd"
+    Write-Host ''
+
+    $confirm = Read-Host '确认卸载? 此操作不可撤销 (y/N)'
+    if ($confirm -notmatch '^[Yy]') {
+        Write-Info '已取消卸载。'
+        exit 0
+    }
+
+    # 终止运行中的 Webcoding 进程
+    $procs = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and $_.Path -like "*node*" -and
+        (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction SilentlyContinue).CommandLine -like "*$INSTALL_DIR*server.js*"
+    }
+    if ($procs) {
+        Write-Info "终止运行中的 Webcoding 进程..."
+        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+
+    # 删除安装目录
+    Write-Info '删除安装目录...'
+    Remove-Item -Recurse -Force $INSTALL_DIR
+
+    # 从用户 PATH 移除安装目录
+    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    if ($userPath -like "*$INSTALL_DIR*") {
+        Write-Info '从用户 PATH 移除安装目录...'
+        $newPath = ($userPath -split ';' | Where-Object { $_ -ne $INSTALL_DIR }) -join ';'
+        [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+    }
+
+    Write-Host ''
+    Write-Success '================================================'
+    Write-Success ' Webcoding 已成功卸载！'
+    Write-Success '================================================'
+    exit 0
+}
+
+# 若传入 -Uninstall 参数或环境变量，直接执行卸载
+if ($Uninstall -or $env:WEBCODING_UNINSTALL) { Invoke-Uninstall }
 
 # ── 检查依赖 ──────────────────────────────────────────────────
 Write-Info '检查依赖环境...'
@@ -114,8 +168,9 @@ if (Test-Path (Join-Path $INSTALL_DIR '.git')) {
     Write-Host '  2) 跳过更新，仅重新安装依赖' -ForegroundColor White
     Write-Host '  3) 跳过更新，直接启动'       -ForegroundColor White
     Write-Host '  4) 退出'                      -ForegroundColor White
+    Write-Host '  5) 卸载 Webcoding'            -ForegroundColor White
     Write-Host ''
-    $choice = Read-Host '请输入选项 [1-4]'
+    $choice = Read-Host '请输入选项 [1-5]'
     if (-not $choice) { $choice = '1' }
 
     switch ($choice) {
@@ -135,6 +190,9 @@ if (Test-Path (Join-Path $INSTALL_DIR '.git')) {
         '4' {
             Write-Info '已退出。'
             exit 0
+        }
+        '5' {
+            Invoke-Uninstall
         }
         default {
             Write-Warn '无效选项，跳过更新。'
