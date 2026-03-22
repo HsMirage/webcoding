@@ -44,21 +44,21 @@ npm install -g @openai/codex
 
 **Linux / macOS**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HsMirage/webcoding/main/install.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/HsMirage/webcoding/main/install.sh)
 ```
 
 **Windows (PowerShell)**
 ```powershell
-irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1 | iex
+$s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression $s
 ```
 
-The script checks for Node.js ≥ 18 and git, clones the repo, installs dependencies, adds a `webcoding` launcher to your PATH, and optionally starts the server immediately.
+The script presents an interactive menu — choose to install, launch, update, reinstall dependencies, uninstall, or exit. After installing, visit `http://localhost:8001` and enter your password.
 
 > **First-time password**: on first startup, a random 12-character password is auto-generated and printed to the console. You will be required to change it on first login.
 
 > Custom install directory:
-> - Linux/macOS: `curl -fsSL ... | bash -s -- ~/mydir`
-> - Windows: `$env:WEBCODING_DIR="C:\mydir"; irm ... | iex`
+> - Linux/macOS: `bash <(curl -fsSL ...) ~/mydir`
+> - Windows: `$env:WEBCODING_DIR="C:\mydir"; $s = irm ...; iex $s`
 
 ### Manual install
 
