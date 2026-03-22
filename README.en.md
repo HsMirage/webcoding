@@ -54,6 +54,8 @@ irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1 | iex
 
 The script checks for Node.js ≥ 18 and git, clones the repo, installs dependencies, adds a `webcoding` launcher to your PATH, and optionally starts the server immediately.
 
+> **First-time password**: on first startup, a random 12-character password is auto-generated and printed to the console. You will be required to change it on first login.
+
 > Custom install directory:
 > - Linux/macOS: `curl -fsSL ... | bash -s -- ~/mydir`
 > - Windows: `$env:WEBCODING_DIR="C:\mydir"; irm ... | iex`
@@ -77,6 +79,8 @@ npm install
 Then run `start.bat`, or start manually with `node server.js`.
 
 After startup, open `http://localhost:8001` and sign in with your password.
+
+> **First-time password**: on first startup, a random 12-character password is auto-generated and printed to the console. You will be required to change it on first login.
 
 ## Configuration
 
