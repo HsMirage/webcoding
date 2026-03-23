@@ -5379,6 +5379,7 @@ function handleMessage(ws, msg, options = {}) {
       stdio: [inputFd, outputFd, errorFd],
       detached: !IS_WIN,
       windowsHide: true,
+      shell: !!spawnSpec.useShell,
     });
   } catch (err) {
     fs.closeSync(inputFd);
