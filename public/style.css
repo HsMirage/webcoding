@@ -120,7 +120,7 @@
   --compact-control-hover-background: var(--button-surface-hover);
   --compact-control-hover-color: var(--text-primary);
   --compact-control-hover-shadow: var(--button-shadow-soft);
-  --compact-control-hover-shift: 0;
+  --compact-control-hover-shift: -1px;
   --compact-control-active-background: var(--btn-primary-bg);
   --compact-control-active-color: var(--button-primary-text);
   --compact-control-active-border: var(--button-border);
@@ -147,7 +147,7 @@
   --action-button-hover-background: var(--button-surface-hover);
   --action-button-hover-color: var(--text-primary);
   --action-button-hover-shadow: var(--button-shadow-soft);
-  --action-button-hover-shift: 0;
+  --action-button-hover-shift: -1px;
   --action-button-primary-background: var(--btn-primary-bg);
   --action-button-primary-color: var(--button-primary-text);
   --action-button-primary-hover-background: var(--btn-primary-hover);
@@ -366,7 +366,7 @@ html[data-theme="localhost"] {
   --compact-control-hover-background: var(--btn-secondary-hover);
   --compact-control-hover-color: var(--text-primary);
   --compact-control-hover-shadow: none;
-  --compact-control-hover-shift: 0;
+  --compact-control-hover-shift: -1px;
   --compact-control-active-background: rgba(15, 138, 167, 0.08);
   --compact-control-active-color: var(--accent);
   --compact-control-active-border: rgba(15, 138, 167, 0.18);
@@ -393,7 +393,7 @@ html[data-theme="localhost"] {
   --action-button-hover-background: var(--btn-secondary-hover);
   --action-button-hover-color: var(--text-primary);
   --action-button-hover-shadow: none;
-  --action-button-hover-shift: 0;
+  --action-button-hover-shift: -1px;
   --action-button-primary-background: rgba(15, 138, 167, 0.08);
   --action-button-primary-color: var(--accent);
   --action-button-primary-hover-background: rgba(15, 138, 167, 0.12);
@@ -409,13 +409,13 @@ html[data-theme="localhost"] {
   --cta-primary-hover-background: var(--btn-primary-hover);
   --cta-primary-shadow: none;
   --cta-primary-hover-shadow: none;
-  --cta-primary-hover-shift: 0;
+  --cta-primary-hover-shift: -1px;
   --cta-secondary-background: #ffffff;
   --cta-secondary-color: var(--text-primary);
   --cta-secondary-shadow: none;
   --cta-secondary-hover-background: var(--btn-secondary-hover);
   --cta-secondary-hover-shadow: none;
-  --cta-secondary-hover-shift: 0;
+  --cta-secondary-hover-shift: -1px;
   --cta-split-divider: var(--button-border);
   --mobile-topbar-select-background: #ffffff;
   --mobile-topbar-select-border: 1px solid var(--button-border);
@@ -970,8 +970,6 @@ html[data-theme="localhost"] :where(
   .modal-close-btn,
   .attachment-chip-remove
 ):hover,
-html[data-theme="localhost"] .new-chat-btn:hover,
-html[data-theme="localhost"] .new-chat-arrow:hover,
 html[data-theme="localhost"] .modal-btn-primary:hover,
 html[data-theme="localhost"] .modal-btn-secondary:hover,
 html[data-theme="localhost"] .modal-btn-danger:hover,
@@ -982,20 +980,32 @@ html[data-theme="localhost"] .settings-actions button:hover,
 html[data-theme="localhost"] .attach-btn:hover,
 html[data-theme="localhost"] .send-btn:hover,
 html[data-theme="localhost"] .abort-btn:hover,
-html[data-theme="localhost"] .git-topbar-btn:hover,
-html[data-theme="localhost"] .git-toolbar-btn:hover:not(:disabled),
-html[data-theme="localhost"] .git-panel-tab:hover,
-html[data-theme="localhost"] .workspace-action-btn:hover,
 html[data-theme="localhost"] .tpl-fetch-toolbar-btn:hover,
 html[data-theme="localhost"] .project-picker-item:hover,
 html[data-theme="localhost"] .option-picker-item:hover,
-html[data-theme="localhost"] .new-chat-dropdown button:hover,
 html[data-theme="localhost"] .project-group-create-btn:hover,
 html[data-theme="localhost"] .project-group-btn:hover,
 html[data-theme="localhost"] .chat-agent-btn:hover,
 html[data-theme="localhost"] .mode-select:hover {
   transform: none;
   box-shadow: none;
+}
+html[data-theme="localhost"] .topbar-icon-btn:hover {
+  transform: translateY(-1px);
+}
+html[data-theme="localhost"] .git-topbar-btn:hover {
+  background: var(--btn-secondary-hover);
+  border-color: var(--border-color);
+  transform: translateY(-1px);
+}
+html[data-theme="localhost"] .git-toolbar-btn:hover:not(:disabled) {
+  background: var(--btn-secondary-hover);
+  border-color: var(--border-color);
+  transform: translateY(-1px);
+}
+html[data-theme="localhost"] .git-panel-tab:hover {
+  background: var(--btn-secondary-hover);
+  transform: translateY(-1px);
 }
 html[data-theme="localhost"] .topbar-icon-btn:active,
 html[data-theme="localhost"] .settings-back:active,
@@ -1065,12 +1075,14 @@ html[data-theme="localhost"] .new-chat-btn:hover {
   border-color: rgba(15, 138, 167, 0.24);
   color: var(--cta-button-color);
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  transform: translateY(-2px);
 }
 html[data-theme="localhost"] .new-chat-arrow:hover {
   background: rgba(15, 138, 167, 0.08);
   border-color: rgba(15, 138, 167, 0.18);
   color: var(--accent);
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+  transform: translateY(-2px);
 }
 html[data-theme="localhost"] .new-chat-btn:focus-visible {
   outline: 2px solid var(--accent);
@@ -1105,6 +1117,12 @@ html[data-theme="localhost"] .git-toolbar-btn.primary:hover:not(:disabled) {
   background: rgba(15, 138, 167, 0.12);
   border-color: rgba(15, 138, 167, 0.24);
   color: var(--accent-hover);
+  transform: translateY(-1px);
+}
+html[data-theme="localhost"] .workspace-action-btn:hover {
+  background: var(--btn-secondary-hover);
+  border-color: var(--border-color);
+  transform: translateY(-1px);
 }
 html[data-theme="localhost"] .session-item {
   margin-bottom: 4px;
@@ -1293,6 +1311,7 @@ html[data-theme="localhost"] .new-chat-dropdown button:last-child {
 html[data-theme="localhost"] .new-chat-dropdown button:hover {
   background: rgba(15, 138, 167, 0.08);
   border-color: rgba(15, 138, 167, 0.18);
+  transform: translateY(-1px);
 }
 html[data-theme="localhost"] .dropdown-divider {
   border-top: 1px solid var(--border-color);
@@ -1305,6 +1324,7 @@ html[data-theme="localhost"] #import-session-btn:hover {
   color: var(--accent);
   background: rgba(15, 138, 167, 0.08);
   border-color: rgba(15, 138, 167, 0.18);
+  transform: translateY(-1px);
 }
 html[data-theme="localhost"] #import-session-btn:hover::before {
   opacity: 0.8;
@@ -1681,7 +1701,7 @@ html[data-theme="localhost"] .localfile-pre {
 .new-chat-btn {
   --nb-btn-bg: var(--blue);
   --nb-btn-shadow: var(--tree-shadow-strong);
-  --nb-btn-hover-shift: 0px;
+  --nb-btn-hover-shift: -2px;
 
   width: 100%;
   min-height: 48px;
@@ -4219,7 +4239,7 @@ body.ws-reconnecting::before {
 .new-chat-arrow {
   --nb-btn-bg: var(--blue);
   --nb-btn-shadow: var(--tree-shadow-strong);
-  --nb-btn-hover-shift: 0px;
+  --nb-btn-hover-shift: -2px;
   --nb-btn-hover-shadow: var(--tree-shadow-strong);
 
   width: 52px;
