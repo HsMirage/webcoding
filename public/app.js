@@ -44,12 +44,22 @@
   const SIDEBAR_DEFAULT_WIDTH = 320;
   const SIDEBAR_MIN_WIDTH = 280;
   const SIDEBAR_MAX_WIDTH = 560;
+  const GIT_PANEL_WIDTH_STORAGE_KEY = 'webcoding-git-panel-width';
+  const GIT_PANEL_DEFAULT_WIDTH = 360;
+  const GIT_PANEL_MIN_WIDTH = 280;
+  const GIT_PANEL_MAX_WIDTH = 720;
   const DESKTOP_INSIGHTS_BREAKPOINT = 1280;
   const VISIBILITY_RESYNC_THROTTLE_MS = 2500;
   const SESSION_LIST_COLLATOR = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   const INPUT_MAX_HEIGHT_FALLBACK = 200;
   const RECONNECT_MAX_ATTEMPTS = 8;
   const REMEMBERED_PASSWORD_STORAGE_KEY = 'webcoding-remembered-password';
+  const THEME_STORAGE_KEY = 'webcoding-theme';
+  const DEFAULT_THEME = 'default';
+  const THEME_LABELS = {
+    default: '默认主题',
+    localhost: '极简主题',
+  };
 
   const MODE_PICKER_OPTIONS = [
     { value: 'yolo', label: 'YOLO', desc: '跳过所有权限检查' },
@@ -95,14 +105,29 @@
   let pendingInitialSessionLoad = false;
   let projects = [];
   let collapsedProjects = new Set();
-  let pendingProjectFocusId = null;
-  let pendingProjectFocusMessage = '';
   let sidebarResizeState = null;
+  let gitPanelResizeState = null;
   let lastVisibilityResyncAt = 0;
   let localIdCounter = 0;
   let cachedInputMaxHeight = INPUT_MAX_HEIGHT_FALLBACK;
   const toastQueue = [];
   let activeToast = null;
+  let pendingProjectSaveCallback = null;
+  let gitState = {
+    cwd: null,
+    loading: false,
+    lastError: '',
+    status: null,
+    logEntries: [],
+    branchEntries: [],
+    panelOpen: false,
+    activePanelView: 'status',
+    panelDiffContent: '',
+    panelDiffTitle: '',
+    panelLogEntries: [],
+    filesExpanded: false,
+    collapsedTreeNodes: [],
+  };
 
   // Stage-1 state grouping: keep legacy vars as source of truth, expose grouped accessors.
   const connectionState = {
@@ -172,8 +197,13 @@
   const sidebarResizer = $('#sidebar-resizer');
   const sidebarOverlay = $('#sidebar-overlay');
   const menuBtn = $('#menu-btn');
+  const workspaceMain = document.querySelector('.workspace-main');
   const chatMain = document.querySelector('.chat-main');
+  const workspaceInsights = $('#workspace-insights');
   const workspaceInsightsContent = $('#workspace-insights-content');
+  const gitPanelEl = $('#git-panel');
+  const gitPanelContent = $('#git-panel-content');
+  const gitPanelBtn = $('#git-panel-btn');
   const newChatSplit = sidebar.querySelector('.new-chat-split');
   const newChatBtn = $('#new-chat-btn');
   const newChatArrow = $('#new-chat-arrow');
@@ -219,6 +249,23 @@
     if (rememberPw) rememberPw.checked = !!rememberedPassword;
     if (!loginPassword) return;
     loginPassword.value = rememberedPassword;
+  }
+
+  function getStoredTheme() {
+    const raw = localStorage.getItem(THEME_STORAGE_KEY);
+    return THEME_LABELS[raw] ? raw : DEFAULT_THEME;
+  }
+
+  function applyTheme(theme, options = {}) {
+    const nextTheme = THEME_LABELS[theme] ? theme : DEFAULT_THEME;
+    document.documentElement.dataset.theme = nextTheme;
+    if (document.body) {
+      document.body.dataset.theme = nextTheme;
+    }
+    if (!options.skipPersist) {
+      localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    }
+    return nextTheme;
   }
 
   function parseStoredCollapsedProjects() {
@@ -268,6 +315,51 @@
     };
   }
 
+  function ensureGitPanelResizer() {
+    if (!gitPanelEl?.parentNode) return null;
+    const existing = document.getElementById('git-panel-resizer');
+    if (existing) return existing;
+    const resizer = document.createElement('div');
+    resizer.id = 'git-panel-resizer';
+    resizer.className = 'git-panel-resizer';
+    resizer.setAttribute('aria-hidden', 'true');
+    gitPanelEl.parentNode.insertBefore(resizer, gitPanelEl);
+    return resizer;
+  }
+
+  function getGitPanelWidthLimit() {
+    const containerWidth = workspaceMain?.getBoundingClientRect().width || window.innerWidth || GIT_PANEL_DEFAULT_WIDTH;
+    const insightsWidth = window.matchMedia(`(min-width: ${DESKTOP_INSIGHTS_BREAKPOINT}px)`).matches
+      ? (workspaceInsights?.getBoundingClientRect().width || 0)
+      : 0;
+    return Math.min(GIT_PANEL_MAX_WIDTH, Math.max(GIT_PANEL_MIN_WIDTH, containerWidth - insightsWidth - 320));
+  }
+
+  function clampGitPanelWidth(width) {
+    const numericWidth = Number(width);
+    if (!Number.isFinite(numericWidth)) return GIT_PANEL_DEFAULT_WIDTH;
+    return Math.max(GIT_PANEL_MIN_WIDTH, Math.min(getGitPanelWidthLimit(), Math.round(numericWidth)));
+  }
+
+  function applyGitPanelWidth(width, options = {}) {
+    const nextWidth = clampGitPanelWidth(width);
+    document.documentElement.style.setProperty('--git-panel-width', `${nextWidth}px`);
+    if (!options.skipPersist) {
+      localStorage.setItem(GIT_PANEL_WIDTH_STORAGE_KEY, String(nextWidth));
+    }
+    return nextWidth;
+  }
+
+  function canResizeGitPanel() {
+    return !!gitPanelEl && !!ensureGitPanelResizer() && window.matchMedia('(min-width: 769px) and (pointer: fine)').matches;
+  }
+
+  function syncGitPanelResizerVisibility() {
+    const resizer = ensureGitPanelResizer();
+    if (!resizer) return;
+    resizer.classList.toggle('visible', gitState.panelOpen && canResizeGitPanel());
+  }
+
   collapsedProjects = new Set(parseStoredCollapsedProjects());
 
   // --- Viewport height fix for mobile browsers ---
@@ -310,14 +402,29 @@
     applySidebarWidth(savedWidth, { skipPersist: true });
   }
 
+  function syncGitPanelWidthForViewport() {
+    syncGitPanelResizerVisibility();
+    if (!canResizeGitPanel()) {
+      document.body.classList.remove('git-panel-resizing');
+      gitPanelResizeState = null;
+      document.documentElement.style.setProperty('--git-panel-width', `${GIT_PANEL_DEFAULT_WIDTH}px`);
+      return;
+    }
+    const savedWidth = parseInt(localStorage.getItem(GIT_PANEL_WIDTH_STORAGE_KEY) || `${GIT_PANEL_DEFAULT_WIDTH}`, 10);
+    applyGitPanelWidth(savedWidth, { skipPersist: true });
+  }
+
   setVH();
   refreshInputMaxHeightCache();
+  applyTheme(getStoredTheme(), { skipPersist: true });
   window.addEventListener('resize', setVH);
   window.addEventListener('orientationchange', () => setTimeout(setVH, 100));
   window.addEventListener('resize', refreshInputMaxHeightCache);
   window.addEventListener('orientationchange', () => setTimeout(refreshInputMaxHeightCache, 100));
   syncSidebarWidthForViewport();
+  syncGitPanelWidthForViewport();
   window.addEventListener('resize', syncSidebarWidthForViewport);
+  window.addEventListener('resize', syncGitPanelWidthForViewport);
 
   function buildWorkspaceActionButtons(actions, options = {}) {
     const className = options.compact ? 'workspace-action-row' : 'workspace-action-grid';
@@ -385,7 +492,7 @@
       { action: 'import-session', label: '导入历史' },
       { action: 'switch-model', label: '切换模型' },
       { action: 'switch-mode', label: '切换模式' },
-      ...(activeProject && !activeProject.isVirtualCwd ? [{ action: 'focus-project', label: '定位项目', projectId: activeProject.id }] : []),
+      ...(activeProject ? [{ action: 'focus-project', label: '定位项目', projectId: activeProject.id }] : []),
       { action: 'open-settings', label: '打开设置' },
     ]);
 
@@ -445,49 +552,861 @@
     workspaceInsightsContent.innerHTML = buildWorkspaceInsightsMarkup();
   }
 
+  function resetGitState(next = {}) {
+    gitState = {
+      cwd: null,
+      loading: false,
+      lastError: '',
+      status: null,
+      logEntries: [],
+      branchEntries: [],
+      panelOpen: gitState.panelOpen,
+      activePanelView: 'status',
+      panelDiffContent: '',
+      panelDiffTitle: '',
+      panelLogEntries: [],
+      filesExpanded: false,
+      collapsedTreeNodes: [],
+      ...next,
+    };
+    updateGitPanelBadge();
+    if (gitState.panelOpen) renderGitPanel();
+  }
+
+  function getGitRepoLabel(repoRoot) {
+    const normalized = String(repoRoot || '').replace(/[\\/]+$/, '');
+    if (!normalized) return '未识别仓库';
+    const parts = normalized.split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] || normalized;
+  }
+
+  function sendGitCommand(action, params = {}, options = {}) {
+    const cwd = String(options.cwd || params.cwd || sessionState.currentCwd || '').trim();
+    if (!cwd) {
+      return Promise.reject(new Error('当前会话还没有工作目录，无法执行 Git 操作。'));
+    }
+    const requestId = nextLocalId('git');
+    const waiter = waitForWsEvent('git_result', {
+      timeoutMs: Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000,
+      predicate: (payload) => payload?.requestId === requestId && payload?.action === action,
+    });
+    if (action === 'status') {
+      gitState.loading = true;
+      gitState.lastError = '';
+      gitState.cwd = cwd;
+      renderWorkspaceInsights();
+    }
+    send({
+      ...params,
+      type: 'git_command',
+      action,
+      cwd,
+      sessionId: sessionState.currentSessionId,
+      requestId,
+    });
+    return waiter.then((payload) => {
+      if (!payload?.success) throw new Error(payload?.error || 'Git 操作失败');
+      return payload;
+    });
+  }
+
+  function requestGitStatus(options = {}) {
+    if (!sessionState.currentCwd) {
+      resetGitState();
+      renderWorkspaceInsights();
+      return Promise.resolve(null);
+    }
+    return sendGitCommand('status', {}, options).catch((error) => {
+      gitState.loading = false;
+      gitState.status = null;
+      gitState.lastError = error.message || '读取 Git 状态失败';
+      renderWorkspaceInsights();
+      if (!options.silent) appendError(gitState.lastError);
+      return null;
+    });
+  }
+
+  function gitFileStatusText(file) {
+    if (!file) return '未知状态';
+    if (file.conflicted) return '冲突';
+    if (file.untracked) return '未跟踪';
+    if (file.renamed) return '已重命名';
+    if (file.deleted && file.staged) return '已暂存删除';
+    if (file.deleted) return '已删除';
+    if (file.added && file.staged) return '已暂存新增';
+    if (file.added) return '新增';
+    if (file.staged && file.modified) return '已暂存 + 未暂存';
+    if (file.staged) return '已暂存';
+    if (file.modified) return '已修改';
+    return file.code || '已变更';
+  }
+
+  function buildGitFileRowsMarkup(files, expanded = false) {
+    const list = Array.isArray(files) ? files : [];
+    if (list.length === 0) {
+      return '<div class="insights-note">工作区干净，没有未提交改动。</div>';
+    }
+    const visibleFiles = expanded ? list : list.slice(0, 6);
+    const hiddenCount = list.length - visibleFiles.length;
+    return `
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px">
+        ${visibleFiles.map((file) => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;border-top:1px solid var(--line);padding-top:4px">
+            <div style="min-width:0;flex:1">
+              <div style="font-size:12px;font-weight:600;color:var(--text-primary);word-break:break-all;line-height:1.3">${escapeHtml(file.path)}</div>
+              <div style="font-size:11px;color:var(--text-secondary);line-height:1.2">${escapeHtml(gitFileStatusText(file))}</div>
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0">
+              <button
+                class="workspace-action-btn"
+                type="button"
+                style="padding:2px 2px;font-size:10px;color:var(--text-muted);border-color:var(--line);box-shadow:none;background:transparent;min-width:0;letter-spacing:0"
+                data-git-action="show-diff"
+                data-git-file="${escapeHtml(file.path)}"
+                ${file.staged && !file.modified ? 'data-git-staged="1"' : ''}
+              >diff</button>
+              ${!file.staged ? `
+                <button
+                  class="workspace-action-btn"
+                  type="button"
+                  style="padding:3px 7px;font-size:11px"
+                  data-git-action="add"
+                  data-git-file="${escapeHtml(file.path)}"
+                >暂存</button>
+              ` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      ${hiddenCount > 0 ? `
+        <button class="insights-note" style="cursor:pointer;text-decoration:underline;text-underline-offset:3px;background:none;border:none;padding:0;color:var(--text-muted);font-size:inherit;width:100%;text-align:left" data-git-action="expand-files">还有 ${hiddenCount} 个文件，点击展开全部</button>
+      ` : ''}
+    `;
+  }
+
+  function normalizeGitTreePath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '');
+  }
+
+  function createEmptyGitTreeSummary() {
+    return {
+      total: 0,
+      staged: 0,
+      modified: 0,
+      untracked: 0,
+      conflicted: 0,
+    };
+  }
+
+  function appendGitFileToSummary(summary, file) {
+    if (!summary || !file) return summary;
+    summary.total += 1;
+    if (file.staged) summary.staged += 1;
+    if (file.modified) summary.modified += 1;
+    if (file.untracked) summary.untracked += 1;
+    if (file.conflicted) summary.conflicted += 1;
+    return summary;
+  }
+
+  function buildGitTreeBadges(summary) {
+    const badges = [
+      summary?.staged ? { label: `暂存 ${summary.staged}`, tone: 'staged' } : null,
+      summary?.modified ? { label: `修改 ${summary.modified}`, tone: 'modified' } : null,
+      summary?.untracked ? { label: `未跟踪 ${summary.untracked}`, tone: 'untracked' } : null,
+      summary?.conflicted ? { label: `冲突 ${summary.conflicted}`, tone: 'conflicted' } : null,
+    ].filter(Boolean);
+    if (!badges.length) return '';
+    return `
+      <span class="git-tree-badges">
+        ${badges.map((badge) => `<span class="git-tree-badge ${badge.tone}">${escapeHtml(badge.label)}</span>`).join('')}
+      </span>
+    `;
+  }
+
+  function gitFileStatusTone(file) {
+    if (!file) return '';
+    if (file.conflicted) return 'conflicted';
+    if (file.modified) return 'modified';
+    if (file.staged) return 'staged';
+    if (file.untracked) return 'untracked';
+    return '';
+  }
+
+  function buildGitFileTree(files) {
+    const root = [];
+    const folders = new Map();
+    const list = Array.isArray(files) ? files : [];
+    const ensureFolder = (segments) => {
+      const key = segments.join('/');
+      if (folders.has(key)) return folders.get(key);
+      const node = {
+        type: 'folder',
+        name: segments[segments.length - 1] || '',
+        key,
+        children: [],
+        summary: createEmptyGitTreeSummary(),
+      };
+      if (segments.length === 1) {
+        root.push(node);
+      } else {
+        ensureFolder(segments.slice(0, -1)).children.push(node);
+      }
+      folders.set(key, node);
+      return node;
+    };
+
+    for (const file of list) {
+      const normalizedPath = normalizeGitTreePath(file?.path);
+      if (!normalizedPath) continue;
+      const nextFile = { ...file, path: normalizedPath };
+      const segments = normalizedPath.split('/').filter(Boolean);
+      if (segments.length <= 1) {
+        root.push({ type: 'file', key: normalizedPath, file: nextFile });
+        continue;
+      }
+      const folderSegments = segments.slice(0, -1);
+      folderSegments.forEach((_, index) => {
+        appendGitFileToSummary(ensureFolder(folderSegments.slice(0, index + 1)).summary, nextFile);
+      });
+      ensureFolder(folderSegments).children.push({ type: 'file', key: normalizedPath, file: nextFile });
+    }
+
+    const sortNodes = (nodes) => {
+      nodes.sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+        const aName = a.type === 'folder'
+          ? a.name
+          : (a.file?.path.split('/').pop() || a.file?.path || '');
+        const bName = b.type === 'folder'
+          ? b.name
+          : (b.file?.path.split('/').pop() || b.file?.path || '');
+        return aName.localeCompare(bName, 'zh-CN', { numeric: true, sensitivity: 'base' });
+      });
+      nodes.forEach((node) => {
+        if (node.type === 'folder') sortNodes(node.children);
+      });
+    };
+
+    sortNodes(root);
+    return root;
+  }
+
+  function renderGitTreeNodes(nodes, collapsedSet, depth = 0) {
+    return nodes.map((node) => {
+      if (node.type === 'folder') {
+        const isCollapsed = collapsedSet.has(node.key);
+        return `
+          <div class="git-tree-node git-tree-folder${isCollapsed ? ' collapsed' : ''}" style="--git-tree-depth:${depth}">
+            <button
+              type="button"
+              class="git-tree-folder-header"
+              data-git-action="toggle-tree-node"
+              data-git-node="${escapeHtml(node.key)}"
+              aria-expanded="${String(!isCollapsed)}"
+            >
+              <span class="git-tree-folder-leading">
+                <span class="git-tree-folder-rail" aria-hidden="true">
+                  <span class="git-tree-chevron">▸</span>
+                </span>
+                <span class="git-tree-folder-main">
+                  <span class="git-tree-folder-name">${escapeHtml(node.name)}</span>
+                  <span class="git-tree-folder-meta">${node.summary.total} 个变更文件</span>
+                </span>
+              </span>
+              <span class="git-tree-folder-trailing">
+                <span class="git-tree-folder-badges">
+                  ${buildGitTreeBadges(node.summary)}
+                </span>
+              </span>
+            </button>
+            <div class="git-tree-children${isCollapsed ? ' collapsed' : ''}">
+              ${renderGitTreeNodes(node.children, collapsedSet, depth + 1)}
+            </div>
+          </div>
+        `;
+      }
+      const file = node.file;
+      const statusText = gitFileStatusText(file);
+      const statusTone = gitFileStatusTone(file);
+      return `
+        <div class="git-tree-node git-tree-file" style="--git-tree-depth:${depth}">
+          <div class="git-tree-file-row">
+            <div class="git-tree-file-leading" aria-hidden="true">
+              <span class="git-tree-file-marker"></span>
+            </div>
+            <div class="git-tree-file-main">
+              <div class="git-tree-file-head">
+                <div class="git-tree-file-name">${escapeHtml(file.path.split('/').pop() || file.path)}</div>
+                <span class="git-tree-badge git-tree-file-status${statusTone ? ` ${statusTone}` : ''}">${escapeHtml(statusText)}</span>
+              </div>
+              <div class="git-tree-file-meta">${escapeHtml(file.path)}</div>
+            </div>
+            <div class="git-tree-file-trailing">
+              <div class="git-tree-file-actions">
+                <button
+                  class="workspace-action-btn git-tree-action-btn"
+                  type="button"
+                  data-git-action="show-diff"
+                  data-git-file="${escapeHtml(file.path)}"
+                  ${file.staged && !file.modified ? 'data-git-staged="1"' : ''}
+                >diff</button>
+                ${!file.staged ? `
+                  <button
+                    class="workspace-action-btn git-tree-action-btn git-tree-stage-btn"
+                    type="button"
+                    data-git-action="add"
+                    data-git-file="${escapeHtml(file.path)}"
+                  >暂存</button>
+                ` : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function buildGitFileTreeMarkup(files) {
+    const list = Array.isArray(files) ? files : [];
+    if (list.length === 0) {
+      return '<div class="insights-note">工作区干净，没有未提交改动。</div>';
+    }
+    const collapsedSet = new Set(Array.isArray(gitState.collapsedTreeNodes) ? gitState.collapsedTreeNodes : []);
+    const tree = buildGitFileTree(list);
+    return `<div class="git-tree-list">${renderGitTreeNodes(tree, collapsedSet)}</div>`;
+  }
+
+  function buildGitInsightsCardMarkup() {
+    const cwd = sessionState.currentCwd || '';
+    const status = gitState.status;
+    const summary = status?.summary || { staged: 0, modified: 0, untracked: 0, conflicted: 0 };
+    const repoName = status?.repoRoot ? getGitRepoLabel(status.repoRoot) : (cwd ? getGitRepoLabel(cwd) : '未识别仓库');
+    const trackingParts = [];
+    if (status?.upstream) trackingParts.push(status.upstream);
+    const stateLabel = !cwd
+      ? '未就绪'
+      : gitState.loading
+        ? '刷新中'
+        : status
+          ? (status.clean ? '干净' : '有改动')
+          : '未加载';
+    const actionButtons = cwd ? buildWorkspaceActionButtons([
+      { action: 'refresh-git', label: '刷新 Git', primary: true },
+      { action: 'show-git-diff', label: '工作区 Diff' },
+      { action: 'show-git-staged-diff', label: '已暂存 Diff' },
+      { action: 'show-git-log', label: '查看 Log' },
+      { action: 'git-add-all', label: '全部暂存' },
+      { action: 'git-commit', label: '提交' },
+      { action: 'git-checkout', label: '切分支' },
+      { action: 'git-create-branch', label: '新建分支' },
+    ], { compact: true }) : '';
+
+    let bodyHtml = '';
+    if (!cwd) {
+      bodyHtml = '<div class="insights-note">当前会话没有工作目录，暂时无法读取 Git 信息。</div>';
+    } else if (!status && gitState.loading) {
+      bodyHtml = '<div class="insights-note">正在读取 Git 状态…</div>';
+    } else if (!status && gitState.lastError) {
+      bodyHtml = `<div class="insights-note">${escapeHtml(gitState.lastError)}</div>`;
+    } else if (!status) {
+      bodyHtml = '<div class="insights-note">点击“刷新 Git”后读取当前仓库状态。</div>';
+    } else {
+      const statsBadges = [
+        summary.staged     ? `<span class="git-insights-badge staged">暂存 ${summary.staged}</span>` : '',
+        summary.modified   ? `<span class="git-insights-badge modified">修改 ${summary.modified}</span>` : '',
+        summary.untracked  ? `<span class="git-insights-badge untracked">未跟踪 ${summary.untracked}</span>` : '',
+        summary.conflicted ? `<span class="git-insights-badge conflicted">冲突 ${summary.conflicted}</span>` : '',
+      ].filter(Boolean).join('');
+      const hasChanges = statsBadges.length > 0;
+      bodyHtml = `
+        <div class="git-insights-summary">
+          ${trackingParts.length ? `<span class="git-insights-track">${escapeHtml(trackingParts.join(' · '))}</span>` : ''}
+          <span class="git-insights-badges">
+            ${hasChanges ? statsBadges : '<span class="git-insights-clean">干净</span>'}
+          </span>
+        </div>
+        ${gitState.loading ? '<div class="insights-note">正在刷新 Git 状态…</div>' : ''}
+        ${gitState.lastError ? `<div class="insights-note">${escapeHtml(gitState.lastError)}</div>` : ''}
+        ${status.files?.length ? buildGitFileRowsMarkup(status.files, gitState.filesExpanded) : ''}
+      `;
+    }
+
+    const branchLabel = status ? (status.branch || 'HEAD') : '';
+    return `
+      <section class="insights-card">
+        <div class="insights-card-header">
+          <div class="git-insights-header-main">
+            <h3>${escapeHtml(repoName)}</h3>
+            ${branchLabel ? `<span class="git-insights-branch">${escapeHtml(branchLabel)}</span>` : ''}
+          </div>
+          <span class="insights-status-pill${status && !status.clean ? ' running' : ''}">${escapeHtml(stateLabel)}</span>
+        </div>
+        ${bodyHtml}
+        ${actionButtons}
+      </section>
+    `;
+  }
+
+  // === Git Panel ===
+
+  function toggleGitPanel() {
+    if (gitState.panelOpen) {
+      closeGitPanel();
+    } else {
+      openGitPanel(gitState.activePanelView || 'status');
+    }
+  }
+
+  function openGitPanel(view) {
+    gitState.panelOpen = true;
+    gitState.activePanelView = view || 'status';
+    if (gitPanelEl) gitPanelEl.classList.add('visible');
+    syncGitPanelWidthForViewport();
+    if (gitPanelBtn) gitPanelBtn.classList.add('active');
+    renderGitPanel();
+    if (view === 'status' && sessionState.currentCwd && !gitState.status && !gitState.loading) {
+      requestGitStatus({ silent: true });
+    }
+  }
+
+  function closeGitPanel() {
+    handleGitPanelResizeEnd();
+    gitState.panelOpen = false;
+    if (gitPanelEl) gitPanelEl.classList.remove('visible');
+    if (gitPanelBtn) gitPanelBtn.classList.remove('active');
+    syncGitPanelWidthForViewport();
+  }
+
+  function renderGitPanel() {
+    if (!gitPanelContent) return;
+    const view = gitState.activePanelView;
+    // Sync toolbar disabled state
+    const toolbar = document.getElementById('git-panel-toolbar');
+    if (toolbar) {
+      const disabled = !sessionState.currentCwd;
+      toolbar.querySelectorAll('.git-toolbar-btn').forEach((btn) => {
+        btn.disabled = disabled;
+      });
+    }
+    // Sync tab active state
+    const activeTabView = view === 'staged-diff' ? 'diff' : view;
+    document.querySelectorAll('.git-panel-tab').forEach((tab) => {
+      tab.classList.toggle('active', tab.dataset.gitView === activeTabView);
+    });
+    if (view === 'status') {
+      gitPanelContent.innerHTML = buildGitPanelStatusMarkup();
+    } else if (view === 'diff' || view === 'staged-diff') {
+      gitPanelContent.innerHTML = buildGitPanelDiffMarkup();
+    } else if (view === 'log') {
+      gitPanelContent.innerHTML = buildGitPanelLogMarkup();
+    } else if (view === 'commit') {
+      gitPanelContent.innerHTML = buildGitPanelCommitMarkup();
+      setupGitPanelCommitHandlers();
+    } else {
+      gitPanelContent.innerHTML = buildGitPanelStatusMarkup();
+    }
+  }
+
+  function buildGitPanelStatusMarkup() {
+    const cwd = sessionState.currentCwd || '';
+    const status = gitState.status;
+    const summary = status?.summary || { staged: 0, modified: 0, untracked: 0, conflicted: 0 };
+    const trackingParts = [];
+    if (status?.upstream) trackingParts.push(status.upstream);
+    if (status?.ahead) trackingParts.push(`ahead ${status.ahead}`);
+    if (status?.behind) trackingParts.push(`behind ${status.behind}`);
+    let bodyHtml = '';
+    if (!cwd) {
+      bodyHtml = '<div class="insights-note">当前会话没有工作目录。</div>';
+    } else if (!status && gitState.loading) {
+      bodyHtml = '<div class="insights-note">正在读取 Git 状态…</div>';
+    } else if (!status && gitState.lastError) {
+      bodyHtml = `<div class="insights-note">${escapeHtml(gitState.lastError)}</div>`;
+    } else if (!status) {
+      bodyHtml = '<div class="insights-note">点击「刷新」后读取当前仓库状态。</div>';
+    } else {
+      bodyHtml = `
+        <section class="git-panel-status-shell">
+          <div class="git-panel-status-summary">
+            <div class="git-panel-status-main">
+              <span class="git-panel-status-branch">${escapeHtml(status.branch || 'HEAD')}</span>
+              ${trackingParts.length ? `<span class="git-panel-status-track">${escapeHtml(trackingParts.join(' · '))}</span>` : ''}
+            </div>
+            <div class="git-panel-status-badges">
+              ${summary.staged ? `<span class="git-insights-badge staged">暂存 ${summary.staged}</span>` : ''}
+              ${summary.modified ? `<span class="git-insights-badge modified">修改 ${summary.modified}</span>` : ''}
+              ${summary.untracked ? `<span class="git-insights-badge untracked">未跟踪 ${summary.untracked}</span>` : ''}
+              ${summary.conflicted ? `<span class="git-insights-badge conflicted">冲突 ${summary.conflicted}</span>` : ''}
+              ${!summary.staged && !summary.modified && !summary.untracked && !summary.conflicted ? '<span class="git-insights-clean">干净</span>' : ''}
+            </div>
+          </div>
+          ${gitState.lastError ? `<div class="insights-note">${escapeHtml(gitState.lastError)}</div>` : ''}
+          <div class="git-panel-tree-wrap">
+            ${buildGitFileTreeMarkup(status.files || [])}
+          </div>
+        </section>
+      `;
+    }
+    return bodyHtml;
+  }
+
+  function buildGitPanelDiffMarkup() {
+    const content = gitState.panelDiffContent;
+    const title = gitState.panelDiffTitle;
+    if (!content) {
+      return '<div class=\"insights-note\">当前没有 diff 内容。</div>';
+    }
+    return `
+      ${title ? `<div style=\"font-size:12px;color:var(--text-muted);margin-bottom:8px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em\">${escapeHtml(title)}</div>` : ''}
+      <pre class=\"git-panel-code\"><code class=\"language-diff\">${escapeHtml(content)}</code></pre>
+    `;
+  }
+
+  function buildGitPanelLogMarkup() {
+    const entries = gitState.panelLogEntries;
+    if (!entries.length) {
+      return '<div class=\"insights-note\">暂无提交记录。</div>';
+    }
+    const items = entries.map((e) => `
+      <div class=\"git-panel-log-item\">
+        <span class=\"git-panel-log-hash\">${escapeHtml(e.hash || '')}</span>
+        <span class=\"git-panel-log-subject\">${escapeHtml(e.subject || '')}</span>
+      </div>
+    `).join('');
+    return `<div class=\"git-panel-log-list\">${items}</div>`;
+  }
+
+  function buildGitPanelCommitMarkup() {
+    const stagedCount = gitState.status?.summary?.staged || 0;
+    return `
+      <div class=\"git-panel-commit-area\">
+        <label class=\"modal-field-label\" for=\"git-panel-commit-message\">提交说明</label>
+        <textarea id=\"git-panel-commit-message\" class=\"themed-textarea\" rows=\"6\"
+          placeholder=\"例如：feat: add git panel\"
+          style=\"min-height:120px;resize:vertical;width:100%\"></textarea>
+        <div class=\"settings-inline-note\">${stagedCount > 0 ? `当前有 ${stagedCount} 个已暂存文件。` : '当前没有已暂存文件，请先暂存后再提交。'}</div>
+        <div class=\"settings-status\" id=\"git-panel-commit-status\"></div>
+        <button class=\"settings-btn primary\" id=\"git-panel-commit-submit\"${stagedCount > 0 ? '' : ' disabled'}>提交</button>
+      </div>
+    `;
+  }
+
+  function setupGitPanelCommitHandlers() {
+    const submitBtn = document.getElementById('git-panel-commit-submit');
+    const messageEl = document.getElementById('git-panel-commit-message');
+    const statusEl = document.getElementById('git-panel-commit-status');
+    if (!submitBtn || !messageEl) return;
+    submitBtn.addEventListener('click', () => {
+      const message = String(messageEl.value || '').trim();
+      if (!message) {
+        if (statusEl) { statusEl.textContent = '提交说明不能为空。'; statusEl.className = 'settings-status error'; }
+        return;
+      }
+      submitBtn.disabled = true;
+      if (statusEl) { statusEl.textContent = '正在提交…'; statusEl.className = 'settings-status'; }
+      sendGitCommand('commit', { message }).then(() => {
+        if (statusEl) { statusEl.textContent = '提交完成'; statusEl.className = 'settings-status success'; }
+        messageEl.value = '';
+        showToast('Git 提交完成');
+        requestGitStatus({ silent: true }).then(() => openGitPanel('status'));
+      }).catch((error) => {
+        if (statusEl) { statusEl.textContent = error.message || 'Git 提交失败'; statusEl.className = 'settings-status error'; }
+        submitBtn.disabled = false;
+      });
+    });
+  }
+
+  function updateGitPanelBadge() {
+    const badge = document.getElementById('git-badge');
+    if (!badge) return;
+    const summary = gitState.status?.summary;
+    if (!summary) { badge.hidden = true; return; }
+    const count = (summary.staged || 0) + (summary.modified || 0) + (summary.untracked || 0);
+    if (count > 0) {
+      badge.textContent = String(count > 99 ? '99+' : count);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  }
+
+  function closeGitModal() {
+    document.getElementById('git-modal-overlay')?.remove();
+  }
+
+  function showGitTextModal(title, text, options = {}) {
+    closeGitModal();
+    const { overlay, panel, close } = createOverlayPanel({
+      overlayClass: 'modal-overlay',
+      overlayId: 'git-modal-overlay',
+      panelClass: 'modal-panel modal-panel-wide',
+      maxWidth: '960px',
+      panelHtml: `
+        <div class="modal-header">
+          <span class="modal-title">${escapeHtml(title)}</span>
+          <button class="modal-close-btn" id="git-modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <pre style="margin:0;max-height:60vh;overflow:auto;background:#101828;color:#f8fafc;padding:16px;border-radius:8px;"><code class="${escapeHtml(options.language ? `language-${options.language}` : '')}">${escapeHtml(text || '暂无内容')}</code></pre>
+        </div>
+      `,
+    });
+    panel.querySelector('#git-modal-close')?.addEventListener('click', close);
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+    const codeEl = panel.querySelector('code');
+    if (window.hljs && codeEl && options.language) {
+      try { window.hljs.highlightElement(codeEl); } catch {}
+    }
+  }
+
+  async function showGitLogModal() {
+    try {
+      const result = await sendGitCommand('log');
+      const entries = Array.isArray(result.data?.entries) ? result.data.entries : [];
+      gitState.logEntries = entries;
+      gitState.panelLogEntries = entries;
+      openGitPanel('log');
+    } catch (error) {
+      appendError(error.message || '读取 Git 历史失败');
+    }
+  }
+
+  async function showGitDiffModal({ staged = false, file = '' } = {}) {
+    try {
+      const result = await sendGitCommand('diff', { staged, file });
+      const title = file
+        ? `Git Diff · ${file}${staged ? ' · 已暂存' : ''}`
+        : (staged ? 'Git Diff · 已暂存' : 'Git Diff · 工作区');
+      gitState.panelDiffContent = result.data?.diff || '当前范围没有 diff。';
+      gitState.panelDiffTitle = title;
+      openGitPanel(staged ? 'staged-diff' : 'diff');
+    } catch (error) {
+      appendError(error.message || '读取 Git diff 失败');
+    }
+  }
+
+  async function performGitAdd(file = '.') {
+    if (file === '.') {
+      const summary = gitState.status?.summary || {};
+      const total = (summary.modified || 0) + (summary.untracked || 0) + (summary.staged || 0);
+      const lines = [];
+      if (summary.modified) lines.push(`${summary.modified} 个已修改`);
+      if (summary.untracked) lines.push(`${summary.untracked} 个未跟踪`);
+      if (summary.staged) lines.push(`${summary.staged} 个已在暂存区`);
+      const desc = total > 0 ? lines.join('、') : '工作区无改动';
+      const confirmed = await showGitConfirmModal({
+        title: '全部暂存',
+        message: `将暂存所有工作区改动。`,
+        detail: desc,
+        confirmLabel: '确认暂存',
+      });
+      if (!confirmed) return;
+    }
+    try {
+      await sendGitCommand('add', { file });
+      showToast(file === '.' ? '已暂存全部改动' : `已暂存 ${file}`);
+      requestGitStatus({ silent: true });
+    } catch (error) {
+      appendError(error.message || '暂存文件失败');
+    }
+  }
+
+  function showGitCommitModal() {
+    openGitPanel('commit');
+  }
+
+  function showGitConfirmModal({ title, message, detail, confirmLabel = '确认', danger = false, alertOnly = false }) {
+    return new Promise((resolve) => {
+      const { overlay, close } = createOverlayPanel({
+        overlayClass: 'modal-overlay',
+        panelClass: 'modal-panel',
+        maxWidth: '400px',
+        panelHtml: `
+          <div class="modal-header">
+            <span class="modal-title">${escapeHtml(title)}</span>
+            <button class="modal-close-btn" id="git-confirm-close">✕</button>
+          </div>
+          <div class="modal-body" style="padding:16px 20px;display:flex;flex-direction:column;gap:10px">
+            <p style="margin:0;color:var(--text-primary)">${escapeHtml(message)}</p>
+            ${detail ? `<p style="margin:0;font-size:12px;color:var(--text-muted);font-family:var(--font-mono)">${escapeHtml(detail)}</p>` : ''}
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+              ${alertOnly ? '' : '<button class="modal-btn-secondary" id="git-confirm-cancel">取消</button>'}
+              <button class="modal-btn-${danger ? 'danger' : 'primary'}" id="git-confirm-ok">${escapeHtml(confirmLabel)}</button>
+            </div>
+          </div>
+        `,
+      });
+      const done = (val) => { close(); resolve(val); };
+      overlay.querySelector('#git-confirm-close').addEventListener('click', () => done(false));
+      if (!alertOnly) overlay.querySelector('#git-confirm-cancel').addEventListener('click', () => done(false));
+      overlay.querySelector('#git-confirm-ok').addEventListener('click', () => done(true));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) done(false); });
+    });
+  }
+
+  async function showGitBranchPicker() {
+    try {
+      const result = await sendGitCommand('branch');
+      const branches = Array.isArray(result.data?.branches) ? result.data.branches : [];
+      const current = result.data?.current || '';
+      gitState.branchEntries = branches;
+      if (branches.length === 0) {
+        appendError('未读取到任何 Git 分支');
+        return;
+      }
+      showOptionPicker(
+        '切换 Git 分支',
+        branches.map((branch) => ({
+          value: branch.name,
+          label: branch.name,
+          desc: branch.current ? '当前分支' : '点击后切换到该分支',
+        })),
+        current,
+        async (value) => {
+          if (value === current) {
+            showToast(`当前已在 ${value}`);
+            return;
+          }
+          const summary = gitState.status?.summary || {};
+          const conflicted = summary.conflicted || 0;
+          const dirty = (summary.staged || 0) + (summary.modified || 0) + (summary.untracked || 0);
+          if (conflicted > 0) {
+            await showGitConfirmModal({
+              title: '存在冲突文件',
+              message: `当前有 ${conflicted} 个冲突文件，请先解决冲突再切换分支。`,
+              confirmLabel: '知道了',
+              alertOnly: true,
+            });
+            return;
+          }
+          if (dirty > 0) {
+            const lines = [];
+            if (summary.staged) lines.push(`${summary.staged} 个已暂存`);
+            if (summary.modified) lines.push(`${summary.modified} 个未暂存`);
+            if (summary.untracked) lines.push(`${summary.untracked} 个未跟踪`);
+            const confirmed = await showGitConfirmModal({
+              title: '工作区有未提交改动',
+              message: `切换到 ${value} 时，这些改动可能被一起带走或导致切换失败。`,
+              detail: lines.join('、'),
+              confirmLabel: '仍然切换',
+              danger: true,
+            });
+            if (!confirmed) return;
+          }
+          try {
+            await sendGitCommand('checkout', { branch: value });
+            showToast(`已切换到 ${value}`);
+            requestGitStatus({ silent: true });
+          } catch (error) {
+            appendError(error.message || '切换分支失败');
+          }
+        }
+      );
+    } catch (error) {
+      appendError(error.message || '读取分支列表失败');
+    }
+  }
+
+  async function promptCreateGitBranch() {
+    return new Promise((resolve) => {
+      const { overlay, close } = createOverlayPanel({
+        overlayClass: 'modal-overlay',
+        panelClass: 'modal-panel',
+        maxWidth: '400px',
+        panelHtml: `
+          <div class="modal-header">
+            <span class="modal-title">新建分支</span>
+            <button class="modal-close-btn" id="git-branch-close">✕</button>
+          </div>
+          <div class="modal-body" style="padding:16px 20px;display:flex;flex-direction:column;gap:12px">
+            <label class="modal-field-label" for="git-branch-name">分支名称</label>
+            <input id="git-branch-name" type="text" placeholder="例如：feat/my-feature" autocomplete="off" style="width:100%;padding:8px 10px;background:var(--bg-secondary);border:1px solid var(--line);border-radius:2px;color:var(--text-primary);font-family:var(--font-mono);font-size:13px;box-sizing:border-box">
+            <p style="margin:0;font-size:12px;color:var(--text-muted)">只创建分支，不会自动切换。</p>
+            <div class="settings-status" id="git-branch-status"></div>
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+              <button class="modal-btn-secondary" id="git-branch-cancel">取消</button>
+              <button class="modal-btn-primary" id="git-branch-submit">创建分支</button>
+            </div>
+          </div>
+        `,
+      });
+      const done = (val) => { close(); resolve(val); };
+      const nameInput = overlay.querySelector('#git-branch-name');
+      const statusEl = overlay.querySelector('#git-branch-status');
+      const submitBtn = overlay.querySelector('#git-branch-submit');
+      overlay.querySelector('#git-branch-close').addEventListener('click', () => done(null));
+      overlay.querySelector('#git-branch-cancel').addEventListener('click', () => done(null));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+      const doSubmit = async () => {
+        const name = nameInput.value.trim();
+        if (!name) {
+          statusEl.textContent = '请输入分支名称';
+          statusEl.className = 'settings-status error';
+          nameInput.focus();
+          return;
+        }
+        submitBtn.disabled = true;
+        statusEl.textContent = '';
+        try {
+          await sendGitCommand('branch', { name });
+          done(name);
+          showToast(`已创建分支 ${name}`);
+          requestGitStatus({ silent: true });
+        } catch (error) {
+          statusEl.textContent = error.message || '创建分支失败';
+          statusEl.className = 'settings-status error';
+          submitBtn.disabled = false;
+        }
+      };
+      submitBtn.addEventListener('click', doSubmit);
+      nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSubmit(); });
+      setTimeout(() => nameInput.focus(), 50);
+    });
+  }
+
   function buildWelcomeMarkup(agent) {
     const label = AGENT_LABELS[agent] || AGENT_LABELS.claude;
     const sessionCount = typeof getVisibleSessions === 'function' ? getVisibleSessions().length : 0;
     const projectCount = Array.isArray(projects) ? projects.length : 0;
     return `
-      <div class=”welcome-msg”>
-        <div class=”welcome-header”>
-          <div class=”welcome-icon”>✦</div>
+      <div class="welcome-msg">
+        <div class="welcome-header">
+          <div class="welcome-icon">✦</div>
           <h3>${label} 工作区</h3>
         </div>
-        <div class=”welcome-stats”>
-          <div class=”welcome-stat”>
+        <div class="welcome-stats">
+          <div class="welcome-stat">
             <strong>${sessionCount}</strong>
             <span>会话数</span>
           </div>
-          <div class=”welcome-stat”>
+          <div class="welcome-stat">
             <strong>${projectCount}</strong>
             <span>项目数</span>
           </div>
-          <div class=”welcome-stat”>
+          <div class="welcome-stat">
             <strong>${MODE_LABELS[sessionState.currentMode] || sessionState.currentMode}</strong>
             <span>模式</span>
           </div>
         </div>
-        <div class=”welcome-actions”>
+        <div class="welcome-actions">
           ${buildWorkspaceActionButtons([
             { action: 'new-session', label: '新建会话', primary: true },
             { action: 'import-session', label: '导入历史' },
             { action: 'switch-model', label: '切换模型' },
           ], { compact: true })}
         </div>
-        <div class=”welcome-panels”>
-          <section class=”welcome-panel”>
-            <div class=”welcome-panel-kicker”>常用指令</div>
-            <ul class=”welcome-list”>
+        <div class="welcome-panels">
+          <section class="welcome-panel">
+            <div class="welcome-panel-kicker">常用指令</div>
+            <ul class="welcome-list">
               <li><code>/model</code> 查看或切换模型</li>
               <li><code>/mode</code> 切换权限模式</li>
               <li><code>/compact</code> 压缩上下文</li>
             </ul>
           </section>
-          <section class=”welcome-panel”>
-            <div class=”welcome-panel-kicker”>多模态协作</div>
-            <ul class=”welcome-list”>
+          <section class="welcome-panel">
+            <div class="welcome-panel-kicker">多模态协作</div>
+            <ul class="welcome-list">
               <li>支持随消息附带图片，适合 UI、截图和报错定位。</li>
             </ul>
           </section>
@@ -1127,6 +2046,7 @@
   function resetChatView(agent) {
     const baseAgent = normalizeAgent(agent || selectedAgent);
     setCurrentAgent(baseAgent);
+    resetGitState();
     sessionState.currentSessionId = null;
     sessionState.loadedHistorySessionId = null;
     clearSessionLoading();
@@ -1173,7 +2093,10 @@
     setCurrentAgent(snapshot.agent);
     setCurrentSessionRunningState(snapshot.isRunning);
     setStatsDisplay(snapshot);
-    sessionState.currentCwd = snapshot.cwd || null;
+    const nextGitCwd = snapshot.cwd || null;
+    const gitCwdChanged = gitState.cwd !== nextGitCwd;
+    sessionState.currentCwd = nextGitCwd;
+    if (gitCwdChanged) resetGitState(nextGitCwd ? { cwd: nextGitCwd } : {});
     updateCwdBadge();
     if (snapshot.mode && MODE_LABELS[snapshot.mode]) {
       sessionState.currentMode = snapshot.mode;
@@ -1194,6 +2117,9 @@
       showToast('后台任务已完成', snapshot.sessionId);
     }
     renderWorkspaceInsights();
+    if (nextGitCwd && (gitCwdChanged || !gitState.status)) {
+      requestGitStatus({ silent: true });
+    }
   }
 
   function getSessionLoadLabel(sessionId) {
@@ -1889,7 +2815,47 @@
   function handleProjectsConfigMessage(msg) {
     projects = msg.projects || [];
     renderSessionList();
-    flushPendingProjectFocus();
+    if (pendingProjectSaveCallback) {
+      const cb = pendingProjectSaveCallback;
+      pendingProjectSaveCallback = null;
+      cb(projects);
+    }
+  }
+
+  function handleGitResultMessage(msg) {
+    const responseCwd = msg?.data?.cwd || msg?.cwd || null;
+    const staleForCurrentView = !!(responseCwd && sessionState.currentCwd && responseCwd !== sessionState.currentCwd);
+
+    if (!staleForCurrentView) {
+      gitState.loading = false;
+      if (msg.success) {
+        gitState.lastError = '';
+        if (msg.action === 'status') {
+          const nextRepoRoot = msg.data?.repoRoot || null;
+          const prevRepoRoot = gitState.status?.repoRoot || gitState.cwd || null;
+          gitState.cwd = responseCwd || sessionState.currentCwd || null;
+          gitState.status = msg.data || null;
+          gitState.filesExpanded = false;
+          if (nextRepoRoot !== prevRepoRoot) {
+            gitState.collapsedTreeNodes = [];
+          }
+        } else if (msg.action === 'log') {
+          gitState.logEntries = Array.isArray(msg.data?.entries) ? msg.data.entries : [];
+        } else if (msg.action === 'branch' && Array.isArray(msg.data?.branches)) {
+          gitState.branchEntries = msg.data.branches;
+        }
+      } else {
+        gitState.lastError = msg.error || 'Git 操作失败';
+        if (msg.action === 'status') gitState.status = null;
+      }
+      renderWorkspaceInsights();
+      if (msg.action === 'status') {
+        updateGitPanelBadge();
+        if (gitState.panelOpen) renderGitPanel();
+      }
+    }
+
+    emitWsEvent('git_result', msg);
   }
 
   const SERVER_MESSAGE_HANDLERS = Object.freeze({
@@ -1935,6 +2901,7 @@
     cwd_suggestions: (msg) => { if (typeof _onCwdSuggestions === 'function') _onCwdSuggestions(msg.paths || []); },
     directory_listing: (msg) => { if (typeof _onDirectoryListing === 'function') _onDirectoryListing(msg); },
     update_info: (msg) => { if (typeof window._ccOnUpdateInfo === 'function') window._ccOnUpdateInfo(msg); },
+    git_result: handleGitResultMessage,
     projects_config: handleProjectsConfigMessage,
   });
 
@@ -2998,7 +3965,6 @@
   }
 
   function getProjectParentPath(project) {
-    if (project.id === '__ungrouped__') return '';
     const p = project.path;
     if (!p) return '';
     const idx = p.lastIndexOf('/');
@@ -3034,20 +4000,6 @@
     return true;
   }
 
-  function queueProjectFocus(projectId, toast) {
-    pendingProjectFocusId = projectId || null;
-    pendingProjectFocusMessage = toast || '';
-  }
-
-  function flushPendingProjectFocus() {
-    if (!pendingProjectFocusId) return;
-    const projectId = pendingProjectFocusId;
-    const toast = pendingProjectFocusMessage;
-    pendingProjectFocusId = null;
-    pendingProjectFocusMessage = '';
-    focusProjectGroup(projectId, { toast });
-  }
-
   function buildSessionItem(s) {
     const item = document.createElement('div');
     item.className = `session-item${s.id === sessionState.currentSessionId ? ' active' : ''}${s.hasUnread ? ' has-unread' : ''}${s.isRunning ? ' is-running' : ''}`;
@@ -3055,6 +4007,17 @@
     item.setAttribute('tabindex', '0');
     item.setAttribute('role', 'button');
     item.setAttribute('aria-label', `会话: ${s.title || 'Untitled'}`);
+
+    const leading = document.createElement('span');
+    leading.className = 'session-item-leading';
+    leading.setAttribute('aria-hidden', 'true');
+
+    const marker = document.createElement('span');
+    marker.className = 'session-item-marker';
+    leading.appendChild(marker);
+
+    const content = document.createElement('div');
+    content.className = 'session-item-content';
 
     const title = document.createElement('span');
     title.className = 'session-item-title';
@@ -3087,18 +4050,23 @@
     editBtn.className = 'session-item-btn edit';
     editBtn.title = '重命名';
     editBtn.type = 'button';
-    editBtn.textContent = '\u270E';
+    editBtn.setAttribute('aria-label', '重命名会话');
+    editBtn.textContent = '✎';
     right.appendChild(editBtn);
 
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'session-item-btn delete';
     deleteBtn.title = '删除';
     deleteBtn.type = 'button';
-    deleteBtn.textContent = '\u00D7';
+    deleteBtn.setAttribute('aria-label', '删除会话');
+    deleteBtn.textContent = '×';
     right.appendChild(deleteBtn);
 
-    item.appendChild(title);
-    item.appendChild(right);
+    content.appendChild(title);
+    content.appendChild(right);
+
+    item.appendChild(leading);
+    item.appendChild(content);
 
     item.addEventListener('click', (e) => {
       const actionBtn = e.target instanceof Element ? e.target.closest('button') : null;
@@ -3146,29 +4114,35 @@
   }
 
   function renderProjectGroup(project, groupSessions, container, timestampCache) {
-    const isSpecialGroup = project.id === '__ungrouped__';
     const isVirtualCwd = Boolean(project.isVirtualCwd);
     const containsCurrentSession = groupSessions.some((session) => session.id === sessionState.currentSessionId);
     const isCollapsed = collapsedProjects.has(project.id);
+    const runningCount = groupSessions.reduce((count, session) => count + (session.isRunning ? 1 : 0), 0);
+    const unreadCount = groupSessions.reduce((count, session) => count + (session.hasUnread ? 1 : 0), 0);
 
     const group = document.createElement('section');
     group.className = 'project-group'
       + (containsCurrentSession ? ' active-project' : '')
       + (groupSessions.length === 0 ? ' empty-project' : '')
-      + (isSpecialGroup ? ' special-project' : '');
+      + (runningCount ? ' has-running' : '')
+      + (unreadCount ? ' has-unread' : '');
     group.dataset.projectId = project.id;
+    group.dataset.sessionCount = String(groupSessions.length);
+    if (runningCount) group.dataset.runningCount = String(runningCount);
+    if (unreadCount) group.dataset.unreadCount = String(unreadCount);
 
     const header = document.createElement('div');
     header.className = 'project-group-header' + (isCollapsed ? ' collapsed' : '');
     header.dataset.projectId = project.id;
     header.setAttribute('aria-expanded', String(!isCollapsed));
+    header.setAttribute('aria-label', `${project.name}，${groupSessions.length} 个会话`);
 
     const main = document.createElement('div');
     main.className = 'project-group-main';
 
     const chevron = document.createElement('span');
     chevron.className = 'project-group-chevron';
-    chevron.textContent = '\u25B8';
+    chevron.textContent = '▸';
 
     const copy = document.createElement('div');
     copy.className = 'project-group-copy';
@@ -3180,58 +4154,83 @@
 
     const pathLine = document.createElement('div');
     pathLine.className = 'project-group-path';
-    // Show parent directory only
     const parentPath = getProjectParentPath(project);
     pathLine.textContent = parentPath;
     if (project.path) pathLine.title = project.path;
+
+    const countBadge = document.createElement('span');
+    countBadge.className = 'project-group-count';
+    countBadge.textContent = String(groupSessions.length);
+    countBadge.title = `${groupSessions.length} 个会话`;
 
     copy.appendChild(nameSpan);
     if (parentPath) copy.appendChild(pathLine);
 
     main.appendChild(chevron);
     main.appendChild(copy);
+    main.appendChild(countBadge);
 
     const actions = document.createElement('div');
     actions.className = 'project-group-actions';
-    if (!isSpecialGroup) {
-      const createBtn = document.createElement('button');
-      createBtn.className = 'project-group-create-btn';
-      createBtn.title = '在此项目下新建会话';
-      createBtn.type = 'button';
-      createBtn.textContent = '+';
-      createBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const nextMode = getSavedModeForAgent(selectedAgent);
-        send(isVirtualCwd
-          ? { type: 'new_session', cwd: project.path, agent: selectedAgent, mode: nextMode }
-          : { type: 'new_session', projectId: project.id, agent: selectedAgent, mode: nextMode });
-      });
-      actions.appendChild(createBtn);
-      if (!isVirtualCwd) {
-        const renameBtn = document.createElement('button');
-        renameBtn.className = 'project-group-btn';
-        renameBtn.title = '重命名';
-        renameBtn.type = 'button';
-        renameBtn.textContent = '\u270E';
-        renameBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          startEditProjectName(header, project);
-        });
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'project-group-btn';
-        deleteBtn.title = '移除项目';
-        deleteBtn.type = 'button';
-        deleteBtn.textContent = '\u2715';
-        deleteBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (confirm(`确定移除项目「${project.name}」？\n（不会删除会话，会话将变为未分组）`)) {
-            send({ type: 'delete_project', projectId: project.id });
+    const createBtn = document.createElement('button');
+    createBtn.className = 'project-group-create-btn';
+    createBtn.title = '在此项目下新建会话';
+    createBtn.type = 'button';
+    createBtn.textContent = '+';
+    createBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const nextMode = getSavedModeForAgent(selectedAgent);
+      send(isVirtualCwd
+        ? { type: 'new_session', cwd: project.path, agent: selectedAgent, mode: nextMode }
+        : { type: 'new_session', projectId: project.id, agent: selectedAgent, mode: nextMode });
+    });
+    actions.appendChild(createBtn);
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'project-group-btn';
+    renameBtn.title = '重命名';
+    renameBtn.type = 'button';
+    renameBtn.setAttribute('aria-label', '重命名项目');
+    renameBtn.textContent = '✎';
+    renameBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isVirtualCwd) {
+        pendingProjectSaveCallback = (updatedProjects) => {
+          const saved = updatedProjects.find((p) => p.path === project.path);
+          if (saved) {
+            const groupEl = findProjectGroupElement(saved.id);
+            const headerEl = groupEl?.querySelector('.project-group-header');
+            if (headerEl) startEditProjectName(headerEl, saved);
           }
-        });
-        actions.appendChild(renameBtn);
-        actions.appendChild(deleteBtn);
+        };
+        send({ type: 'save_project', path: project.path, name: project.name });
+      } else {
+        startEditProjectName(header, project);
       }
-    }
+    });
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'project-group-btn';
+    deleteBtn.title = '移除项目';
+    deleteBtn.type = 'button';
+    deleteBtn.setAttribute('aria-label', '移除项目');
+    deleteBtn.textContent = '✕';
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isVirtualCwd) {
+        if (confirm(`确定移除「${project.name}」分组？\n（会话将变为独立显示）`)) {
+          pendingProjectSaveCallback = (updatedProjects) => {
+            const saved = updatedProjects.find((p) => p.path === project.path);
+            if (saved) send({ type: 'delete_project', projectId: saved.id });
+          };
+          send({ type: 'save_project', path: project.path, name: project.name });
+        }
+      } else {
+        if (confirm(`确定移除项目「${project.name}」？\n（不会删除会话，会话仍会保留）`)) {
+          send({ type: 'delete_project', projectId: project.id });
+        }
+      }
+    });
+    actions.appendChild(renameBtn);
+    actions.appendChild(deleteBtn);
 
     header.appendChild(main);
     if (actions.childElementCount) header.appendChild(actions);
@@ -3261,9 +4260,7 @@
       if (sortedSessions.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'project-group-empty';
-        empty.textContent = project.id === '__ungrouped__'
-          ? '还没有未分组对话。'
-          : '这个项目下还没有对话。';
+        empty.textContent = '这个项目下还没有对话。';
         body.appendChild(empty);
       }
     }
@@ -3372,16 +4369,6 @@
       });
     }
 
-    if (ungrouped.length > 0) {
-      groupEntries.push({
-        project: { id: '__ungrouped__', name: '未分组' },
-        groupSessions: ungrouped,
-        containsCurrentSession: ungrouped.some((session) => session.id === sessionState.currentSessionId),
-        isVirtual: true,
-        latestTimestamp: getLatestSessionTimestamp(ungrouped, sessionTimestampCache),
-      });
-    }
-
     groupEntries.sort((a, b) => {
       if (a.containsCurrentSession !== b.containsCurrentSession) {
         return a.containsCurrentSession ? -1 : 1;
@@ -3393,12 +4380,21 @@
       }
       const latestDiff = b.latestTimestamp - a.latestTimestamp;
       if (latestDiff !== 0) return latestDiff;
-      if (a.isVirtual !== b.isVirtual) return a.isVirtual ? 1 : -1;
       return SESSION_LIST_COLLATOR.compare(a.project.name || '', b.project.name || '');
     });
 
     for (const entry of groupEntries) {
       renderProjectGroup(entry.project, entry.groupSessions, listFragment, sessionTimestampCache);
+    }
+    if (ungrouped.length > 0) {
+      const sortedUngrouped = [...ungrouped].sort((a, b) => {
+        const bTs = sessionTimestampCache.get(b.id) ?? getSessionUpdatedTimestamp(b);
+        const aTs = sessionTimestampCache.get(a.id) ?? getSessionUpdatedTimestamp(a);
+        return bTs - aTs;
+      });
+      for (const session of sortedUngrouped) {
+        listFragment.appendChild(buildSessionItem(session));
+      }
     }
     sessionList.appendChild(listFragment);
     renderWorkspaceInsights();
@@ -3614,6 +4610,42 @@
     applySidebarWidth(currentWidth);
     sidebarResizeState = null;
     document.body.classList.remove('sidebar-resizing');
+  }
+
+  function handleGitPanelResizeStart(e) {
+    if (!gitState.panelOpen || !canResizeGitPanel()) return;
+    if (typeof e.button === 'number' && e.button !== 0) return;
+    gitPanelResizeState = {
+      startX: e.clientX,
+      startWidth: gitPanelEl.getBoundingClientRect().width,
+    };
+    document.body.classList.add('git-panel-resizing');
+    const resizer = ensureGitPanelResizer();
+    if (typeof resizer?.setPointerCapture === 'function' && e.pointerId !== undefined) {
+      resizer.setPointerCapture(e.pointerId);
+    }
+    e.preventDefault();
+  }
+
+  function handleGitPanelResizeMove(e) {
+    if (!gitPanelResizeState) return;
+    const deltaX = gitPanelResizeState.startX - e.clientX;
+    applyGitPanelWidth(gitPanelResizeState.startWidth + deltaX, { skipPersist: true });
+  }
+
+  function handleGitPanelResizeEnd(e) {
+    if (!gitPanelResizeState) return;
+    const releasedPointerId = e?.pointerId;
+    const resizer = ensureGitPanelResizer();
+    if (typeof resizer?.releasePointerCapture === 'function' && releasedPointerId !== undefined) {
+      try { resizer.releasePointerCapture(releasedPointerId); } catch {}
+    }
+    const currentWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--git-panel-width'), 10)
+      || gitPanelEl.getBoundingClientRect().width
+      || GIT_PANEL_DEFAULT_WIDTH;
+    applyGitPanelWidth(currentWidth);
+    gitPanelResizeState = null;
+    document.body.classList.remove('git-panel-resizing');
   }
 
   // --- Slash Command Menu ---
@@ -4011,6 +5043,14 @@
     window.addEventListener('pointerup', handleSidebarResizeEnd);
     window.addEventListener('pointercancel', handleSidebarResizeEnd);
   }
+  const gitPanelResizer = ensureGitPanelResizer();
+  if (gitPanelResizer) {
+    gitPanelResizer.addEventListener('pointerdown', handleGitPanelResizeStart);
+    gitPanelResizer.addEventListener('dblclick', () => applyGitPanelWidth(GIT_PANEL_DEFAULT_WIDTH));
+    window.addEventListener('pointermove', handleGitPanelResizeMove);
+    window.addEventListener('pointerup', handleGitPanelResizeEnd);
+    window.addEventListener('pointercancel', handleGitPanelResizeEnd);
+  }
   document.addEventListener('touchstart', handleSidebarSwipeStart, { passive: true });
   document.addEventListener('touchmove', handleSidebarSwipeMove, { passive: false });
   document.addEventListener('touchend', handleSidebarSwipeEnd, { passive: true });
@@ -4075,11 +5115,103 @@
     }
     if (action === 'focus-project' && actionBtn.dataset.projectId) {
       focusProjectGroup(actionBtn.dataset.projectId, { toast: '已定位到当前项目。' });
+      return;
+    }
+    if (action === 'refresh-git') {
+      requestGitStatus();
+      return;
+    }
+    if (action === 'show-git-diff') {
+      showGitDiffModal();
+      return;
+    }
+    if (action === 'show-git-staged-diff') {
+      showGitDiffModal({ staged: true });
+      return;
+    }
+    if (action === 'show-git-log') {
+      showGitLogModal();
+      return;
+    }
+    if (action === 'git-add-all') {
+      performGitAdd('.');
+      return;
+    }
+    if (action === 'git-commit') {
+      showGitCommitModal();
+      return;
+    }
+    if (action === 'git-checkout') {
+      showGitBranchPicker();
+      return;
+    }
+    if (action === 'git-create-branch') {
+      promptCreateGitBranch();
+      return;
     }
   }
 
   function handleGlobalDocumentClick(event) {
     const target = event.target;
+
+    // Git panel toggle button
+    if (target instanceof Element && (target === gitPanelBtn || target.closest('#git-panel-btn'))) {
+      toggleGitPanel();
+      return;
+    }
+    // Git panel close button
+    if (target instanceof Element && (target.id === 'git-panel-close' || target.closest('#git-panel-close'))) {
+      closeGitPanel();
+      return;
+    }
+    // Git panel tab switching
+    const gitTab = target instanceof Element ? target.closest('[data-git-view]') : null;
+    if (gitTab && gitPanelEl?.contains(gitTab)) {
+      event.preventDefault();
+      const newView = gitTab.dataset.gitView;
+      gitState.activePanelView = newView;
+      renderGitPanel();
+      if (newView === 'log' && !gitState.panelLogEntries.length) {
+        showGitLogModal();
+      } else if (newView === 'diff' && !gitState.panelDiffContent) {
+        showGitDiffModal();
+      }
+      return;
+    }
+
+    const gitBtn = target instanceof Element ? target.closest('[data-git-action]') : null;
+    if (gitBtn) {
+      event.preventDefault();
+      const gitAction = gitBtn.dataset.gitAction;
+      const gitFile = gitBtn.dataset.gitFile || '';
+      const gitStaged = gitBtn.dataset.gitStaged === '1';
+      if (gitAction === 'show-diff') {
+        showGitDiffModal({ file: gitFile, staged: gitStaged });
+        return;
+      }
+      if (gitAction === 'add') {
+        performGitAdd(gitFile || '.');
+        return;
+      }
+      if (gitAction === 'expand-files') {
+        gitState.filesExpanded = true;
+        renderGitPanel();
+        renderWorkspaceInsights();
+        return;
+      }
+      if (gitAction === 'toggle-tree-node') {
+        const nodeKey = gitBtn.dataset.gitNode || '';
+        const collapsed = new Set(Array.isArray(gitState.collapsedTreeNodes) ? gitState.collapsedTreeNodes : []);
+        if (collapsed.has(nodeKey)) {
+          collapsed.delete(nodeKey);
+        } else {
+          collapsed.add(nodeKey);
+        }
+        gitState.collapsedTreeNodes = [...collapsed];
+        renderGitPanel();
+        return;
+      }
+    }
     const actionBtn = target instanceof Element ? target.closest('[data-workspace-action]') : null;
     handleWorkspaceActionClick(actionBtn, event);
 
@@ -4352,6 +5484,19 @@
 
       <div class="settings-divider"></div>
 
+      <div class="settings-section-title">界面主题</div>
+      <div class="settings-field">
+        <label>配色方案</label>
+        <select class="settings-select" id="theme-select">
+          <option value="default">默认主题</option>
+          <option value="localhost">极简主题</option>
+        </select>
+      </div>
+      <div class="settings-inline-note">切换工作台外观，不影响功能或会话数据。</div>
+      <div class="settings-status" id="theme-status"></div>
+
+      <div class="settings-divider"></div>
+
       <div class="settings-section-title">系统</div>
       <div class="settings-actions" style="margin-top:0;flex-wrap:wrap;gap:10px">
         <button class="btn-test" id="pw-open-modal-btn" style="padding:6px 16px">修改密码</button>
@@ -4488,6 +5633,9 @@
     const testBtn = panel.querySelector('#notify-test-btn');
     const saveBtn = panel.querySelector('#notify-save-btn');
 
+    const themeSelect = panel.querySelector('#theme-select');
+    const themeStatusDiv = panel.querySelector('#theme-status');
+
     const pwOpenModalBtn = panel.querySelector('#pw-open-modal-btn');
     const checkUpdateBtn = panel.querySelector('#check-update-btn');
     const updateStatusEl = panel.querySelector('#update-status');
@@ -4614,6 +5762,11 @@
       notifyStatusDiv.className = 'settings-status ' + (type || '');
     }
 
+    function showThemeStatus(msg, type) {
+      themeStatusDiv.textContent = msg;
+      themeStatusDiv.className = 'settings-status ' + (type || '');
+    }
+
     function renderFields(provider) {
       renderNotifyFields(fieldsDiv, currentNotifyConfig, provider);
     }
@@ -4659,13 +5812,6 @@
       codexModeSelect.value = selectedCodexChannel;
     }
 
-    function getChannelDisplayLabel(agent, channelValue) {
-      if (channelValue === 'local') {
-        return agent === 'codex' ? '本机登录态' : '本地配置';
-      }
-      return channelValue || '未选择';
-    }
-
     function renderTemplateArea() {
       if (!modelConfigLoaded || !codexConfigLoaded) {
         templateArea.innerHTML = `
@@ -4677,7 +5823,6 @@
       }
 
       renderAgentChannelOptions();
-      const activeTemplate = modelEditingTemplates.find((template) => template.name === providerEditorSelection) || null;
       const legacyMode = currentCodexConfig?.legacyMode || '';
       const legacyNote = legacyMode === 'custom'
         ? '检测到旧版 Codex 独立配置。当前页面不再维护那套分叉逻辑；你保存后，Codex 会改为从上面的 AI 提供商列表里单独选渠道。'
@@ -4877,6 +6022,12 @@
     codexModeSelect.addEventListener('change', () => {
       selectedCodexChannel = codexModeSelect.value;
       renderTemplateArea();
+    });
+    themeSelect.value = getStoredTheme();
+    themeSelect.addEventListener('change', () => {
+      const nextTheme = applyTheme(themeSelect.value);
+      themeSelect.value = nextTheme;
+      showThemeStatus(`已切换为 ${THEME_LABELS[nextTheme]}`, 'success');
     });
     providerSelect.addEventListener('change', () => renderFields(providerSelect.value));
 
@@ -5472,7 +6623,7 @@
           <button class="modal-close-btn" id="ns-close-btn">\u2715</button>
         </div>
         <div class="modal-body modal-body-project">
-          <div class="modal-stack project-flow-shell" id="ns-step-projects">
+          <div class="modal-stack project-flow-shell" id="ns-step-projects" style="display:none">
             <div class="project-picker-head">
               <div class="project-picker-head-copy">
                 <label class="modal-field-label">已保存项目</label>
@@ -5482,13 +6633,12 @@
             </div>
             <div class="project-picker-list" id="ns-project-list"></div>
             <div class="project-picker-actions">
-              <button class="project-picker-action-btn primary" id="ns-add-project-btn">添加新项目</button>
-              <button class="project-picker-action-btn secondary" id="ns-browse-btn">临时会话</button>
+              <button class="project-picker-action-btn primary" id="ns-open-dir-btn">打开其他目录</button>
             </div>
-            <div class="project-picker-helper">点击项目后会直接定位到左侧项目卡片；真正的新会话仍然在左侧项目卡片里创建。</div>
+            <div class="project-picker-helper">点击任意项目会直接创建新会话；选择其他目录时，也会自动加入左侧项目列表。</div>
           </div>
 
-          <div class="modal-stack dir-browser-shell" id="ns-step-browser" style="display:none">
+          <div class="modal-stack dir-browser-shell" id="ns-step-browser">
             <div class="dir-browser-current">
               <div class="dir-browser-current-label">当前目录</div>
               <div class="dir-browser-current-name" id="ns-current-name">正在定位…</div>
@@ -5520,7 +6670,7 @@
         <div class="modal-footer">
           <button class="modal-btn-secondary" id="ns-back-btn" style="display:none">返回</button>
           <button class="modal-btn-secondary" id="ns-cancel-btn">取消</button>
-          <button class="modal-btn-primary" id="ns-select-btn" style="display:none">选择此目录</button>
+          <button class="modal-btn-primary" id="ns-select-btn">选择此目录</button>
         </div>
       </div>
     `;
@@ -5537,7 +6687,7 @@
       </span>
       <span class="project-picker-item-name">${escapeHtml(project.name)}</span>
       <span class="project-picker-item-path">${escapeHtml(project.path)}</span>
-      <span class="project-picker-item-note">定位到左侧项目卡片后，可直接点右侧“+”继续新建会话。</span>
+      <span class="project-picker-item-note">点击后会立刻进入这个项目，并创建一个新会话。</span>
       <span class="project-picker-item-arrow" aria-hidden="true">\u203A</span>
     `;
     card.addEventListener('click', onClick);
@@ -5592,12 +6742,9 @@
     }
   }
 
-  function updateNewSessionBrowserChrome(selectionHintEl, selectBtn, addProjectMode) {
-    const isSavingProject = Boolean(addProjectMode);
-    selectionHintEl.textContent = isSavingProject
-      ? '确认后会把当前目录加入左侧项目列表。'
-      : '确认后会立刻用当前目录创建一次临时会话。';
-    selectBtn.textContent = isSavingProject ? '保存为项目' : '创建临时会话';
+  function updateNewSessionBrowserChrome(selectionHintEl, selectBtn) {
+    selectionHintEl.textContent = '确认后会把这个目录加入左侧项目列表，并立刻创建新会话。';
+    selectBtn.textContent = '打开这个目录';
   }
 
   function updateNewSessionPathCard(currentNameEl, currentPathEl, pathValue, hasError = false) {
@@ -5637,8 +6784,8 @@
     projectListEl.innerHTML = '';
     projectCountEl.textContent = `${projectsList.length} 个项目`;
     projectSummaryEl.textContent = projectsList.length > 0
-      ? '点击任意项目会直接定位到左侧对应项目卡片。'
-      : '还没有保存项目，先选一个目录加入左侧列表。';
+      ? '点击任意项目会直接创建新会话。'
+      : '还没有保存项目，先选一个目录开始。';
 
     for (const project of projectsList) {
       const card = createProjectPickerItemElement(project, getSessionCount(project), () => onProjectSelect(project));
@@ -5725,8 +6872,6 @@
 
     let currentBrowsePath = null;
     let showHidden = false;
-    let addProjectMode = false; // true = save as project after selecting dir
-
     overlay.innerHTML = buildNewSessionModalHtml();
 
     document.body.appendChild(overlay);
@@ -5757,11 +6902,10 @@
         getSessionCount: (project) => getCurrentProjectSessionCount(project),
         onProjectSelect: (project) => {
           close();
-          focusProjectGroup(project.id, { toast: '已定位到项目，点击项目右侧“新建会话”即可继续。' });
+          send({ type: 'new_session', projectId: project.id, agent: targetAgent, mode: getSavedModeForAgent(targetAgent) });
         },
       });
       if (projects.length === 0) {
-        addProjectMode = true;
         showBrowserStep(false);
         return;
       }
@@ -5778,7 +6922,7 @@
         canGoBack,
       });
       selectBtn.disabled = true;
-      updateNewSessionBrowserChrome(selectionHintEl, selectBtn, addProjectMode);
+      updateNewSessionBrowserChrome(selectionHintEl, selectBtn);
       updateNewSessionPathCard(currentNameEl, currentPathEl, currentBrowsePath);
       navigateTo(currentBrowsePath);
     }
@@ -5791,7 +6935,6 @@
         backBtn,
         showBrowser: false,
       });
-      addProjectMode = false;
     }
 
     function navigateTo(dirPath) {
@@ -5861,34 +7004,26 @@
       renderProjectPicker();
     });
 
-    // "Add new project" — browse dir then save as project
-    overlay.querySelector('#ns-add-project-btn').addEventListener('click', () => {
-      addProjectMode = true;
+    overlay.querySelector('#ns-open-dir-btn').addEventListener('click', () => {
       showBrowserStep(true);
     });
 
-    // "Browse directory" — browse dir without saving as project
-    overlay.querySelector('#ns-browse-btn').addEventListener('click', () => {
-      addProjectMode = false;
-      showBrowserStep(true);
-    });
-
-    // Select button — create session (and optionally save project)
+    // Select button — create session and auto-persist project by cwd
     selectBtn.addEventListener('click', () => {
       const cwd = currentBrowsePath || null;
       if (!cwd) return;
+      const normalizedCwd = normalizeComparablePath(cwd);
+      const existingProject = projects.find((project) => normalizeComparablePath(project?.path) === normalizedCwd) || null;
+      const projectId = existingProject?.id || crypto.randomUUID();
       close();
-      if (addProjectMode && cwd) {
-        const projectId = crypto.randomUUID();
-        queueProjectFocus(projectId, '项目已加入左侧列表，后续可在项目下反复新建会话。');
-        send({ type: 'save_project', id: projectId, path: cwd });
-      } else {
-        send({ type: 'new_session', cwd, agent: targetAgent, mode: getSavedModeForAgent(targetAgent) });
-      }
+      send(existingProject
+        ? { type: 'save_project', id: projectId, path: cwd }
+        : { type: 'save_project', id: projectId, path: cwd, name: getPathLeaf(cwd) || cwd });
+      send({ type: 'new_session', cwd, agent: targetAgent, mode: getSavedModeForAgent(targetAgent) });
     });
 
-    // Initialize — show project picker or browser
-    renderProjectPicker();
+    // Initialize — default directly into directory browser
+    showBrowserStep(false);
   }
 
   // --- Import Native Session Modal ---

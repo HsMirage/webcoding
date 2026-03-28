@@ -843,6 +843,65 @@ function saveProjectsConfig(config) {
   writeCachedJsonConfig(PROJECTS_CONFIG_PATH, config);
 }
 
+function normalizeProjectPathKey(projectPath) {
+  const raw = String(projectPath || '').trim();
+  if (!raw) return '';
+  try {
+    return path.resolve(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function isSameOrChildProjectPath(parentPath, childPath) {
+  const parent = normalizeProjectPathKey(parentPath);
+  const child = normalizeProjectPathKey(childPath);
+  if (!parent || !child) return false;
+  if (parent === child) return true;
+  const relativePath = path.relative(parent, child);
+  return !!relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+}
+
+function findBestProjectForPath(projects, targetPath) {
+  const normalizedTargetPath = normalizeProjectPathKey(targetPath);
+  if (!normalizedTargetPath) return null;
+  let matchedProject = null;
+  let matchedPathLength = -1;
+  for (const project of Array.isArray(projects) ? projects : []) {
+    if (!project?.path || !isSameOrChildProjectPath(project.path, normalizedTargetPath)) continue;
+    const normalizedProjectPath = normalizeProjectPathKey(project.path);
+    if (normalizedProjectPath.length > matchedPathLength) {
+      matchedProject = project;
+      matchedPathLength = normalizedProjectPath.length;
+    }
+  }
+  return matchedProject;
+}
+
+function ensureProjectForPath(projectPath, options = {}) {
+  const normalizedProjectPath = normalizeProjectPathKey(projectPath);
+  if (!normalizedProjectPath) return { project: null, created: false };
+  const config = loadProjectsConfig();
+  const existing = findBestProjectForPath(config.projects, normalizedProjectPath);
+  if (existing) {
+    let changed = false;
+    if (normalizeProjectPathKey(existing.path) === normalizedProjectPath && existing.path !== normalizedProjectPath) {
+      existing.path = normalizedProjectPath;
+      changed = true;
+    }
+    if (changed) saveProjectsConfig(config);
+    return { project: existing, created: false };
+  }
+  const project = {
+    id: options.id || crypto.randomUUID(),
+    name: String(options.name || path.basename(normalizedProjectPath) || normalizedProjectPath).trim(),
+    path: normalizedProjectPath,
+  };
+  config.projects.push(project);
+  saveProjectsConfig(config);
+  return { project, created: true };
+}
+
 function loadCodexConfig() {
   const raw = readCachedJsonConfig(CODEX_CONFIG_PATH);
   if (raw) {
@@ -2951,13 +3010,46 @@ function readBridgeState() {
   }
 }
 
+function clearTunnelState() {
+  try { fs.unlinkSync(TUNNEL_STATE_PATH); } catch {}
+}
+
+function normalizeTunnelState(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const pid = Number.parseInt(String(raw.pid ?? ''), 10);
+  const managerPid = Number.parseInt(String(raw.managerPid ?? ''), 10);
+  const port = Number.parseInt(String(raw.port ?? ''), 10);
+  const url = String(raw.url || '').trim();
+  const startedAt = String(raw.startedAt || '').trim();
+  const error = String(raw.error || '').trim();
+  return {
+    pid: Number.isInteger(pid) && pid > 0 ? pid : null,
+    managerPid: Number.isInteger(managerPid) && managerPid > 0 ? managerPid : null,
+    port: Number.isInteger(port) && port > 0 ? port : null,
+    url: url || null,
+    startedAt: startedAt || null,
+    error: error || '',
+  };
+}
+
 function readTunnelState() {
   try {
     if (!fs.existsSync(TUNNEL_STATE_PATH)) return null;
-    return JSON.parse(fs.readFileSync(TUNNEL_STATE_PATH, 'utf8'));
+    return normalizeTunnelState(JSON.parse(fs.readFileSync(TUNNEL_STATE_PATH, 'utf8')));
   } catch {
+    clearTunnelState();
     return null;
   }
+}
+
+function isTunnelStateLive(state) {
+  return !!(
+    state?.managerPid
+    && state?.pid
+    && state?.port
+    && isProcessRunning(state.managerPid)
+    && isProcessRunning(state.pid)
+  );
 }
 
 // Returns the path where we store the downloaded cloudflared binary
@@ -2986,7 +3078,8 @@ function getTunnelStatus() {
   const bin = getCloudflaredBin();
   const installed = !!bin;
   const state = readTunnelState();
-  if (!state || !state.pid || !isProcessRunning(state.pid)) {
+  if (!state || !isTunnelStateLive(state)) {
+    if (state) clearTunnelState();
     return { running: false, url: null, installed };
   }
   return { running: true, url: state.url || null, installed };
@@ -3155,7 +3248,10 @@ function startTunnel() {
   if (!bin) return { running: false, url: null, installed: false, error: 'cloudflared 未安装' };
 
   const existing = readTunnelState();
-  if (existing?.pid && isProcessRunning(existing.pid)) return getTunnelStatus();
+  if (existing) {
+    if (isTunnelStateLive(existing)) return getTunnelStatus();
+    clearTunnelState();
+  }
 
   const child = spawn(process.execPath, [TUNNEL_SCRIPT_PATH], {
     detached: true,
@@ -3172,7 +3268,7 @@ function startTunnel() {
   const deadline = Date.now() + TUNNEL_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const state = readTunnelState();
-    if (state?.pid && isProcessRunning(state.pid) && state.url) return getTunnelStatus();
+    if (isTunnelStateLive(state) && state.url) return getTunnelStatus();
     sleepSync(200);
   }
   return getTunnelStatus();
@@ -3180,10 +3276,14 @@ function startTunnel() {
 
 function stopTunnel() {
   const state = readTunnelState();
-  if (state?.pid && isProcessRunning(state.pid)) {
+  const live = isTunnelStateLive(state);
+  if (live && state.managerPid) {
+    killProcess(state.managerPid, true);
+  }
+  if (live && state.pid && state.pid !== state.managerPid) {
     killProcess(state.pid, true);
   }
-  try { fs.unlinkSync(TUNNEL_STATE_PATH); } catch { /* ok */ }
+  clearTunnelState();
   return { running: false, url: null, installed: !!getCloudflaredBin() };
 }
 
@@ -4286,6 +4386,9 @@ wss.on('connection', (ws, req) => {
       case 'rename_project':
         handleRenameProject(ws, msg);
         break;
+      case 'git_command':
+        handleGitCommand(ws, msg);
+        break;
       default:
         wsSend(ws, { type: 'error', message: `Unknown type: ${msg.type}` });
     }
@@ -4849,7 +4952,7 @@ function handleNewSession(ws, msg) {
   const cwd = (msg && msg.cwd) ? String(msg.cwd) : null;
   const agent = normalizeAgent(msg?.agent);
   const requestedMode = ['default', 'plan', 'yolo'].includes(msg?.mode) ? msg.mode : 'yolo';
-  const projectId = msg?.projectId || null;
+  let projectId = msg?.projectId || null;
   let resolvedCwd = cwd;
   if (!resolvedCwd && projectId) {
     const proj = loadProjectsConfig().projects.find(p => p.id === projectId);
@@ -4857,6 +4960,17 @@ function handleNewSession(ws, msg) {
   }
   if (!resolvedCwd) {
     resolvedCwd = agent === 'claude' ? (process.env.HOME || process.env.USERPROFILE || process.cwd()) : null;
+  }
+  if (resolvedCwd) {
+    resolvedCwd = normalizeProjectPathKey(resolvedCwd);
+  }
+  let projectsChanged = false;
+  if (!projectId && cwd && resolvedCwd) {
+    const ensured = ensureProjectForPath(resolvedCwd);
+    if (ensured.project?.id) {
+      projectId = ensured.project.id;
+      projectsChanged = !!ensured.created;
+    }
   }
   const id = crypto.randomUUID();
   const session = {
@@ -4879,6 +4993,9 @@ function handleNewSession(ws, msg) {
   };
   saveSession(session);
   wsSessionMap.set(ws, id);
+  if (projectsChanged) {
+    wsSend(ws, { type: 'projects_config', projects: loadProjectsConfig().projects });
+  }
   wsSend(ws, {
     type: 'session_info',
     sessionId: id,
@@ -4914,6 +5031,16 @@ function handleLoadSession(ws, sessionId) {
       session.cwd = localMeta.cwd;
       if (!session.importedFrom && localMeta.projectDir) session.importedFrom = localMeta.projectDir;
       saveSession(session);
+    }
+  }
+  if (session.cwd && !session.projectId) {
+    const ensured = ensureProjectForPath(session.cwd);
+    if (ensured.project?.id) {
+      session.projectId = ensured.project.id;
+      saveSession(session);
+      if (ensured.created) {
+        wsSend(ws, { type: 'projects_config', projects: loadProjectsConfig().projects });
+      }
     }
   }
   const { recentMessages, olderChunks } = splitHistoryMessages(session.messages);
@@ -5915,6 +6042,10 @@ function handleImportNativeSession(ws, msg) {
     messages,
     cwd: cwd || existingSession?.cwd || null,
   };
+  if (session.cwd && !session.projectId) {
+    const ensured = ensureProjectForPath(session.cwd);
+    if (ensured.project?.id) session.projectId = ensured.project.id;
+  }
   saveSession(session);
   wsSessionMap.set(ws, id);
   wsSend(ws, {
@@ -6015,7 +6146,10 @@ function handleImportCodexSession(ws, msg) {
     messages: parsed.messages,
     cwd: parsed.meta.cwd || existingSession?.cwd || null,
   };
-
+  if (session.cwd && !session.projectId) {
+    const ensured = ensureProjectForPath(session.cwd);
+    if (ensured.project?.id) session.projectId = ensured.project.id;
+  }
   saveSession(session);
   wsSessionMap.set(ws, id);
   wsSend(ws, {
@@ -6067,7 +6201,7 @@ function handleListCwdSuggestions(ws) {
 // === Project Handlers ===
 function handleSaveProject(ws, msg) {
   const config = loadProjectsConfig();
-  const projectPath = msg.path ? String(msg.path).trim() : null;
+  const projectPath = msg.path ? normalizeProjectPathKey(msg.path) : null;
   const projectName = msg.name ? String(msg.name).trim() : null;
   if (!projectPath) {
     return wsSend(ws, { type: 'error', message: '项目路径不能为空' });
@@ -6081,7 +6215,8 @@ function handleSaveProject(ws, msg) {
     return wsSend(ws, { type: 'error', message: '路径不存在或无法访问' });
   }
   const id = msg.id || crypto.randomUUID();
-  const existing = config.projects.find(p => p.id === id);
+  const existing = config.projects.find(p => p.id === id)
+    || config.projects.find(p => normalizeProjectPathKey(p.path) === projectPath);
   if (existing) {
     if (projectName) existing.name = projectName;
     existing.path = projectPath;
@@ -6108,6 +6243,367 @@ function handleRenameProject(ws, msg) {
     saveProjectsConfig(config);
   }
   wsSend(ws, { type: 'projects_config', projects: config.projects });
+}
+
+async function handleGitCommand(ws, msg) {
+  const action = String(msg?.action || '').trim();
+  const requestId = msg?.requestId || null;
+  let responseCwd = typeof msg?.cwd === 'string' ? String(msg.cwd).trim() : '';
+
+  function sendGitResult(success, data = null, error = '') {
+    wsSend(ws, {
+      type: 'git_result',
+      requestId,
+      action,
+      success: !!success,
+      data: success ? data : null,
+      error: success ? null : (error || 'Git 操作失败'),
+      cwd: responseCwd || null,
+    });
+  }
+
+  function execGit(args, cwd) {
+    return new Promise((resolve) => {
+      execFile('git', args, {
+        cwd,
+        timeout: 15000,
+        maxBuffer: 4 * 1024 * 1024,
+      }, (error, stdout = '', stderr = '') => {
+        resolve({
+          ok: !error,
+          error,
+          stdout: String(stdout || ''),
+          stderr: String(stderr || ''),
+        });
+      });
+    });
+  }
+
+  function formatGitError(result, fallback = 'Git 操作失败') {
+    if (result?.error?.code === 'ENOENT') {
+      return '找不到 git 命令，请先确认本机已经安装 Git。';
+    }
+    const merged = [result?.stderr, result?.stdout, result?.error?.message]
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    if (!merged) return fallback;
+    return merged
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(' ');
+  }
+
+  function sanitizeGitRelativePath(rawValue, repoRoot) {
+    const raw = String(rawValue || '.').trim();
+    if (!raw || raw === '.') return '.';
+    if (raw.includes('\u0000')) throw new Error('文件路径不合法。');
+    if (path.isAbsolute(raw)) throw new Error('文件路径必须是仓库内相对路径。');
+    const normalized = path.posix.normalize(raw.replace(/\\/g, '/'));
+    if (normalized === '.' || normalized === '') return '.';
+    if (normalized === '..' || normalized.startsWith('../')) {
+      throw new Error('不允许访问仓库外部路径。');
+    }
+    if (normalized.startsWith('-')) throw new Error('文件路径不能以 - 开头。');
+    const resolved = path.resolve(repoRoot, normalized.split('/').join(path.sep));
+    if (!isPathInside(resolved, repoRoot)) throw new Error('文件路径超出仓库范围。');
+    return normalized;
+  }
+
+  function sanitizeGitBranchName(rawValue) {
+    const name = String(rawValue || '').trim();
+    if (!name) throw new Error('分支名不能为空。');
+    if (name.includes('\u0000') || name.startsWith('-') || /\s/.test(name)) {
+      throw new Error('分支名不合法。');
+    }
+    if (
+      name.startsWith('/') ||
+      name.endsWith('/') ||
+      name.includes('//') ||
+      name.includes('..') ||
+      name.endsWith('.lock') ||
+      name.includes('@{') ||
+      name === '@'
+    ) {
+      throw new Error('分支名不合法。');
+    }
+    if (!/^[A-Za-z0-9._/-]+$/.test(name)) {
+      throw new Error('分支名只允许字母、数字、点、下划线、中划线和斜杠。');
+    }
+    return name;
+  }
+
+  function ensureGitCwdAllowed(targetPath) {
+    return BROWSE_ROOTS.some((root) => isPathInside(targetPath, root));
+  }
+
+  async function hasActiveProcessInRepo(targetRepoRoot) {
+    for (const [, entry] of activeProcesses) {
+      const entryCwd = String(entry?.cwd || '').trim();
+      if (!entryCwd) continue;
+      let resolvedEntryCwd;
+      try {
+        resolvedEntryCwd = fs.realpathSync(path.resolve(entryCwd));
+      } catch {
+        continue;
+      }
+      const repoProbe = await execGit(['rev-parse', '--show-toplevel'], resolvedEntryCwd);
+      const activeRepoRoot = repoProbe.ok ? (String(repoProbe.stdout || '').trim() || resolvedEntryCwd) : null;
+      if (activeRepoRoot && activeRepoRoot === targetRepoRoot) return true;
+    }
+    return false;
+  }
+
+  const conflictCodes = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+
+  function parseGitStatusPorcelain(rawText) {
+    const lines = String(rawText || '').split(/\r?\n/).filter(Boolean);
+    const files = [];
+    let branch = '';
+    let upstream = '';
+    let ahead = 0;
+    let behind = 0;
+    let detached = false;
+
+    for (const line of lines) {
+      if (line.startsWith('## ')) {
+        const head = line.slice(3).trim();
+        if (/^No commits yet on /i.test(head)) {
+          branch = head.replace(/^No commits yet on /i, '').trim();
+          continue;
+        }
+        const bracketMatch = head.match(/\[(.+)\]$/);
+        const trackingPart = bracketMatch ? bracketMatch[1] : '';
+        const refPart = bracketMatch ? head.slice(0, head.lastIndexOf(' [')).trim() : head;
+        const refPieces = refPart.split('...');
+        branch = refPieces[0] || '';
+        upstream = refPieces[1] || '';
+        detached = branch.startsWith('HEAD');
+        const aheadMatch = trackingPart.match(/ahead (\d+)/);
+        const behindMatch = trackingPart.match(/behind (\d+)/);
+        ahead = aheadMatch ? parseInt(aheadMatch[1], 10) || 0 : 0;
+        behind = behindMatch ? parseInt(behindMatch[1], 10) || 0 : 0;
+        continue;
+      }
+
+      const x = line[0] || ' ';
+      const y = line[1] || ' ';
+      const code = `${x}${y}`;
+      let filePath = line.slice(3).trim();
+      if (filePath.includes(' -> ')) filePath = filePath.split(' -> ').pop().trim();
+      const conflicted = conflictCodes.has(code);
+      const untracked = code === '??';
+      const staged = !conflicted && x !== ' ' && x !== '?';
+      const modified = !conflicted && y !== ' ' && y !== '?';
+
+      files.push({
+        path: filePath,
+        code,
+        indexStatus: x,
+        worktreeStatus: y,
+        staged,
+        modified,
+        untracked,
+        conflicted,
+        renamed: x === 'R' || y === 'R',
+        added: x === 'A' || y === 'A',
+        deleted: x === 'D' || y === 'D',
+      });
+    }
+
+    return {
+      branch: branch || 'HEAD',
+      upstream: upstream || '',
+      ahead,
+      behind,
+      detached,
+      clean: files.length === 0,
+      summary: {
+        staged: files.filter((file) => file.staged).length,
+        modified: files.filter((file) => file.modified).length,
+        untracked: files.filter((file) => file.untracked).length,
+        conflicted: files.filter((file) => file.conflicted).length,
+      },
+      files,
+    };
+  }
+
+  function parseGitLog(rawText) {
+    return String(rawText || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const firstSpace = line.indexOf(' ');
+        if (firstSpace < 0) return { hash: line, subject: '' };
+        return {
+          hash: line.slice(0, firstSpace),
+          subject: line.slice(firstSpace + 1),
+        };
+      });
+  }
+
+  function parseGitBranchList(rawText) {
+    const branches = [];
+    let current = '';
+    for (const rawLine of String(rawText || '').split(/\r?\n/)) {
+      if (!rawLine.trim()) continue;
+      const isCurrent = rawLine.startsWith('*');
+      const name = rawLine.slice(2).trim();
+      if (!name) continue;
+      branches.push({ name, current: isCurrent });
+      if (isCurrent) current = name;
+    }
+    return { current, branches };
+  }
+
+  try {
+    let requestedCwd = typeof msg?.cwd === 'string' ? String(msg.cwd).trim() : '';
+    if (!requestedCwd && msg?.sessionId) {
+      requestedCwd = String(loadSession(msg.sessionId)?.cwd || '').trim();
+    }
+    if (!requestedCwd) {
+      return sendGitResult(false, null, '缺少工作目录，无法执行 Git 操作。');
+    }
+
+    let targetCwd;
+    try {
+      targetCwd = fs.realpathSync(path.resolve(requestedCwd));
+      responseCwd = targetCwd;
+    } catch {
+      return sendGitResult(false, null, '工作目录不存在或无法访问。');
+    }
+
+    if (!ensureGitCwdAllowed(targetCwd)) {
+      return sendGitResult(false, null, '工作目录不在允许范围内。');
+    }
+
+    const repoProbe = await execGit(['rev-parse', '--show-toplevel'], targetCwd);
+    if (!repoProbe.ok) {
+      return sendGitResult(false, null, '当前目录不是 Git 仓库。');
+    }
+    const repoRoot = String(repoProbe.stdout || '').trim() || targetCwd;
+    if (!ensureGitCwdAllowed(repoRoot)) {
+      return sendGitResult(false, null, 'Git 仓库根目录不在允许范围内。');
+    }
+
+    const isWriteAction = action === 'add'
+      || action === 'commit'
+      || action === 'checkout'
+      || (action === 'branch' && String(msg?.name || '').trim());
+    if (isWriteAction && await hasActiveProcessInRepo(repoRoot)) {
+      return sendGitResult(false, null, '当前仓库有正在运行的会话，暂时禁止 Git 写操作。');
+    }
+
+    switch (action) {
+      case 'status': {
+        const result = await execGit(['status', '--porcelain=1', '--branch'], repoRoot);
+        if (!result.ok) return sendGitResult(false, null, formatGitError(result, '读取 Git 状态失败。'));
+        return sendGitResult(true, {
+          cwd: responseCwd,
+          repoRoot,
+          ...parseGitStatusPorcelain(result.stdout),
+        });
+      }
+      case 'log': {
+        const headCheck = await execGit(['rev-parse', '--verify', '--quiet', 'HEAD'], repoRoot);
+        if (!headCheck.ok) {
+          return sendGitResult(true, {
+            cwd: responseCwd,
+            repoRoot,
+            entries: [],
+          });
+        }
+        const result = await execGit(['log', '--no-color', '--oneline', '-20'], repoRoot);
+        if (!result.ok) {
+          return sendGitResult(false, null, formatGitError(result, '读取 Git 历史失败。'));
+        }
+        return sendGitResult(true, {
+          cwd: responseCwd,
+          repoRoot,
+          entries: parseGitLog(result.stdout),
+        });
+      }
+      case 'diff': {
+        const staged = msg?.staged === true || msg?.staged === '1' || msg?.staged === 1;
+        const file = msg?.file ? sanitizeGitRelativePath(msg.file, repoRoot) : '';
+        const args = ['diff', '--no-color'];
+        if (staged) args.push('--staged');
+        if (file) args.push('--', file);
+        const result = await execGit(args, repoRoot);
+        if (!result.ok) return sendGitResult(false, null, formatGitError(result, '读取 Git diff 失败。'));
+        return sendGitResult(true, {
+          cwd: responseCwd,
+          repoRoot,
+          staged,
+          file: file || '',
+          diff: result.stdout || '',
+        });
+      }
+      case 'add': {
+        const file = sanitizeGitRelativePath(msg?.file || '.', repoRoot);
+        const result = await execGit(['add', '--', file], repoRoot);
+        if (!result.ok) return sendGitResult(false, null, formatGitError(result, '暂存文件失败。'));
+        return sendGitResult(true, {
+          cwd: responseCwd,
+          repoRoot,
+          file,
+          output: (result.stdout || result.stderr || '').trim(),
+        });
+      }
+      case 'commit': {
+        const message = String(msg?.message || '').trim();
+        if (!message) return sendGitResult(false, null, '提交说明不能为空。');
+        const result = await execGit(['commit', '-m', message], repoRoot);
+        if (!result.ok) return sendGitResult(false, null, formatGitError(result, 'Git 提交失败。'));
+        return sendGitResult(true, {
+          cwd: responseCwd,
+          repoRoot,
+          message,
+          output: (result.stdout || result.stderr || '').trim(),
+        });
+      }
+      case 'branch': {
+        const name = String(msg?.name || '').trim();
+        if (name) {
+          const safeName = sanitizeGitBranchName(name);
+          const result = await execGit(['branch', safeName], repoRoot);
+          if (!result.ok) return sendGitResult(false, null, formatGitError(result, '创建分支失败。'));
+          return sendGitResult(true, {
+            cwd: responseCwd,
+            repoRoot,
+            created: true,
+            branch: safeName,
+            output: (result.stdout || result.stderr || '').trim(),
+          });
+        }
+        const result = await execGit(['branch', '--list', '--no-color'], repoRoot);
+        if (!result.ok) return sendGitResult(false, null, formatGitError(result, '读取分支列表失败。'));
+        return sendGitResult(true, {
+          cwd: responseCwd,
+          repoRoot,
+          ...parseGitBranchList(result.stdout),
+        });
+      }
+      case 'checkout': {
+        const branch = sanitizeGitBranchName(msg?.branch || '');
+        const result = await execGit(['checkout', branch], repoRoot);
+        if (!result.ok) return sendGitResult(false, null, formatGitError(result, '切换分支失败。'));
+        return sendGitResult(true, {
+          cwd: responseCwd,
+          repoRoot,
+          branch,
+          output: (result.stdout || result.stderr || '').trim(),
+        });
+      }
+      default:
+        return sendGitResult(false, null, `不支持的 Git 操作：${action || 'unknown'}`);
+    }
+  } catch (error) {
+    return sendGitResult(false, null, error?.message || 'Git 操作失败。');
+  }
 }
 
 function handleBrowseDirectory(ws, msg) {
@@ -6212,6 +6708,23 @@ setInterval(() => {
   }
   plog('INFO', 'heartbeat', { activeCount: procs.length, wsClients: wss.clients.size, processes: procs });
 }, 60000);
+
+// Backfill projectId for existing sessions that have cwd but no projectId
+try {
+  const files = fs.readdirSync(SESSIONS_DIR).filter((f) => f.endsWith('.json'));
+  for (const file of files) {
+    try {
+      const session = normalizeSession(JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf8')));
+      if (session && session.cwd && !session.projectId) {
+        const ensured = ensureProjectForPath(session.cwd);
+        if (ensured.project?.id) {
+          session.projectId = ensured.project.id;
+          saveSession(session);
+        }
+      }
+    } catch {}
+  }
+} catch {}
 
 plog('INFO', 'server_start', { port: PORT });
 

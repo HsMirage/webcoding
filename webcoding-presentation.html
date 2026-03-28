@@ -1,0 +1,2342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Webcoding Presentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap">
+  <style>
+    :root {
+      --bg: #05131b;
+      --bg-deep: #020a0f;
+      --panel: rgba(10, 29, 38, 0.72);
+      --panel-strong: rgba(10, 25, 33, 0.92);
+      --panel-soft: rgba(18, 43, 55, 0.48);
+      --line: rgba(137, 219, 255, 0.18);
+      --line-strong: rgba(137, 219, 255, 0.38);
+      --text: #f6efe4;
+      --muted: #9eb4bf;
+      --cyan: #80e5ff;
+      --cyan-strong: #1bbcff;
+      --gold: #ffd56e;
+      --orange: #ff914d;
+      --mint: #79f0bd;
+      --shadow: 0 40px 120px rgba(0, 0, 0, 0.42);
+      --radius-xl: 32px;
+      --radius-lg: 24px;
+      --radius-md: 18px;
+      --header-height: 78px;
+      --nav-width: 172px;
+      --content-width: min(1280px, calc(100vw - var(--nav-width) - 76px));
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 15% 20%, rgba(27, 188, 255, 0.18), transparent 28%),
+        radial-gradient(circle at 85% 18%, rgba(255, 145, 77, 0.15), transparent 24%),
+        radial-gradient(circle at 76% 80%, rgba(255, 213, 110, 0.10), transparent 28%),
+        linear-gradient(145deg, #07141c 0%, #041019 48%, #01070b 100%);
+      color: var(--text);
+      font-family: "Sora", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      position: relative;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+      background: none;
+      border: 0;
+      padding: 0;
+      cursor: pointer;
+    }
+
+    .ambient {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .ambient::before,
+    .ambient::after {
+      content: "";
+      position: absolute;
+      inset: -10%;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+      background-size: 120px 120px;
+      mask-image: radial-gradient(circle at center, black 45%, transparent 84%);
+      opacity: 0.16;
+    }
+
+    .ambient::after {
+      background:
+        radial-gradient(circle, rgba(128, 229, 255, 0.18) 0%, transparent 58%),
+        radial-gradient(circle, rgba(255, 145, 77, 0.16) 0%, transparent 62%);
+      background-size: 44vw 44vw, 36vw 36vw;
+      background-position: 10% 12%, 88% 76%;
+      background-repeat: no-repeat;
+      filter: blur(24px);
+      opacity: 0.8;
+    }
+
+    .orb {
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(14px);
+      opacity: 0.46;
+      animation: drift 16s ease-in-out infinite;
+    }
+
+    .orb-a {
+      width: 240px;
+      height: 240px;
+      left: -70px;
+      top: 10vh;
+      background: radial-gradient(circle, rgba(27, 188, 255, 0.45), transparent 72%);
+    }
+
+    .orb-b {
+      width: 320px;
+      height: 320px;
+      right: -120px;
+      top: 38vh;
+      background: radial-gradient(circle, rgba(255, 145, 77, 0.42), transparent 68%);
+      animation-delay: -8s;
+    }
+
+    .orb-c {
+      width: 220px;
+      height: 220px;
+      right: 22vw;
+      bottom: -70px;
+      background: radial-gradient(circle, rgba(255, 213, 110, 0.32), transparent 70%);
+      animation-delay: -4s;
+    }
+
+    @keyframes drift {
+      0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+      50% { transform: translate3d(18px, -24px, 0) scale(1.06); }
+    }
+
+    .hud {
+      position: fixed;
+      top: 20px;
+      left: 24px;
+      right: 24px;
+      height: var(--header-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      z-index: 10;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 18px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(4, 14, 20, 0.64);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+    }
+
+    .brand-mark {
+      width: 40px;
+      height: 40px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #09131a;
+      background:
+        linear-gradient(135deg, var(--gold) 0%, var(--orange) 45%, var(--cyan) 100%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+    }
+
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .brand-copy strong {
+      font-size: 15px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .brand-copy span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .hud-right {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 12px;
+    }
+
+    .hud-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 48px;
+      padding: 0 18px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(4, 14, 20, 0.62);
+      backdrop-filter: blur(16px);
+      color: var(--muted);
+    }
+
+    .hud-link {
+      color: var(--text);
+      background: linear-gradient(135deg, rgba(255, 145, 77, 0.24), rgba(27, 188, 255, 0.14));
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .hud-link:hover {
+      transform: translateY(-1px);
+      border-color: var(--line-strong);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+    }
+
+    .side-nav {
+      position: fixed;
+      top: calc(var(--header-height) + 42px);
+      left: 24px;
+      width: var(--nav-width);
+      z-index: 9;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 18px;
+      border-radius: 26px;
+      border: 1px solid var(--line);
+      background: rgba(4, 14, 20, 0.56);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.25);
+    }
+
+    .side-nav-label {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+
+    .nav-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 12px;
+      border-radius: 16px;
+      color: var(--muted);
+      text-align: left;
+      transition: transform 180ms ease, background 180ms ease, color 180ms ease, border-color 180ms ease;
+      border: 1px solid transparent;
+    }
+
+    .nav-item:hover {
+      transform: translateX(2px);
+      color: var(--text);
+      border-color: rgba(255, 255, 255, 0.05);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .nav-index {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      color: inherit;
+    }
+
+    .nav-title {
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .nav-item.is-active {
+      color: var(--text);
+      border-color: rgba(255, 213, 110, 0.22);
+      background:
+        linear-gradient(135deg, rgba(255, 145, 77, 0.12), rgba(27, 188, 255, 0.08)),
+        rgba(255, 255, 255, 0.03);
+    }
+
+    .nav-item.is-active .nav-index {
+      color: #081017;
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--gold), var(--orange), var(--cyan));
+    }
+
+    .progress-rail {
+      position: fixed;
+      left: 24px;
+      bottom: 24px;
+      width: var(--nav-width);
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      z-index: 9;
+    }
+
+    .progress-fill {
+      display: block;
+      height: 100%;
+      width: 12.5%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--orange), var(--gold), var(--cyan));
+      box-shadow: 0 0 30px rgba(255, 213, 110, 0.25);
+      transition: width 260ms ease;
+    }
+
+    .deck-controls {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(4, 14, 20, 0.62);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.24);
+    }
+
+    .control-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 48px;
+      height: 48px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      background: rgba(255, 255, 255, 0.03);
+      transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+
+    .control-btn:hover {
+      transform: translateY(-1px);
+      border-color: var(--line-strong);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .slide-counter {
+      min-width: 96px;
+      text-align: center;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .deck {
+      position: relative;
+      height: 100vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scroll-snap-type: y mandatory;
+      scroll-behavior: smooth;
+      z-index: 1;
+      scrollbar-width: none;
+    }
+
+    .deck::-webkit-scrollbar {
+      width: 0;
+      height: 0;
+    }
+
+    .slide {
+      position: relative;
+      height: 100vh;
+      min-height: 100vh;
+      scroll-snap-align: start;
+      display: grid;
+      place-items: start center;
+      overflow: hidden;
+      padding: 104px 40px 94px calc(var(--nav-width) + 52px);
+      isolation: isolate;
+    }
+
+    .slide::before {
+      content: attr(data-index);
+      position: absolute;
+      right: min(5vw, 80px);
+      top: 14vh;
+      font-size: clamp(100px, 17vw, 280px);
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: -0.06em;
+      color: rgba(255, 255, 255, 0.035);
+      z-index: -1;
+    }
+
+    .slide-inner {
+      width: var(--content-width);
+      position: relative;
+      --fit-scale: 1;
+      transform-origin: top center;
+      transition: zoom 180ms ease;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--gold), var(--orange));
+      box-shadow: 0 0 16px rgba(255, 213, 110, 0.45);
+    }
+
+    .section-head {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 720px;
+      margin-bottom: 28px;
+    }
+
+    .section-head h2,
+    .hero-copy h1,
+    .finale-head h2 {
+      margin: 0;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: -0.05em;
+    }
+
+    .section-head h2 {
+      font-size: clamp(38px, min(6.2vw, 8vh), 90px);
+      max-width: 12ch;
+      text-wrap: balance;
+    }
+
+    .section-head p,
+    .hero-copy p,
+    .finale-head p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.68;
+      font-size: clamp(15px, 1.4vw, 18px);
+      max-width: 58ch;
+      text-wrap: pretty;
+    }
+
+    .hero-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+      align-items: center;
+      gap: 36px;
+    }
+
+    .hero-copy h1 {
+      margin-top: 18px;
+      font-size: clamp(40px, min(7vw, 10vh), 110px);
+      background: linear-gradient(135deg, #fff2db 0%, #ffd56e 22%, #ff914d 48%, #80e5ff 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      word-break: keep-all;
+      overflow-wrap: normal;
+    }
+
+    .hero-kicker {
+      margin: 20px 0 12px;
+      font-size: clamp(24px, min(3.2vw, 5vh), 44px);
+      line-height: 1.14;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+      max-width: 15ch;
+      text-wrap: balance;
+    }
+
+    .hero-copy p {
+      max-width: 680px;
+    }
+
+    .hero-actions {
+      margin-top: 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+
+    .action-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 56px;
+      padding: 0 22px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+    }
+
+    .action-btn:hover {
+      transform: translateY(-1px);
+      border-color: var(--line-strong);
+      box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+    }
+
+    .action-btn.primary {
+      background: linear-gradient(135deg, var(--gold) 0%, var(--orange) 46%, var(--cyan) 100%);
+      color: #081017;
+      font-weight: 700;
+    }
+
+    .action-btn.secondary {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+    }
+
+    .hero-stats {
+      margin-top: 24px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat-card {
+      padding: 20px 18px 18px;
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 100%),
+        var(--panel-soft);
+      backdrop-filter: blur(16px);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    .stat-card strong {
+      display: block;
+      font-size: clamp(30px, 3.6vw, 52px);
+      line-height: 1;
+      margin-bottom: 8px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      background: linear-gradient(135deg, #fff5e8 0%, var(--gold) 60%, var(--orange) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .stat-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .hero-visual {
+      position: relative;
+      min-height: 540px;
+      display: grid;
+      place-items: center;
+    }
+
+    .glow-ring {
+      position: absolute;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      filter: blur(0.2px);
+      opacity: 0.75;
+    }
+
+    .ring-a {
+      width: 560px;
+      height: 560px;
+      background: radial-gradient(circle, rgba(27, 188, 255, 0.12), transparent 58%);
+    }
+
+    .ring-b {
+      width: 430px;
+      height: 430px;
+      background: radial-gradient(circle, rgba(255, 145, 77, 0.12), transparent 60%);
+    }
+
+    .screen-card {
+      position: relative;
+      width: min(100%, 560px);
+      padding: 16px;
+      border-radius: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 100%),
+        rgba(4, 14, 20, 0.82);
+      box-shadow: var(--shadow);
+      transform: perspective(1800px) rotateY(-10deg) rotateX(6deg);
+      overflow: hidden;
+    }
+
+    .screen-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(255, 255, 255, 0.12), transparent 40%, transparent 62%, rgba(128, 229, 255, 0.12));
+      pointer-events: none;
+    }
+
+    .screen-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 2px 4px 12px;
+    }
+
+    .screen-dots {
+      display: flex;
+      gap: 8px;
+    }
+
+    .screen-dots span {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .screen-url {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 140px;
+      height: 34px;
+      padding: 0 16px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .screen-frame {
+      overflow: hidden;
+      border-radius: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      background: #0e151a;
+    }
+
+    .screen-frame img {
+      width: 100%;
+      display: block;
+    }
+
+    .floating-note,
+    .gallery-note,
+    .shot-tag {
+      position: absolute;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(3, 12, 18, 0.76);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+      color: #fff6eb;
+      font-size: 11px;
+      line-height: 1.4;
+      max-width: 240px;
+      white-space: normal;
+      text-wrap: pretty;
+    }
+
+    .floating-note::before,
+    .gallery-note::before,
+    .shot-tag::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--gold), var(--orange), var(--cyan));
+    }
+
+    .note-a { left: -8px; top: 72px; }
+    .note-b { right: -10px; top: 170px; }
+    .note-c { left: 54px; bottom: 18px; }
+
+    .ticker {
+      margin-top: 24px;
+      padding: 10px 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--muted);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .ticker-track {
+      display: inline-block;
+      min-width: 100%;
+      animation: marquee 22s linear infinite;
+    }
+
+    @keyframes marquee {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+
+    .diagnosis-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    .panel {
+      position: relative;
+      padding: 22px;
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 100%),
+        var(--panel);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
+      overflow: hidden;
+    }
+
+    .panel::after {
+      content: "";
+      position: absolute;
+      inset: auto -20% -45% auto;
+      width: 240px;
+      height: 240px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(128, 229, 255, 0.12), transparent 70%);
+      pointer-events: none;
+    }
+
+    .panel-title {
+      margin: 0 0 16px;
+      font-size: 22px;
+      letter-spacing: -0.03em;
+    }
+
+    .problem-list,
+    .scenario-list,
+    .why-list,
+    .mini-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .problem-item,
+    .mini-card,
+    .why-item,
+    .scenario-item {
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .problem-item strong,
+    .mini-card strong,
+    .why-item strong,
+    .scenario-item strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff5ea;
+    }
+
+    .problem-item p,
+    .mini-card p,
+    .why-item p,
+    .scenario-item p,
+    .architecture-card p,
+    .step-card p,
+    .feature-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 13px;
+    }
+
+    .positioning-card {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .positioning-head h3 {
+      margin: 12px 0 10px;
+      font-size: clamp(22px, min(2.8vw, 4vh), 38px);
+      letter-spacing: -0.04em;
+      line-height: 1.1;
+      max-width: 16ch;
+      text-wrap: balance;
+    }
+
+    .positioning-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+      max-width: 44ch;
+      text-wrap: pretty;
+    }
+
+    .pipeline-steps {
+      display: grid;
+      gap: 6px;
+    }
+
+    .pipeline-step {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 10px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .pipeline-step:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .pipeline-step span {
+      width: 38px;
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      color: #081017;
+      background: linear-gradient(135deg, var(--gold), var(--orange), var(--cyan));
+    }
+
+    .pipeline-step strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .pipeline-step p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 13px;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .feature-card {
+      position: relative;
+      padding: 20px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 100%),
+        rgba(9, 28, 36, 0.72);
+      backdrop-filter: blur(18px);
+      overflow: hidden;
+      min-height: 160px;
+    }
+
+    .feature-card::after {
+      content: "";
+      position: absolute;
+      inset: auto -16% -38% auto;
+      width: 180px;
+      height: 180px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(255, 145, 77, 0.14), transparent 66%);
+      pointer-events: none;
+    }
+
+    .feature-card.large::after {
+      background: radial-gradient(circle, rgba(128, 229, 255, 0.16), transparent 66%);
+    }
+
+    .span-4 { grid-column: span 4; }
+    .span-5 { grid-column: span 5; }
+    .span-6 { grid-column: span 6; }
+    .span-7 { grid-column: span 7; }
+    .span-8 { grid-column: span 8; }
+
+    .card-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 52px;
+      height: 30px;
+      padding: 0 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--muted);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .feature-card h3,
+    .architecture-card h3,
+    .step-card h3 {
+      margin: 14px 0 10px;
+      font-size: 22px;
+      line-height: 1.15;
+      letter-spacing: -0.04em;
+    }
+
+    .feature-points {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .feature-points span,
+    .tag-row span,
+    .persona-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .feature-points span::before,
+    .tag-row span::before,
+    .persona-chip::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--gold), var(--orange), var(--cyan));
+    }
+
+    .architecture-layout {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .architecture-card {
+      padding: 22px;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 100%),
+        var(--panel);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
+    }
+
+    .flow {
+      margin-top: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .flow-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .flow-node {
+      position: relative;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.03);
+      min-height: 116px;
+    }
+
+    .flow-node::after {
+      content: "→";
+      position: absolute;
+      right: -11px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: rgba(255, 255, 255, 0.26);
+      font-size: 22px;
+    }
+
+    .flow-node:last-child::after {
+      content: "";
+    }
+
+    .flow-node strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+      line-height: 1.25;
+    }
+
+    .flow-node p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 13px;
+    }
+
+    .code-shell {
+      margin-top: 14px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(2, 8, 12, 0.78);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      overflow: auto;
+    }
+
+    .code-shell pre {
+      margin: 0;
+      white-space: pre-wrap;
+      color: #d5f6ff;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      line-height: 1.65;
+    }
+
+    .gallery-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.12fr) minmax(280px, 0.88fr);
+      gap: 26px;
+      align-items: stretch;
+    }
+
+    .desktop-stage,
+    .phones-stage {
+      position: relative;
+      padding: 18px;
+      border-radius: 26px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 100%),
+        var(--panel);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
+      overflow: hidden;
+    }
+
+    .desktop-stage::after,
+    .phones-stage::after {
+      content: "";
+      position: absolute;
+      inset: auto -18% -35% auto;
+      width: 220px;
+      height: 220px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(128, 229, 255, 0.12), transparent 70%);
+      pointer-events: none;
+    }
+
+    .desktop-frame {
+      position: relative;
+      z-index: 1;
+      border-radius: 22px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(0, 0, 0, 0.35);
+      box-shadow: var(--shadow);
+    }
+
+    .desktop-frame img,
+    .phone-frame img {
+      width: 100%;
+      display: block;
+    }
+
+    .phones-wrap {
+      position: relative;
+      min-height: 440px;
+      display: grid;
+      place-items: center;
+      padding: 10px 12px 12px;
+    }
+
+    .phone-frame {
+      position: absolute;
+      width: min(40%, 186px);
+      border-radius: 28px;
+      padding: 8px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 100%),
+        rgba(8, 19, 27, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    .phone-frame img {
+      border-radius: 22px;
+      overflow: hidden;
+    }
+
+    .phone-a {
+      left: 4%;
+      top: 7%;
+      transform: rotate(-8deg);
+    }
+
+    .phone-b {
+      right: 3%;
+      bottom: 5%;
+      transform: rotate(8deg);
+    }
+
+    .gallery-note-a { left: 20px; top: 18px; }
+    .gallery-note-b { left: 28px; bottom: 20px; }
+    .shot-tag-a { right: 24px; top: 24px; }
+    .shot-tag-b { right: 22px; bottom: 28px; }
+
+    .scenario-layout {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 22px;
+    }
+
+    .persona-band {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .quote-panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 100%;
+    }
+
+    .quote-panel blockquote {
+      margin: 0;
+      font-size: clamp(28px, min(4vw, 6vh), 54px);
+      line-height: 1.1;
+      letter-spacing: -0.05em;
+      max-width: 12ch;
+      text-wrap: balance;
+    }
+
+    .quote-panel footer {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .steps-layout {
+      display: grid;
+      grid-template-columns: 0.96fr 1.04fr;
+      gap: 22px;
+    }
+
+    .steps-column {
+      display: grid;
+      gap: 12px;
+    }
+
+    .step-card {
+      padding: 20px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 100%),
+        rgba(9, 28, 36, 0.72);
+    }
+
+    .step-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--gold), var(--orange), var(--cyan));
+      color: #081017;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .terminal-card {
+      padding: 20px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 100%),
+        rgba(5, 16, 23, 0.92);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
+    }
+
+    .terminal-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 14px;
+      font-size: 14px;
+      color: #f7efe3;
+    }
+
+    .terminal-title span:last-child {
+      color: var(--muted);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+    }
+
+    .terminal-card pre {
+      margin: 0;
+      overflow: auto;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+      line-height: 1.75;
+      color: #d8f6ff;
+    }
+
+    .tag-row {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .finale {
+      text-align: center;
+    }
+
+    #slide-1,
+    #slide-8 {
+      place-items: center;
+    }
+
+    .finale-wrap {
+      display: grid;
+      gap: 20px;
+      justify-items: center;
+    }
+
+    .finale-head {
+      max-width: 900px;
+    }
+
+    .eq-formula {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0 16px;
+    }
+
+    .eq-brand-line {
+      font-size: clamp(44px, min(7vw, 10vh), 96px);
+      font-weight: 800;
+      letter-spacing: -0.05em;
+      line-height: 1;
+      background: linear-gradient(135deg, #fff2db 0%, #ffd56e 22%, #ff914d 48%, #80e5ff 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .eq-terms {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px 4px;
+    }
+
+    .eq-sym {
+      font-size: clamp(20px, 2.4vw, 32px);
+      font-weight: 700;
+      color: var(--muted);
+      padding: 0 6px;
+      font-family: "JetBrains Mono", monospace;
+    }
+
+    .eq-term {
+      font-size: clamp(18px, min(2.6vw, 3.8vh), 34px);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      padding: 8px 18px;
+      border-radius: 999px;
+      border: 1px solid var(--line-strong);
+      background: rgba(255, 255, 255, 0.04);
+      backdrop-filter: blur(12px);
+      color: var(--text);
+    }
+
+    .finale-head h2 {
+      font-size: clamp(44px, min(7vw, 10vh), 96px);
+      max-width: 13ch;
+      margin-inline: auto;
+      text-wrap: balance;
+      background: linear-gradient(135deg, #fff2db 0%, #ffd56e 22%, #ff914d 48%, #80e5ff 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .finale-grid {
+      width: 100%;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .finale-card {
+      padding: 22px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 100%),
+        rgba(9, 28, 36, 0.64);
+    }
+
+    .finale-card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .finale-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.65;
+      font-size: 14px;
+    }
+
+    .project-address {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 18px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 100%),
+        rgba(9, 28, 36, 0.64);
+      color: var(--muted);
+      backdrop-filter: blur(14px);
+    }
+
+    .project-address strong {
+      color: var(--text);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .project-address a {
+      color: var(--cyan);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translate3d(0, 26px, 0) scale(0.985);
+      transition:
+        opacity 540ms ease,
+        transform 540ms cubic-bezier(.2, .7, .2, 1);
+      transition-delay: var(--delay, 0ms);
+      will-change: transform, opacity;
+    }
+
+    .slide.in-view .reveal {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+
+    @media (max-width: 980px) {
+      .hero-layout,
+      .diagnosis-grid,
+      .architecture-layout,
+      .gallery-layout,
+      .scenario-layout,
+      .steps-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-visual {
+        min-height: 540px;
+      }
+
+      .feature-grid {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+      }
+
+      .span-4,
+      .span-5,
+      .span-6,
+      .span-7,
+      .span-8 {
+        grid-column: span 3;
+      }
+    }
+
+    @media (max-width: 900px) {
+      :root {
+        --content-width: min(100vw - 28px, 1000px);
+      }
+
+      .hud {
+        left: 14px;
+        right: 14px;
+        top: 14px;
+      }
+
+      .side-nav {
+        left: 14px;
+        right: 14px;
+        top: auto;
+        bottom: 88px;
+        width: auto;
+        flex-direction: row;
+        align-items: center;
+        overflow-x: auto;
+        padding: 12px;
+        gap: 8px;
+        scrollbar-width: none;
+      }
+
+      .side-nav::-webkit-scrollbar {
+        display: none;
+      }
+
+      .side-nav-label {
+        display: none;
+      }
+
+      .nav-item {
+        flex: 0 0 auto;
+        width: auto;
+        min-width: max-content;
+        grid-template-columns: 28px 1fr;
+        padding: 10px 12px;
+      }
+
+      .progress-rail {
+        left: 14px;
+        right: 14px;
+        width: auto;
+        bottom: 72px;
+      }
+
+      .deck-controls {
+        left: 14px;
+        right: 14px;
+        bottom: 14px;
+        justify-content: space-between;
+      }
+
+      .slide {
+        height: auto;
+        padding: 112px 14px 150px;
+        overflow: visible;
+      }
+
+      .slide::before {
+        right: 14px;
+        top: 94px;
+      }
+
+      .slide-inner {
+        transform: none;
+      }
+
+      .hero-stats,
+      .flow-row,
+      .scenario-grid,
+      .finale-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .feature-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .span-4,
+      .span-5,
+      .span-6,
+      .span-7,
+      .span-8 {
+        grid-column: span 1;
+      }
+
+      .phones-wrap {
+        min-height: 520px;
+      }
+
+      .phone-frame {
+        width: min(46%, 220px);
+      }
+    }
+
+    @media (max-width: 640px) {
+      .brand {
+        padding: 12px 14px;
+      }
+
+      .brand-mark {
+        width: 34px;
+        height: 34px;
+        border-radius: 12px;
+      }
+
+      .brand-copy span {
+        display: none;
+      }
+
+      .hero-visual {
+        min-height: 420px;
+      }
+
+      .screen-card {
+        border-radius: 24px;
+        transform: none;
+      }
+
+      .note-a,
+      .note-b,
+      .note-c,
+      .gallery-note,
+      .shot-tag {
+        position: static;
+        margin-top: 12px;
+      }
+
+      .desktop-stage,
+      .phones-stage,
+      .panel,
+      .architecture-card,
+      .terminal-card,
+      .step-card,
+      .feature-card,
+      .finale-card {
+        padding: 20px;
+        border-radius: 24px;
+      }
+
+      .phones-wrap {
+        display: grid;
+        gap: 16px;
+        min-height: auto;
+      }
+
+      .phone-frame {
+        position: static;
+        width: 100%;
+        transform: none;
+      }
+
+      .ticker {
+        font-size: 11px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation: none !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+      }
+
+      .reveal {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    .positioning-layout {
+      display: grid;
+      grid-template-columns: 0.88fr 1.12fr;
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .positioning-split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .positioning-column {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .slide2-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      border-radius: 999px;
+      border: 1px solid var(--line-strong);
+      background: rgba(255, 145, 77, 0.08);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--gold);
+      width: fit-content;
+    }
+
+    .slide2-arrow {
+      font-size: 16px;
+      color: var(--orange);
+    }
+
+    .col-label {
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    #slide-2 .tag-row {
+      margin-top: 6px;
+    }
+
+    @media (max-width: 980px) {
+      .positioning-layout,
+      .positioning-split {
+        grid-template-columns: 1fr;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+  </div>
+
+  <header class="hud">
+    <a class="brand" href="#slide-1" aria-label="回到第一页">
+      <span class="brand-mark">wc</span>
+      <span class="brand-copy">
+        <strong>Webcoding</strong>
+        <span>Browser-first CLI Agent Workstation</span>
+      </span>
+    </a>
+    <div class="hud-right">
+      <a class="hud-link" href="http://localhost:8001/" target="_blank" rel="noreferrer">打开工作台</a>
+    </div>
+  </header>
+
+  <nav class="side-nav" aria-label="章节导航">
+    <div class="side-nav-label">Slides</div>
+    <button class="nav-item is-active" data-target="slide-1" type="button">
+      <span class="nav-index">01</span>
+      <span class="nav-title">开场</span>
+    </button>
+    <button class="nav-item" data-target="slide-2" type="button">
+      <span class="nav-index">02</span>
+      <span class="nav-title">定位</span>
+    </button>
+    <button class="nav-item" data-target="slide-3" type="button">
+      <span class="nav-index">03</span>
+      <span class="nav-title">能力</span>
+    </button>
+    <button class="nav-item" data-target="slide-4" type="button">
+      <span class="nav-index">04</span>
+      <span class="nav-title">架构</span>
+    </button>
+    <button class="nav-item" data-target="slide-5" type="button">
+      <span class="nav-index">05</span>
+      <span class="nav-title">界面</span>
+    </button>
+    <button class="nav-item" data-target="slide-6" type="button">
+      <span class="nav-index">06</span>
+      <span class="nav-title">场景</span>
+    </button>
+    <button class="nav-item" data-target="slide-7" type="button">
+      <span class="nav-index">07</span>
+      <span class="nav-title">开始</span>
+    </button>
+    <button class="nav-item" data-target="slide-8" type="button">
+      <span class="nav-index">08</span>
+      <span class="nav-title">收束</span>
+    </button>
+  </nav>
+
+  <div class="progress-rail" aria-hidden="true">
+    <span class="progress-fill" id="progressFill"></span>
+  </div>
+
+  <div class="deck-controls">
+    <button class="control-btn" id="prevBtn" type="button" aria-label="上一页">↑</button>
+    <div class="slide-counter" id="slideCounter">01 / 08</div>
+    <button class="control-btn" id="nextBtn" type="button" aria-label="下一页">↓</button>
+  </div>
+
+  <main class="deck" id="deck">
+    <section class="slide in-view" id="slide-1" data-index="01">
+      <div class="slide-inner hero-layout">
+        <div class="hero-copy">
+          <div class="eyebrow reveal" style="--delay: 40ms;">Remote · Persistent · Agentic</div>
+          <h1 class="reveal" style="--delay: 120ms;">Webcoding</h1>
+          <div class="hero-kicker reveal" style="--delay: 180ms;">把本机 CLI Agent，变成可远程访问、<br>可持续运行、可恢复连接的浏览器工作台。</div>
+          <p class="reveal" style="--delay: 240ms;">
+            它不是简单把聊天框搬到网页里，而是给 Claude Code / Codex 这类命令行 Agent 加上一层真正能落地工作的外壳：
+            多会话、后台任务、断线续接、通知提醒、移动端查看、远程访问。
+          </p>
+          <div class="hero-actions reveal" style="--delay: 300ms;">
+            <a class="action-btn primary" href="#slide-2">开始演示</a>
+            <a class="action-btn secondary" href="http://localhost:8001/" target="_blank" rel="noreferrer">本地打开工作台</a>
+          </div>
+          <div class="hero-stats">
+            <div class="stat-card reveal" style="--delay: 360ms;">
+              <strong>1</strong>
+              <span>运行时依赖：`ws`。结构轻，部署门槛低。</span>
+            </div>
+            <div class="stat-card reveal" style="--delay: 420ms;">
+              <strong>2</strong>
+              <span>双 Agent：Claude / Codex，两套会话并行管理。</span>
+            </div>
+            <div class="stat-card reveal" style="--delay: 480ms;">
+              <strong>5</strong>
+              <span>通知渠道：PushPlus / Telegram / Server酱 / 飞书 / Qmsg。</span>
+            </div>
+            <div class="stat-card reveal" style="--delay: 540ms;">
+              <strong>1键</strong>
+              <span>设置面板可一键开启 Cloudflare Tunnel，直接拿到公网 HTTPS 远程访问入口。</span>
+            </div>
+          </div>
+          <div class="ticker reveal" style="--delay: 620ms;">
+            <div class="ticker-track">
+              WebSocket · detached process · PID recovery · history import · Cloudflare Tunnel · slash commands · HTML preview · mobile ready ·
+              WebSocket · detached process · PID recovery · history import · Cloudflare Tunnel · slash commands · HTML preview · mobile ready ·
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-visual reveal" style="--delay: 180ms;">
+          <div class="glow-ring ring-a" aria-hidden="true"></div>
+          <div class="glow-ring ring-b" aria-hidden="true"></div>
+          <div class="screen-card">
+            <div class="screen-topbar">
+              <div class="screen-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+              <div class="screen-url">localhost:8001</div>
+            </div>
+            <div class="screen-frame">
+              <img src="./public/assets/webcoding-desktop.png" alt="Webcoding 桌面界面截图" loading="eager" decoding="async">
+            </div>
+          </div>
+          <div class="floating-note note-a">双 Agent 会话视图</div>
+          <div class="floating-note note-b">一键开启公网 HTTPS 远程访问</div>
+          <div class="floating-note note-c">手机也能查看和追加消息</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-2" data-index="02" data-fit="0.98">
+      <div class="slide-inner">
+        <div class="section-head">
+          <div class="eyebrow reveal">Why It Exists</div>
+          <h2 class="reveal" style="--delay: 80ms;">CLI Agent 很强，<br>但原生工作流<br>对多数人不友好。</h2>
+          <p class="reveal" style="--delay: 140ms;">
+            命令行适合重度用户，不适合随时回来接着干、从手机看进度、或者把多个任务像项目一样管理。
+          </p>
+        </div>
+
+        <div class="positioning-layout">
+          <article class="panel positioning-card reveal" style="--delay: 180ms;">
+            <div class="positioning-head">
+              <div class="slide2-badge">
+                <span class="slide2-arrow">→</span>
+                <span>Webcoding 把这些缺口一次补齐</span>
+              </div>
+              <h3>它不替代 CLI Agent，<br>而是把原生能力补成可长期使用的工作台。</h3>
+              <p>底层继续用本机 CLI 执行，上层补上会话、后台运行、远程访问和通知回流，让普通人也能持续用。</p>
+            </div>
+
+            <div class="tag-row">
+              <span>保留 CLI 原生能力</span>
+              <span>补齐产品级外壳</span>
+              <span>支持长期任务</span>
+            </div>
+          </article>
+
+          <div class="positioning-split">
+            <article class="panel positioning-column reveal" style="--delay: 240ms;">
+                <div class="col-label">原生 CLI 的常见痛点</div>
+                <div class="problem-list">
+                  <div class="problem-item">
+                    <strong>断上下文</strong>
+                    <p>关窗口、断 SSH 或重启后，任务和输出都不容易接回来。</p>
+                  </div>
+                  <div class="problem-item">
+                    <strong>多任务难管理</strong>
+                    <p>多个会话并行时，切换、回看和整理都很别扭。</p>
+                  </div>
+                  <div class="problem-item">
+                    <strong>远程和移动端弱</strong>
+                    <p>想看进度、补一句话、收通知，CLI 入口本身并不顺手。</p>
+                  </div>
+                </div>
+            </article>
+
+            <article class="panel positioning-column reveal" style="--delay: 300ms;">
+                <div class="col-label">Webcoding 的解法</div>
+                <div class="pipeline-steps">
+                  <div class="pipeline-step">
+                    <span>01</span>
+                    <div><strong>浏览器接入</strong><p>用网页替代终端入口，远程和多端访问更自然。</p></div>
+                  </div>
+                  <div class="pipeline-step">
+                    <span>02</span>
+                    <div><strong>会话化管理</strong><p>每个任务有独立会话、模型、目录和权限模式。</p></div>
+                  </div>
+                  <div class="pipeline-step">
+                    <span>03</span>
+                    <div><strong>后台与恢复</strong><p>页面关了也能继续跑，并支持通知、续接和追溯。</p></div>
+                  </div>
+                </div>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-3" data-index="03" data-fit="0.94">
+      <div class="slide-inner">
+        <div class="section-head">
+          <div class="eyebrow reveal">Capability Matrix</div>
+          <h2 class="reveal" style="--delay: 80ms;">它把“能跑”升级成<br>“能工作”。</h2>
+          <p class="reveal" style="--delay: 140ms;">
+            这些能力组合在一起，才让本地 CLI Agent 真正变成可长期使用的浏览器工作台。
+          </p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card large span-7 reveal" style="--delay: 160ms;">
+            <div class="card-chip">Dual Agent</div>
+            <h3>Claude / Codex 双 Agent 并行管理</h3>
+            <p>新建会话时可选不同 Agent，侧边栏按 Agent 分组展示，设置与默认行为也各自独立，不互相污染。</p>
+            <div class="feature-points">
+              <span>会话隔离</span>
+              <span>最近记录独立</span>
+              <span>模型和权限模式分开记忆</span>
+            </div>
+          </article>
+
+          <article class="feature-card span-5 reveal" style="--delay: 220ms;">
+            <div class="card-chip">Detached</div>
+            <h3>后台任务不是假后台</h3>
+            <p>浏览器关掉后进程继续跑，任务完成再推通知，而不是靠前端标签页勉强维持。</p>
+          </article>
+
+          <article class="feature-card span-4 reveal" style="--delay: 280ms;">
+            <div class="card-chip">Resume</div>
+            <h3>续接历史</h3>
+            <p>支持 `--resume` 续接，Claude / Codex 本地历史也可导入到 Webcoding 里接着用。</p>
+          </article>
+
+          <article class="feature-card span-4 reveal" style="--delay: 340ms;">
+            <div class="card-chip">Notify</div>
+            <h3>完成即提醒</h3>
+            <p>支持 5 种通知渠道，适合长任务、离屏任务和手机端回流。</p>
+          </article>
+
+          <article class="feature-card span-4 reveal" style="--delay: 400ms;">
+            <div class="card-chip">Remote</div>
+            <h3>一键开启公网远程访问</h3>
+            <p>设置面板里可一键安装 `cloudflared` 并开启 Tunnel，自动得到公网 HTTPS 地址和二维码。</p>
+          </article>
+
+          <article class="feature-card span-6 reveal" style="--delay: 460ms;">
+            <div class="card-chip">Workflow</div>
+            <h3>对日常使用真正有帮助的小功能</h3>
+            <p>图片附件、工作目录显示与选择、HTML 代码预览、客户端斜杠命令、移动端适配，这些细节决定它更像成品而不是 Demo。</p>
+            <div class="feature-points">
+              <span>/model</span>
+              <span>/mode</span>
+              <span>/cost</span>
+              <span>HTML preview</span>
+            </div>
+          </article>
+
+          <article class="feature-card span-6 reveal" style="--delay: 520ms;">
+            <div class="card-chip">Bridge</div>
+            <h3>不只是一层 UI，还能做本地 API 桥接</h3>
+            <p>内置 OpenAI 兼容接口，把本地 CLI 运行时转成可以被其他工具调用的 API 端点，进一步提高可组合性。</p>
+            <div class="feature-points">
+              <span>/v1/responses</span>
+              <span>流式响应</span>
+              <span>适合自动化接入</span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-4" data-index="04" data-fit="1">
+      <div class="slide-inner">
+        <div class="section-head">
+          <div class="eyebrow reveal">Architecture</div>
+          <h2 class="reveal" style="--delay: 80ms;">它稳，不靠运气，<br>靠运行模型设计。</h2>
+          <p class="reveal" style="--delay: 140ms;">
+            关键点不只是“起一个子进程”，而是用文件 I/O、PID 持久化和恢复逻辑，把 Web UI 与 CLI 进程解耦。
+          </p>
+        </div>
+
+        <div class="architecture-layout">
+          <div class="architecture-card reveal" style="--delay: 180ms;">
+            <div class="card-chip">Pipeline</div>
+            <h3>Browser → WebSocket → server.js → CLI</h3>
+            <p>前端负责交互，Node.js 负责会话和进程管理，真正执行工作的仍然是本机 Claude / Codex CLI。</p>
+
+            <div class="flow">
+              <div class="flow-row">
+                <div class="flow-node">
+                  <strong>Browser</strong>
+                  <p>网页会话、消息流、截图上传、移动端访问。</p>
+                </div>
+                <div class="flow-node">
+                  <strong>WebSocket</strong>
+                  <p>实时收发消息、工具事件、文本流和会话状态。</p>
+                </div>
+                <div class="flow-node">
+                  <strong>server.js</strong>
+                  <p>统一处理 HTTP、WebSocket、存储、通知和进程生命周期。</p>
+                </div>
+                <div class="flow-node">
+                  <strong>CLI Agent</strong>
+                  <p>Claude / Codex 真实执行，保持原生能力和上下文机制。</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="code-shell">
+              <pre>sessions/{id}-run/
+  input.txt
+  output.jsonl
+  error.log
+  pid
+
+detached: true
+proc.unref()
+FileTailer → stream to browser</pre>
+            </div>
+          </div>
+
+          <div class="architecture-card reveal" style="--delay: 240ms;">
+            <div class="card-chip">Why It Holds</div>
+            <h3>为什么这种方案更适合长期任务</h3>
+            <div class="why-list">
+              <div class="why-item">
+                <strong>文件 I/O 替代 pipe</strong>
+                <p>Server 挂了也不等于任务挂了，因为进程和输出文件仍然在。</p>
+              </div>
+              <div class="why-item">
+                <strong>PID 可恢复</strong>
+                <p>服务重启后可重新扫描和恢复运行中的任务，不会因为 Web 层重启就直接丢单。</p>
+              </div>
+              <div class="why-item">
+                <strong>输出可追尾</strong>
+                <p>`FileTailer` 实时追踪 `output.jsonl`，前端可以持续看到增量文本和事件。</p>
+              </div>
+              <div class="why-item">
+                <strong>配置具备原子写入</strong>
+                <p>像自定义 API 模板这类配置，采用写临时文件再 rename 的方式减少损坏风险。</p>
+              </div>
+            </div>
+            <div class="tag-row">
+              <span>Detached Process</span>
+              <span>PID Recovery</span>
+              <span>Atomic Write</span>
+              <span>Streaming Output</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-5" data-index="05" data-fit="0.97">
+      <div class="slide-inner">
+        <div class="section-head">
+          <div class="eyebrow reveal">Real UI</div>
+          <h2 class="reveal" style="--delay: 80ms;">真实界面，不是概念图。</h2>
+          <p class="reveal" style="--delay: 140ms;">
+            桌面端适合完整管理会话和设置，移动端则适合查看、追问和接收通知后的回流操作。
+          </p>
+        </div>
+
+        <div class="gallery-layout">
+          <div class="desktop-stage reveal" style="--delay: 180ms;">
+            <div class="gallery-note gallery-note-a">桌面端：完整工作台视图</div>
+            <div class="desktop-frame">
+              <img src="./public/assets/webcoding-desktop.png" alt="Webcoding 桌面工作台截图" loading="lazy" decoding="async">
+            </div>
+            <div class="gallery-note gallery-note-b">会话列表、消息区、设置区同时展开，更适合长时间工作</div>
+          </div>
+
+          <div class="phones-stage reveal" style="--delay: 240ms;">
+            <div class="phones-wrap">
+              <figure class="phone-frame phone-a">
+                <img src="./public/assets/webcoding-mobile-1.png" alt="Webcoding 移动端截图一" loading="lazy" decoding="async">
+              </figure>
+              <figure class="phone-frame phone-b">
+                <img src="./public/assets/webcoding-mobile-2.png" alt="Webcoding 移动端截图二" loading="lazy" decoding="async">
+              </figure>
+              <div class="shot-tag shot-tag-a">移动端：会话和设置仍可用</div>
+              <div class="shot-tag shot-tag-b">更适合“看进度 + 补一句”</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-6" data-index="06" data-fit="0.97">
+      <div class="slide-inner">
+        <div class="section-head">
+          <div class="eyebrow reveal">Use Cases</div>
+          <h2 class="reveal" style="--delay: 80ms;">它最适合那些“不想一直守着终端”的人。</h2>
+          <p class="reveal" style="--delay: 140ms;">
+            如果你的工作方式里有长任务、并行任务、远程查看、从手机补充指令，这一类使用场景会非常顺手。
+          </p>
+        </div>
+
+        <div class="scenario-layout">
+          <div class="panel quote-panel reveal" style="--delay: 180ms;">
+            <blockquote>
+              “把终端里的 Agent，<br>
+              变成一个你可以离开、<br>
+              也可以随时再回来接着用的工作台。”
+            </blockquote>
+            <div>
+              <footer>
+                这句话基本就是 Webcoding 的产品定位。它解决的不是模型能力本身，而是长期使用时的组织方式、访问方式和恢复方式。
+              </footer>
+              <div class="persona-band">
+                <span class="persona-chip">独立开发者</span>
+                <span class="persona-chip">小团队内部工具</span>
+                <span class="persona-chip">重度 CLI 用户</span>
+                <span class="persona-chip">远程设备管理</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="scenario-grid">
+            <div class="scenario-item reveal" style="--delay: 240ms;">
+              <strong>长任务托管</strong>
+              <p>把长时间生成、批量修改、回归验证之类的任务挂在后台，完成后再看结果。</p>
+            </div>
+            <div class="scenario-item reveal" style="--delay: 300ms;">
+              <strong>多会话并行</strong>
+              <p>一个会话改前端，一个会话跑文档，一个会话整理问题，不需要在多个终端窗口里来回找。</p>
+            </div>
+            <div class="scenario-item reveal" style="--delay: 360ms;">
+              <strong>移动端回流</strong>
+              <p>收到通知后，用手机进入页面看输出、补一句新指令，再把任务继续往前推。</p>
+            </div>
+            <div class="scenario-item reveal" style="--delay: 420ms;">
+              <strong>远程本机工作台</strong>
+              <p>通过 Tunnel 暴露 HTTPS 入口，让家里或办公室机器上的 CLI Agent 变成随时可进的浏览器工作台。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-7" data-index="07">
+      <div class="slide-inner">
+        <div class="section-head">
+          <div class="eyebrow reveal">Quick Start</div>
+          <h2 class="reveal" style="--delay: 80ms;">上手路径也很直接。</h2>
+          <p class="reveal" style="--delay: 140ms;">
+            先有 Node.js，再装至少一个 CLI Agent，最后启动 Webcoding。独立部署、局域网访问、远程访问都可以按需打开。
+          </p>
+        </div>
+
+        <div class="steps-layout">
+          <div class="steps-column">
+            <div class="step-card reveal" style="--delay: 180ms;">
+              <span class="step-number">01</span>
+              <h3>准备环境</h3>
+              <p>需要 Node.js，以及至少一个可用的 CLI Agent，比如 `@anthropic-ai/claude-code` 或 `@openai/codex`。</p>
+            </div>
+            <div class="step-card reveal" style="--delay: 240ms;">
+              <span class="step-number">02</span>
+              <h3>启动服务</h3>
+              <p>安装依赖后执行 `npm start`，默认监听 `0.0.0.0:8001`，本机和局域网都能访问。</p>
+            </div>
+            <div class="step-card reveal" style="--delay: 300ms;">
+              <span class="step-number">03</span>
+              <h3>一键开启公网远程访问</h3>
+              <p>设置面板里先点“一键安装 cloudflared”，再点“开启 Tunnel”，就会自动生成公网 HTTPS 地址和二维码。</p>
+            </div>
+          </div>
+
+          <div class="terminal-card reveal" style="--delay: 220ms;">
+            <div class="terminal-title">
+              <span>最小启动路径</span>
+              <span>bash</span>
+            </div>
+            <pre>npm install
+npm start
+
+# 至少安装一个 CLI Agent
+npm install -g @anthropic-ai/claude-code
+# 或
+npm install -g @openai/codex</pre>
+
+            <div class="tag-row">
+              <span>默认端口 8001</span>
+              <span>本地密码认证</span>
+              <span>手机可访问</span>
+              <span>支持回归脚本</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide finale" id="slide-8" data-index="08">
+      <div class="slide-inner finale-wrap">
+        <div class="finale-head">
+          <div class="eyebrow reveal">Closing Frame</div>
+          <div class="eq-formula reveal" style="--delay: 80ms;">
+            <div class="eq-brand-line">Webcoding</div>
+            <div class="eq-terms">
+              <span class="eq-sym">=</span><span class="eq-term">远程入口</span>
+              <span class="eq-sym">+</span><span class="eq-term">会话容器</span>
+              <span class="eq-sym">+</span><span class="eq-term">任务托管层</span>
+            </div>
+          </div>
+          <p class="reveal" style="--delay: 140ms;">
+            它把命令行 Agent 从“一个只能守着终端用的工具”，
+            升级成“一个可以持续工作的浏览器工作台”。
+            对想长期使用 Claude Code / Codex 的人来说，这一层非常值钱。
+          </p>
+        </div>
+
+        <div class="finale-grid">
+          <div class="finale-card reveal" style="--delay: 200ms;">
+            <strong>对用户的价值</strong>
+            <p>更低门槛地使用本机 CLI Agent，同时保留原生能力与上下文。</p>
+          </div>
+          <div class="finale-card reveal" style="--delay: 260ms;">
+            <strong>对工作流的价值</strong>
+            <p>让后台执行、断线恢复、通知回流和多会话管理真正成为默认能力。</p>
+          </div>
+          <div class="finale-card reveal" style="--delay: 320ms;">
+            <strong>对产品形态的价值</strong>
+            <p>把一个“终端工具”包装成能长期协作、能远程访问、能持续运转的应用层。</p>
+          </div>
+        </div>
+
+        <div class="project-address reveal" style="--delay: 350ms;">
+          <strong>GitHub</strong>
+          <a href="https://github.com/HsMirage/webcoding" target="_blank" rel="noreferrer">github.com/HsMirage/webcoding</a>
+        </div>
+
+        <div class="hero-actions reveal" style="--delay: 380ms;">
+          <a class="action-btn primary" href="#slide-1">重新播放</a>
+          <a class="action-btn secondary" href="http://localhost:8001/" target="_blank" rel="noreferrer">进入工作台</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const deck = document.getElementById("deck");
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const navItems = Array.from(document.querySelectorAll(".nav-item"));
+    const progressFill = document.getElementById("progressFill");
+    const slideCounter = document.getElementById("slideCounter");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    let fitFrame = 0;
+
+    let currentIndex = 0;
+
+    function goToSlide(index) {
+      const nextIndex = Math.max(0, Math.min(index, slides.length - 1));
+      slides[nextIndex].scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function fitSlides() {
+      if (fitFrame) cancelAnimationFrame(fitFrame);
+      fitFrame = requestAnimationFrame(() => {
+        const compactViewport = window.innerWidth <= 900;
+
+        slides.forEach((slide) => {
+          const inner = slide.querySelector(".slide-inner");
+          if (!inner) return;
+
+          inner.style.setProperty("--fit-scale", "1");
+          inner.style.zoom = "";
+          if (compactViewport) return;
+
+          const slideStyle = window.getComputedStyle(slide);
+          const paddingTop = parseFloat(slideStyle.paddingTop) || 0;
+          const paddingBottom = parseFloat(slideStyle.paddingBottom) || 0;
+          const availableHeight = slide.clientHeight - paddingTop - paddingBottom;
+          const naturalHeight = Math.max(inner.scrollHeight, inner.offsetHeight);
+          const densityBias = Number.parseFloat(slide.dataset.fit || "1") || 1;
+
+          if (!availableHeight || !naturalHeight) return;
+
+          const scale = Math.min(1, (availableHeight / naturalHeight) * densityBias);
+          inner.style.setProperty("--fit-scale", String(scale));
+          inner.style.zoom = String(scale);
+        });
+      });
+    }
+
+    function updateUI(index) {
+      currentIndex = index;
+      navItems.forEach((item, itemIndex) => {
+        item.classList.toggle("is-active", itemIndex === index);
+      });
+      const current = String(index + 1).padStart(2, "0");
+      const total = String(slides.length).padStart(2, "0");
+      slideCounter.textContent = current + " / " + total;
+      progressFill.style.width = ((index + 1) / slides.length) * 100 + "%";
+    }
+
+    navItems.forEach((item, index) => {
+      item.addEventListener("click", () => goToSlide(index));
+    });
+
+    prevBtn.addEventListener("click", () => goToSlide(currentIndex - 1));
+    nextBtn.addEventListener("click", () => goToSlide(currentIndex + 1));
+
+    document.addEventListener("keydown", (event) => {
+      const blockedTags = ["INPUT", "TEXTAREA", "SELECT"];
+      if (blockedTags.includes(document.activeElement && document.activeElement.tagName)) return;
+
+      if (event.key === "ArrowDown" || event.key === "PageDown" || event.key === " ") {
+        event.preventDefault();
+        goToSlide(currentIndex + 1);
+      } else if (event.key === "ArrowUp" || event.key === "PageUp") {
+        event.preventDefault();
+        goToSlide(currentIndex - 1);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        goToSlide(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        goToSlide(slides.length - 1);
+      }
+    });
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.intersectionRatio >= 0.55) {
+          const index = slides.indexOf(entry.target);
+          updateUI(index);
+        }
+        entry.target.classList.toggle("in-view", entry.isIntersecting);
+      });
+    }, {
+      root: deck,
+      threshold: [0.2, 0.55, 0.8]
+    });
+
+    slides.forEach((slide) => observer.observe(slide));
+    window.addEventListener("resize", fitSlides);
+    window.addEventListener("load", fitSlides);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(fitSlides);
+    }
+    document.querySelectorAll("img").forEach((img) => {
+      if (!img.complete) img.addEventListener("load", fitSlides, { once: true });
+    });
+    setTimeout(fitSlides, 300);
+    setTimeout(fitSlides, 1200);
+    fitSlides();
+    updateUI(0);
+  </script>
+</body>
+</html>

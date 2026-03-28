@@ -14,6 +14,8 @@ config/bridge-runtime.json
 config/bridge-state.json
 config/claude-settings-backup.json
 config/projects.json
+config/cloudflared*
+config/tunnel-state.json
 config/codex-runtime-home/
 CODE_REVIEW_REPORT.md
 public/test-components.html

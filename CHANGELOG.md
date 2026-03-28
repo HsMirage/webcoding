@@ -1,5 +1,19 @@
 # 更新记录
 
+## v1.3.9
+
+### 新功能
+
+- **本地 Git 操作支持** — 支持在工作区直接执行 `git status`、`git log`、`git diff`、`git add`、`git commit`、`git branch`、`git checkout`
+- **Git 工作区卡片** — 界面新增 Git 工作区卡片，集中展示当前仓库状态、分支信息与常用 Git 操作入口
+
+### 改进
+
+- **运行中仓库写保护** — 当仓库存在运行中的任务时，禁止执行 Git 写操作，避免 `git add`、`git commit`、`git branch`、`git checkout` 干扰当前工作区
+- Git 能力统一收敛到工作区视图，减少为常见仓库检查与切换操作手动输入命令的成本
+- **Tunnel 状态校验收紧** — 远程访问状态读取与停止逻辑同时校验管理进程和 `cloudflared` 子进程，降低陈旧状态文件误判“仍在运行”或误杀无关进程的风险
+- **发布产物隔离** — 忽略本机下载的 `cloudflared` 二进制和 `tunnel-state.json` 运行态文件，避免将本地运行时产物带入版本发布
+
 ## v1.3.7
 
 ### 新功能
