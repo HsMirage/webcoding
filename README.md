@@ -1,5 +1,11 @@
 # Webcoding
 
+---
+
+<p align="center"><strong>⭐ <a href="https://github.com/HsMirage/AIPlanHub">AIPlanHub</a> — 一站式对比国内主流 AI 编程订阅方案，覆盖 9 大平台、25+ 套餐，帮你找到性价比最高的选择 ⭐</strong></p>
+
+---
+
 Webcoding 是一个面向 Claude Code / Codex 的轻量级浏览器工作台，用来在网页里远程接入本机 CLI Agent。
 
 ![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)
