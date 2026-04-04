@@ -5811,7 +5811,7 @@
         ${providerOptions}
       `;
       codexModeSelect.innerHTML = `
-        <option value="local">读取本机 Codex 登录态 / ~/.codex/config.toml</option>
+        <option value="local">读取本机 Codex 配置</option>
         ${providerOptions}
       `;
       claudeModeSelect.value = selectedClaudeChannel;
