@@ -4178,27 +4178,42 @@
 
     const actions = document.createElement('div');
     actions.className = 'project-group-actions';
-    const createBtn = document.createElement('button');
-    createBtn.className = 'project-group-create-btn';
-    createBtn.title = '在此项目下新建会话';
-    createBtn.type = 'button';
-    createBtn.textContent = '+';
-    createBtn.addEventListener('click', (e) => {
+
+    /* --- "..." trigger button --- */
+    const moreBtn = document.createElement('button');
+    moreBtn.className = 'project-group-more-btn';
+    moreBtn.title = '更多操作';
+    moreBtn.type = 'button';
+    moreBtn.setAttribute('aria-label', '项目操作菜单');
+    moreBtn.textContent = '⋮';
+    actions.appendChild(moreBtn);
+
+    /* --- Dropdown menu --- */
+    const menu = document.createElement('div');
+    menu.className = 'project-group-menu';
+    menu.hidden = true;
+
+    const menuCreate = document.createElement('button');
+    menuCreate.type = 'button';
+    menuCreate.className = 'project-group-menu-item';
+    menuCreate.textContent = '新建会话';
+    menuCreate.addEventListener('click', (e) => {
       e.stopPropagation();
+      closeMenu();
       const nextMode = getSavedModeForAgent(selectedAgent);
       send(isVirtualCwd
         ? { type: 'new_session', cwd: project.path, agent: selectedAgent, mode: nextMode }
         : { type: 'new_session', projectId: project.id, agent: selectedAgent, mode: nextMode });
     });
-    actions.appendChild(createBtn);
-    const renameBtn = document.createElement('button');
-    renameBtn.className = 'project-group-btn';
-    renameBtn.title = '重命名';
-    renameBtn.type = 'button';
-    renameBtn.setAttribute('aria-label', '重命名项目');
-    renameBtn.textContent = '✎';
-    renameBtn.addEventListener('click', (e) => {
+    menu.appendChild(menuCreate);
+
+    const menuRename = document.createElement('button');
+    menuRename.type = 'button';
+    menuRename.className = 'project-group-menu-item';
+    menuRename.textContent = '重命名';
+    menuRename.addEventListener('click', (e) => {
       e.stopPropagation();
+      closeMenu();
       if (isVirtualCwd) {
         pendingProjectSaveCallback = (updatedProjects) => {
           const saved = updatedProjects.find((p) => p.path === project.path);
@@ -4213,14 +4228,15 @@
         startEditProjectName(header, project);
       }
     });
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'project-group-btn';
-    deleteBtn.title = '移除项目';
-    deleteBtn.type = 'button';
-    deleteBtn.setAttribute('aria-label', '移除项目');
-    deleteBtn.textContent = '✕';
-    deleteBtn.addEventListener('click', (e) => {
+    menu.appendChild(menuRename);
+
+    const menuDelete = document.createElement('button');
+    menuDelete.type = 'button';
+    menuDelete.className = 'project-group-menu-item project-group-menu-item--danger';
+    menuDelete.textContent = '移除项目';
+    menuDelete.addEventListener('click', (e) => {
       e.stopPropagation();
+      closeMenu();
       if (isVirtualCwd) {
         if (confirm(`确定移除「${project.name}」分组？\n（会话将变为独立显示）`)) {
           pendingProjectSaveCallback = (updatedProjects) => {
@@ -4235,13 +4251,78 @@
         }
       }
     });
-    actions.appendChild(renameBtn);
-    actions.appendChild(deleteBtn);
+    menu.appendChild(menuDelete);
+
+    document.body.appendChild(menu);
+
+    function positionMenu() {
+      const rect = moreBtn.getBoundingClientRect();
+      // Measure menu without affecting layout
+      menu.style.visibility = 'hidden';
+      menu.hidden = false;
+      const menuRect = menu.getBoundingClientRect();
+      const viewportH = window.innerHeight;
+      const spaceBelow = viewportH - rect.bottom;
+      const spaceAbove = rect.top;
+
+      let top;
+      if (spaceBelow >= menuRect.height + 8 || spaceBelow >= spaceAbove) {
+        top = rect.bottom + 4;
+      } else {
+        top = rect.top - menuRect.height - 4;
+      }
+      // Ensure menu stays within viewport vertically
+      top = Math.max(4, Math.min(top, viewportH - menuRect.height - 4));
+
+      menu.style.top = top + 'px';
+      menu.style.left = Math.max(4, rect.right - menuRect.width) + 'px';
+      menu.style.visibility = '';
+    }
+
+    function closeMenu() {
+      menu.hidden = true;
+      menu.style.top = '';
+      menu.style.left = '';
+      moreBtn.classList.remove('active');
+    }
+
+    function toggleMenu(e) {
+      e.stopPropagation();
+      if (menu.hidden) {
+        // Close any other open project menus
+        document.querySelectorAll('.project-group-menu:not([hidden])').forEach((m) => {
+          m.hidden = true;
+          m.style.top = '';
+          m.style.left = '';
+          m._triggerBtn?.classList.remove('active');
+        });
+        moreBtn.classList.add('active');
+        menu._triggerBtn = moreBtn;
+        // Position immediately
+        positionMenu();
+      } else {
+        closeMenu();
+      }
+    }
+
+    moreBtn.addEventListener('click', toggleMenu);
+
+    // Close on outside click
+    const outsideHandler = (e) => {
+      if (!menu.hidden && !actions.contains(e.target)) {
+        closeMenu();
+      }
+    };
+    document.addEventListener('click', outsideHandler);
+    // Clean up when group is removed
+    group._cleanupMenu = () => document.removeEventListener('click', outsideHandler);
 
     header.appendChild(main);
-    if (actions.childElementCount) header.appendChild(actions);
+    header.appendChild(actions);
 
-    header.addEventListener('click', () => {
+    header.addEventListener('click', (e) => {
+      // Ignore clicks on the actions area (more btn / menu)
+      if (actions.contains(e.target)) return;
       if (isCollapsed) {
         collapsedProjects.delete(project.id);
       } else {
