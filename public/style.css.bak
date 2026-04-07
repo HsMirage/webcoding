@@ -21,9 +21,9 @@
   --info: #2ba5ff;
   --scrollbar-thumb: rgba(56, 56, 56, 0.25);
   --scrollbar-track: transparent;
-  --sidebar-width: 260px;
+  --sidebar-width: 280px;
   --git-panel-width: 360px;
-  --header-height: 44px;
+  --header-height: 52px;
   --input-max-height: 200px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Noto Sans CJK SC', sans-serif;
@@ -510,8 +510,8 @@ body {
   height: 100dvh;
   min-height: -webkit-fill-available;
   font-family: var(--font-ui);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 16px;
+  line-height: 1.5;
   letter-spacing: 0.01em;
   color: var(--text-primary);
   background: var(--page-background);
@@ -529,7 +529,9 @@ body {
   background: var(--login-background);
   z-index: 1000;
 }
-.login-box { padding: 36px 28px;
+.login-box {
+  text-align: center;
+  padding: 48px 36px;
   background: var(--surface-strong);
   border: 2px solid var(--line);
   border-radius: 0;
@@ -539,7 +541,7 @@ body {
 }
 .login-kicker {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -558,30 +560,30 @@ body {
 }
 .login-brand-copy strong {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 18px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   display: block;
 }
 .login-brand-copy span {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
-.login-logo { width: 44px;
-  height: 44px;
+.login-logo {
+  width: 56px; height: 56px;
   background: var(--line);
   color: var(--surface-strong);
   border: 2px solid var(--line);
   border-radius: 0;
   display: flex; align-items: center; justify-content: center;
   font-family: var(--font-mono);
-  font-size: 13px; font-weight: 700;
+  font-size: 22px; font-weight: 700;
   letter-spacing: -1px;
   flex-shrink: 0;
 }
 .login-box h2 {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 22px;
   margin-bottom: 4px;
   color: var(--text-primary);
   font-weight: 700;
@@ -591,7 +593,7 @@ body {
 .login-box p {
   color: var(--text-secondary);
   margin-bottom: 28px;
-  font-size: 12px;
+  font-size: 14px;
 }
 .login-field {
   display: block;
@@ -600,7 +602,7 @@ body {
 }
 .login-field span {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 6px;
@@ -615,7 +617,7 @@ body {
 }
 .login-box button {
   --nb-btn-bg: var(--blue);
-  --nb-btn-font-size: 12px;
+  --nb-btn-font-size: 14px;
   --nb-btn-shadow: 3px 3px 0 var(--line);
   --nb-btn-hover-shift: 2px;
 
@@ -635,7 +637,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   margin-bottom: 12px;
   cursor: pointer;
@@ -650,7 +652,7 @@ body {
 .login-error {
   color: var(--danger);
   margin-top: 12px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -684,8 +686,8 @@ body {
 .app-topbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 12px;
+  gap: 12px;
+  padding: 0 16px;
   height: var(--header-height);
   min-height: var(--header-height);
   background: var(--topbar-background);
@@ -701,7 +703,7 @@ body {
 }
 .app-topbar-brand strong {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -710,7 +712,7 @@ body {
 .app-topbar-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-left: auto;
   flex-shrink: 0;
 }
@@ -751,12 +753,12 @@ body {
 .agent-tab {
   color: var(--segmented-control-item-color);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  min-height: 30px;
-  padding: 5px 12px;
+  min-height: 34px;
+  padding: 6px 14px;
 }
 .agent-tab.active {
   background: var(--segmented-control-item-active-background);
@@ -766,12 +768,12 @@ body {
 .mode-tab {
   color: var(--segmented-control-item-color);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  min-height: 28px;
-  padding: 4px 9px;
+  min-height: 32px;
+  padding: 5px 11px;
 }
 .mode-tab.active {
   background: var(--segmented-control-item-alt-active-background);
@@ -812,8 +814,8 @@ body {
 
 /* Topbar icon buttons */
 .topbar-icon-btn {
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -955,7 +957,7 @@ html[data-theme="localhost"] .mode-tabs {
 html[data-theme="localhost"] .agent-tab,
 html[data-theme="localhost"] .mode-tab {
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   text-transform: none;
   letter-spacing: 0.01em;
@@ -1123,9 +1125,9 @@ html[data-theme="localhost"] .workspace-action-btn:hover {
   transform: translateY(-1px);
 }
 html[data-theme="localhost"] .session-item {
-  margin-bottom: 3px;
-  padding: 6px 8px;
-  min-height: 36px;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  min-height: 40px;
   border: 1px solid transparent;
   border-radius: 12px;
 }
@@ -1206,19 +1208,21 @@ html[data-theme="localhost"] .messages-wrap {
   background: var(--chat-background);
 }
 html[data-theme="localhost"] .chat-header {
-  min-height: 38px;
-  height: 38px;
-  padding: 0 10px;
+  min-height: 44px;
+  height: 44px;
+  padding: 0 14px;
   background: #ffffff;
 }
 html[data-theme="localhost"] .welcome-icon,
 html[data-theme="localhost"] .msg.assistant .msg-avatar {
   color: var(--accent);
 }
-html[data-theme="localhost"] .msg { gap: 8px;
+html[data-theme="localhost"] .msg {
+  gap: 12px;
 }
-html[data-theme="localhost"] .msg-avatar { width: 24px;
-  height: 24px;
+html[data-theme="localhost"] .msg-avatar {
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: #f8fafc;
 }
@@ -1226,7 +1230,8 @@ html[data-theme="localhost"] .msg.user .msg-avatar,
 html[data-theme="localhost"] .msg.assistant .msg-avatar {
   background: #f8fafc;
 }
-html[data-theme="localhost"] .msg-bubble { padding: 9px 11px;
+html[data-theme="localhost"] .msg-bubble {
+  padding: 12px 14px;
   border-radius: 14px;
 }
 html[data-theme="localhost"] .msg.user .msg-bubble,
@@ -1254,9 +1259,12 @@ html[data-theme="localhost"] .new-chat-dropdown button,
 html[data-theme="localhost"] .session-item-title {
   color: var(--text-secondary);
 }
-html[data-theme="localhost"] .input-area { padding: 7px 12px;
+html[data-theme="localhost"] .input-area {
+  background: #ffffff;
+  padding: 10px 16px;
 }
-html[data-theme="localhost"] .input-wrapper { padding: 7px 9px;
+html[data-theme="localhost"] .input-wrapper {
+  padding: 10px 12px;
   border-radius: 12px;
   background: #ffffff;
   box-shadow: none;
@@ -1267,8 +1275,8 @@ html[data-theme="localhost"] .input-wrapper:focus-within {
 html[data-theme="localhost"] .attach-btn,
 html[data-theme="localhost"] .send-btn,
 html[data-theme="localhost"] .abort-btn {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: none;
@@ -1287,12 +1295,12 @@ html[data-theme="localhost"] .abort-btn {
   color: var(--danger);
 }
 html[data-theme="localhost"] .new-chat-dropdown {
-  top: 54px;
-  padding: 5px;
+  top: 58px;
+  padding: 6px;
   background: rgba(255, 255, 255, 0.98);
 }
 html[data-theme="localhost"] .new-chat-dropdown button {
-  min-height: 34px;
+  min-height: 42px;
   border: 1px solid transparent;
   border-radius: var(--button-radius);
   margin-bottom: 2px;
@@ -1418,14 +1426,14 @@ html[data-theme="localhost"] .welcome-stats {
 }
 html[data-theme="localhost"] .git-tree-folder-header,
 html[data-theme="localhost"] .git-tree-file-row {
-  padding: 7px 9px;
+  padding: 8px 10px;
 }
 html[data-theme="localhost"] .git-tree-folder-header {
   margin-bottom: 4px;
 }
 html[data-theme="localhost"] .git-tree-file-row {
-  padding-top: 6px;
-  padding-bottom: 6px;
+  padding-top: 7px;
+  padding-bottom: 7px;
 }
 html[data-theme="localhost"] .git-tree-folder-leading,
 html[data-theme="localhost"] .git-tree-file-leading {
@@ -1443,8 +1451,8 @@ html[data-theme="localhost"] .git-tree-folder-count,
 html[data-theme="localhost"] .git-tree-badge,
 html[data-theme="localhost"] .git-tree-action-btn,
 html[data-theme="localhost"] .git-tree-stage-btn {
-  min-height: 22px;
-  padding: 0 6px;
+  min-height: 26px;
+  padding: 0 8px;
 }
 html[data-theme="localhost"] .git-tree-action-btn,
 html[data-theme="localhost"] .git-tree-stage-btn {
@@ -1527,7 +1535,7 @@ html[data-theme="localhost"] .session-loading-badge {
   border-radius: 999px;
 }
 html[data-theme="localhost"] .session-loading-title {
-  font-size: 14px;
+  font-size: 20px;
 }
 html[data-theme="localhost"] .localfile-pre {
   border-radius: 12px;
@@ -1565,7 +1573,7 @@ html[data-theme="localhost"] .localfile-pre {
   background: var(--loading-badge-bg);
   color: var(--loading-badge-text);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1573,7 +1581,7 @@ html[data-theme="localhost"] .localfile-pre {
 
 .session-loading-title {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 22px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1583,7 +1591,7 @@ html[data-theme="localhost"] .localfile-pre {
 .session-loading-label {
   margin-top: 8px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.7;
 }
 
@@ -1632,7 +1640,7 @@ html[data-theme="localhost"] .localfile-pre {
   overflow: hidden;
 }
 .sidebar-header {
-  padding: 10px;
+  padding: 12px;
   border-bottom: 2px solid var(--line);
   flex-shrink: 0;
   position: relative;
@@ -1654,7 +1662,7 @@ html[data-theme="localhost"] .localfile-pre {
 ) {
   --nb-btn-bg: var(--blue);
   --nb-btn-hover-bg: var(--yellow);
-  --nb-btn-font-size: 12px;
+  --nb-btn-font-size: 13px;
   --nb-btn-shadow: var(--button-shadow-soft);
   --nb-btn-hover-shadow: var(--button-shadow-soft);
   --nb-btn-hover-shift: 0;
@@ -1696,13 +1704,13 @@ html[data-theme="localhost"] .localfile-pre {
   --nb-btn-hover-shift: -2px;
 
   width: 100%;
-  min-height: 38px;
-  padding: 6px 10px;
+  min-height: 48px;
+  padding: 10px 14px;
   letter-spacing: 0.03em;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 8px;
 }
 .new-chat-btn:hover {
   /* keep explicit block for readability with shared button base */
@@ -1715,16 +1723,16 @@ html[data-theme="localhost"] .localfile-pre {
 .session-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 10px;
   -webkit-overflow-scrolling: touch;
 }
 .session-list-empty {
-  margin: 8px 0 10px;
-  padding: 10px 10px;
+  margin: 10px 0 12px;
+  padding: 14px 12px;
   border: 2px dashed var(--line);
   border-radius: 0;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.6;
   background: var(--surface);
   box-shadow: 3px 3px 0 var(--line);
@@ -1734,13 +1742,13 @@ html[data-theme="localhost"] .localfile-pre {
 .session-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  padding: 6px 9px;
+  gap: 10px;
+  min-height: 46px;
+  padding: 10px 12px;
   border: 2px solid var(--line);
   border-radius: var(--button-radius);
   cursor: pointer;
-  margin-bottom: 5px;
+  margin-bottom: 10px;
   transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
   position: relative;
   background: var(--surface);
@@ -1767,13 +1775,13 @@ html[data-theme="localhost"] .localfile-pre {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  flex: 0 0 14px;
+  width: 16px;
+  flex: 0 0 16px;
   align-self: stretch;
 }
 .session-item-marker {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 2px;
   border: 2px solid var(--line);
   background: var(--surface-strong);
@@ -1801,7 +1809,7 @@ html[data-theme="localhost"] .localfile-pre {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   line-height: 1.45;
@@ -1816,7 +1824,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .session-item-agent {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1832,7 +1840,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .session-item-status {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1861,7 +1869,7 @@ html[data-theme="localhost"] .localfile-pre {
   cursor: pointer;
   width: 28px;
   height: 28px;
-  font-size: 11px;
+  font-size: 12px;
   border-radius: var(--button-radius);
   line-height: 1;
   opacity: 0;
@@ -1893,7 +1901,7 @@ html[data-theme="localhost"] .localfile-pre {
   border-radius: var(--button-radius);
   background: var(--input-background);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 13px;
   outline: none;
   min-width: 0;
 }
@@ -1905,7 +1913,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .brand {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1942,7 +1950,7 @@ html[data-theme="localhost"] .localfile-pre {
   background: var(--yellow);
 }
 .project-group-chevron {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-muted);
   transition: transform 150ms, color 120ms;
   flex-shrink: 0;
@@ -1978,14 +1986,14 @@ html[data-theme="localhost"] .localfile-pre {
   background: var(--bg-secondary);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1.2;
 }
 .project-group-name {
   display: block;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1996,7 +2004,7 @@ html[data-theme="localhost"] .localfile-pre {
   line-height: 1.35;
 }
 .project-group-path {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2023,7 +2031,7 @@ html[data-theme="localhost"] .localfile-pre {
   border: 2px solid var(--button-border);
   border-radius: var(--button-radius);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   width: 28px;
   height: 28px;
@@ -2049,7 +2057,7 @@ html[data-theme="localhost"] .localfile-pre {
   cursor: pointer;
   width: 28px;
   height: 28px;
-  font-size: 11px;
+  font-size: 12px;
   padding: 0;
   border-radius: var(--button-radius);
   line-height: 1;
@@ -2081,7 +2089,7 @@ html[data-theme="localhost"] .localfile-pre {
   border-radius: 0;
   background: var(--surface);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* === Chat Main === */
@@ -2101,14 +2109,14 @@ html[data-theme="localhost"] .localfile-pre {
   min-height: 0;
 }
 .chat-header {
-  height: 38px;
-  min-height: 38px;
+  height: 40px;
+  min-height: 40px;
   display: flex;
   align-items: center;
-  padding: 0 10px;
+  padding: 0 16px;
   border-bottom: 2px solid var(--chat-header-border);
   background: var(--chat-header-background);
-  gap: 8px;
+  gap: 10px;
   flex-shrink: 0;
   position: relative;
 }
@@ -2120,7 +2128,7 @@ html[data-theme="localhost"] .localfile-pre {
   margin-top: 2px;
   padding: 0 4px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   letter-spacing: 0.03em;
   overflow: hidden;
@@ -2133,7 +2141,7 @@ html[data-theme="localhost"] .localfile-pre {
   border: 2px solid var(--line);
   border-radius: 2px;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 20px;
   cursor: pointer;
   padding: 4px 8px;
 }
@@ -2143,7 +2151,7 @@ html[data-theme="localhost"] .localfile-pre {
   min-width: 0;
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 12px;
+  font-size: 14px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   overflow: hidden;
@@ -2165,7 +2173,7 @@ html[data-theme="localhost"] .localfile-pre {
 .chat-agent-btn {
   appearance: none;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--text-primary);
@@ -2185,7 +2193,7 @@ html[data-theme="localhost"] .localfile-pre {
   right: 8px;
   top: 50%;
   transform: translateY(-48%);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-secondary);
 }
 .chat-agent-btn:hover {
@@ -2216,7 +2224,7 @@ html[data-theme="localhost"] .localfile-pre {
   background: transparent;
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   cursor: pointer;
@@ -2230,7 +2238,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .chat-agent-option.active::after {
   content: '\5F53\524D';
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.04em;
 }
 .chat-runtime-state {
@@ -2243,7 +2251,7 @@ html[data-theme="localhost"] .localfile-pre {
   background: var(--yellow);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   flex-shrink: 0;
@@ -2274,7 +2282,7 @@ html[data-theme="localhost"] .localfile-pre {
   border: 2px solid var(--input-border);
   border-radius: 2px;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 14px;
   font-family: var(--font-ui);
   outline: none;
   transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
@@ -2346,11 +2354,11 @@ html[data-theme="localhost"] .localfile-pre {
   height: 100%;
   overflow-y: scroll;
   overflow-x: hidden;
-  padding: 14px 18px;
-  padding-right: 22px;
+  padding: 16px 20px;
+  padding-right: 24px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   -ms-overflow-style: none;
@@ -2437,13 +2445,13 @@ html[data-theme="localhost"] .localfile-pre {
   margin-bottom: 24px;
 }
 .welcome-icon {
-  font-size: 14px;
+  font-size: 32px;
   margin-bottom: 8px;
   opacity: 0.5;
 }
 .welcome-msg h3 {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   text-transform: uppercase;
   color: var(--text-primary);
   font-weight: 700;
@@ -2468,13 +2476,13 @@ html[data-theme="localhost"] .localfile-pre {
 .welcome-stat:last-child { border-right: none; }
 .welcome-stat strong {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1;
 }
 .welcome-stat span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -2496,7 +2504,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .welcome-panel-kicker {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -2506,13 +2514,13 @@ html[data-theme="localhost"] .localfile-pre {
 .welcome-list {
   margin: 0;
   padding-left: 16px;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
   color: var(--text-secondary);
 }
 .welcome-list code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   background: var(--bg-tertiary);
   border: 1px solid var(--line);
   padding: 1px 4px;
@@ -2535,8 +2543,8 @@ html[data-theme="localhost"] .localfile-pre {
 .msg.assistant { align-self: flex-start; }
 
 .msg-avatar {
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   border: 2px solid var(--line);
   border-radius: 50%;
   display: flex;
@@ -2550,10 +2558,10 @@ html[data-theme="localhost"] .localfile-pre {
 .msg.assistant .msg-avatar { background: var(--blue); color: #fff; }
 
 .msg-bubble {
-  padding: 9px 11px;
+  padding: 12px 16px;
   border: 2px solid var(--line);
   border-radius: 0;
-  line-height: 1.5;
+  line-height: 1.65;
   word-break: break-word;
   min-width: 0;
   max-width: 100%;
@@ -2561,8 +2569,8 @@ html[data-theme="localhost"] .localfile-pre {
 .msg-attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 8px;
+  margin-top: 10px;
 }
 .msg-attachment-label {
   display: inline-flex;
@@ -2574,7 +2582,7 @@ html[data-theme="localhost"] .localfile-pre {
   background: var(--accent-light);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.35;
 }
@@ -2597,24 +2605,24 @@ html[data-theme="localhost"] .localfile-pre {
   margin: 0;
 }
 .msg-bubble > .msg-segment + .msg-segment {
-  margin-top: 6px;
+  margin-top: 10px;
 }
 .msg-segment-text {
   min-width: 0;
-  font-size: 12px;
-  line-height: 1.68;
+  font-size: 15px;
+  line-height: 1.75;
   color: var(--text-primary);
   opacity: 1;
 }
 .msg-segment-text.msg-segment-process {
-  font-size: 11px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.7;
   color: var(--text-secondary);
   opacity: 0.88;
 }
 .msg-segment-text.msg-segment-final {
-  font-size: 12px;
-  line-height: 1.68;
+  font-size: 15px;
+  line-height: 1.75;
   color: var(--text-primary);
   opacity: 1;
 }
@@ -2632,7 +2640,7 @@ html[data-theme="localhost"] .localfile-pre {
   border: 2px dashed var(--message-system-border);
   border-radius: var(--chat-card-border-radius);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   padding: 10px 16px;
   text-align: center;
   white-space: pre-line;
@@ -2654,7 +2662,7 @@ html[data-theme="localhost"] .localfile-pre {
   background: none;
   border: none;
   color: inherit;
-  font-size: 13px;
+  font-size: 18px;
   cursor: pointer;
   padding: 0 4px;
   opacity: 0.6;
@@ -2672,12 +2680,12 @@ html[data-theme="localhost"] .localfile-pre {
 }
 
 /* Markdown content */
-.msg-bubble p { margin: 0 0 5px 0; }
+.msg-bubble p { margin: 0 0 8px 0; }
 .msg-bubble p:last-child { margin-bottom: 0; }
-.msg-bubble ul, .msg-bubble ol { margin: 3px 0 5px 15px; }
+.msg-bubble ul, .msg-bubble ol { margin: 4px 0 8px 20px; }
 .msg-bubble li { margin-bottom: 2px; }
 .msg-bubble h1, .msg-bubble h2, .msg-bubble h3, .msg-bubble h4 {
-  margin: 10px 0 5px 0;
+  margin: 12px 0 6px 0;
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.02em;
@@ -2696,7 +2704,7 @@ html[data-theme="localhost"] .localfile-pre {
 .msg-bubble table {
   border-collapse: collapse;
   margin: 8px 0;
-  font-size: 12px;
+  font-size: 13px;
   width: 100%;
   display: block;
   overflow-x: auto;
@@ -2708,7 +2716,7 @@ html[data-theme="localhost"] .localfile-pre {
   text-align: left;
   white-space: nowrap;
 }
-.msg-bubble th { background: var(--bg-secondary); font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; }
+.msg-bubble th { background: var(--bg-secondary); font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; }
 
 /* Inline code */
 .msg-bubble code:not(pre code) {
@@ -2735,10 +2743,14 @@ html[data-theme="localhost"] .localfile-pre {
   overflow: hidden;
   max-width: 100%;
 }
-.code-block-header { padding: 4px 10px;
+.code-block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
   background: var(--code-header-bg);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--code-header-text);
   border-bottom: 2px solid var(--line);
 }
@@ -2753,7 +2765,7 @@ html[data-theme="localhost"] .localfile-pre {
   color: var(--code-header-text);
   cursor: pointer;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   padding: 2px 8px;
   border-radius: 2px;
 }
@@ -2768,7 +2780,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .code-block-wrapper pre code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   white-space: pre;
   word-break: normal;
@@ -2795,7 +2807,7 @@ html[data-theme="localhost"] .localfile-pre {
   margin: 0;
   padding: 12px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   white-space: pre;
   overflow-x: auto;
@@ -2812,7 +2824,7 @@ html[data-theme="localhost"] .localfile-pre {
   border: 1px solid var(--line);
   border-radius: 0;
   overflow: hidden;
-  font-size: 10px;
+  font-size: 11px;
   opacity: 0.6;
 }
 .tool-call.codex-command {
@@ -2838,7 +2850,7 @@ html[data-theme="localhost"] .localfile-pre {
 .tool-call summary {
   padding: 8px 12px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   background: var(--bg-secondary);
   display: flex;
@@ -2860,7 +2872,7 @@ html[data-theme="localhost"] .localfile-pre {
   width: 100%;
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 11px;
+  font-size: 12px;
   text-transform: uppercase;
   color: var(--text-primary);
   line-height: 1.25;
@@ -2876,7 +2888,7 @@ html[data-theme="localhost"] .localfile-pre {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .tool-call-state {
   flex-shrink: 0;
@@ -2884,7 +2896,7 @@ html[data-theme="localhost"] .localfile-pre {
   border: 2px solid var(--line);
   border-radius: 2px;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -2906,7 +2918,7 @@ html[data-theme="localhost"] .localfile-pre {
 .tool-call summary::-webkit-details-marker { display: none; }
 .tool-call summary::before {
   content: '\25B8';
-  font-size: 10px;
+  font-size: 11px;
   transition: transform 0.2s;
 }
 .tool-call[open] summary::before { transform: rotate(90deg); }
@@ -2930,7 +2942,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .tool-call-content {
   padding: 8px 12px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   background: var(--bg-primary);
   border-top: 2px solid var(--line);
@@ -2948,7 +2960,7 @@ html[data-theme="localhost"] .localfile-pre {
   color: var(--text-muted);
   background: var(--bg-primary);
   font-style: italic;
-  font-size: 10px;
+  font-size: 11px;
   opacity: 0.9;
 }
 .tool-call-content.command,
@@ -2967,7 +2979,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .tool-call-section-label {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2983,7 +2995,7 @@ html[data-theme="localhost"] .localfile-pre {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
 }
 .tool-call-empty {
@@ -3002,7 +3014,7 @@ html[data-theme="localhost"] .localfile-pre {
   padding: 8px 12px;
   cursor: pointer;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   background: var(--bg-secondary);
   list-style: none;
@@ -3012,7 +3024,7 @@ html[data-theme="localhost"] .localfile-pre {
 .tool-group-summary::-webkit-details-marker { display: none; }
 .tool-group-summary::before {
   content: '\25B8 ';
-  font-size: 10px;
+  font-size: 11px;
   transition: transform 0.2s;
   display: inline-block;
 }
@@ -3042,14 +3054,14 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .ask-question-header {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--blue-strong);
   text-transform: uppercase;
   margin-bottom: 6px;
 }
 .ask-question-text {
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--text-primary);
   margin-bottom: 8px;
@@ -3081,7 +3093,7 @@ html[data-theme="localhost"] .localfile-pre {
   border-radius: 0;
   padding: 10px 12px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--text-secondary);
   min-height: 60px;
@@ -3100,7 +3112,7 @@ html[data-theme="localhost"] .localfile-pre {
   background: transparent;
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
   cursor: pointer;
@@ -3132,12 +3144,12 @@ html[data-theme="localhost"] .localfile-pre {
   box-shadow: 2px 2px 0 var(--line);
 }
 .ask-option-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
 }
 .ask-option-desc {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.45;
   margin-top: 4px;
@@ -3191,19 +3203,19 @@ html[data-theme="localhost"] .localfile-pre {
 .cmd-item-cmd {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--blue-strong);
   white-space: nowrap;
 }
 .cmd-item-desc {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
 /* === Input Area === */
 .input-area {
-  padding: 7px 12px;
-  padding-bottom: max(9px, var(--safe-bottom));
+  padding: 8px 16px;
+  padding-bottom: max(12px, var(--safe-bottom));
   background: var(--bg-secondary);
   border-top: 2px solid var(--line);
   flex-shrink: 0;
@@ -3211,22 +3223,22 @@ html[data-theme="localhost"] .localfile-pre {
 .attachment-tray {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   max-width: min(920px, 100%);
-  margin: 0 auto 8px;
+  margin: 0 auto 10px;
 }
 .attachment-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   max-width: 100%;
-  padding: 6px 8px;
+  padding: 7px 10px;
   border: 2px solid var(--line);
   border-radius: 0;
   background: var(--surface-strong);
   color: var(--text-primary);
-  font-size: 10px;
-  line-height: 1.35;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .attachment-chip.uploading {
   border-style: dashed;
@@ -3245,7 +3257,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .attachment-chip-note {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
 }
 .attachment-chip-remove {
@@ -3255,7 +3267,7 @@ html[data-theme="localhost"] .localfile-pre {
   --compact-btn-hover-bg: var(--danger-soft);
   --compact-btn-hover-color: var(--danger);
 
-  font-size: 12px;
+  font-size: 13px;
   padding: 2px;
 }
 .attachment-chip-remove:hover {
@@ -3263,22 +3275,22 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .attachment-tray-note {
   width: 100%;
-  padding: 7px 9px;
+  padding: 8px 10px;
   border: 2px solid var(--line);
   border-radius: 0;
   background: var(--yellow);
   color: var(--text-primary);
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.55;
 }
 .input-wrapper {
   display: flex;
   align-items: flex-end;
-  gap: 6px;
+  gap: 8px;
   background: var(--input-shell-background);
   border: 2px solid var(--input-border);
   border-radius: var(--chat-card-border-radius);
-  padding: 5px 8px;
+  padding: 8px 12px;
   max-width: min(920px, 100%);
   margin: 0 auto;
   box-shadow: var(--panel-shadow-soft);
@@ -3290,8 +3302,8 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .attach-btn {
   appearance: none;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   background: var(--surface);
   color: var(--text-primary);
   border: 2px solid var(--line);
@@ -3322,18 +3334,18 @@ html[data-theme="localhost"] .localfile-pre {
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 15px;
   font-family: var(--font-ui);
-  line-height: 1.45;
+  line-height: 1.5;
   resize: none;
   outline: none;
   max-height: var(--input-max-height);
-  min-height: 22px;
+  min-height: 24px;
   overflow-y: auto;
 }
 #msg-input::placeholder { color: var(--text-muted); }
 .send-btn, .abort-btn {
-  width: 30px; height: 30px;
+  width: 36px; height: 36px;
   border: 2px solid var(--line);
   border-radius: 2px;
   cursor: pointer;
@@ -3390,7 +3402,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .option-picker-title {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--text-primary);
@@ -3432,19 +3444,19 @@ html[data-theme="localhost"] .localfile-pre {
 .option-picker-item-info { flex: 1; min-width: 0; }
 .option-picker-item-label {
   font-weight: 600;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.35;
   color: var(--text-primary);
 }
 .option-picker-item-desc {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.4;
   margin-top: 1px;
 }
 .option-picker-item-check {
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -3460,13 +3472,13 @@ html[data-theme="localhost"] .localfile-pre {
   padding: 0 2px;
 }
 .mp-subtitle {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   margin-top: 3px;
   line-height: 1.4;
 }
 .mp-cursor {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--accent, var(--accent-fallback));
   width: 14px;
   flex-shrink: 0;
@@ -3474,7 +3486,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .mp-num {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   min-width: 18px;
   text-align: right;
@@ -3512,7 +3524,7 @@ html[data-theme="localhost"] .localfile-pre {
   padding: 6px 8px;
   border: 1px solid var(--input-border);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
   font-family: var(--font-mono);
   background: var(--input-background);
@@ -3547,7 +3559,7 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .mp-hint {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-secondary);
   text-align: center;
   padding: 4px 0 0;
@@ -3608,7 +3620,7 @@ html[data-theme="localhost"] .localfile-pre {
     min-width: 0;
   }
   .app-topbar-brand strong {
-    font-size: 12px;
+    font-size: 13px;
   }
   .app-topbar-actions {
     gap: 4px;
@@ -3627,10 +3639,10 @@ html[data-theme="localhost"] .localfile-pre {
   .cmd-menu { left: 10px; right: 10px; transform: none; min-width: auto; bottom: 72px; }
   .option-picker { left: 10px; right: 10px; transform: none; min-width: auto; max-width: none; bottom: 72px; }
   .chat-title {
-    font-size: 10px;
+    font-size: 12px;
   }
   .chat-agent-context {
-    font-size: 9px;
+    font-size: 10px;
   }
   .chat-agent-menu {
     right: 10px;
@@ -3642,28 +3654,26 @@ html[data-theme="localhost"] .localfile-pre {
 }
 
 @media (max-width: 480px) {
-  .msg-avatar { width: 22px;
-  height: 22px; }
-  .msg-avatar svg { width: 13px; height: 13px; }
-  .msg-bubble { padding: 8px 10px; font-size: 11px; }
-  .msg-segment-text.msg-segment-process { font-size: 10px; }
-  .msg-segment-text.msg-segment-final { font-size: 11px; }
-  .code-block-wrapper pre code { font-size: 10px; }
+  .msg-avatar { width: 28px; height: 28px; }
+  .msg-avatar svg { width: 15px; height: 15px; }
+  .msg-bubble { padding: 10px 12px; font-size: 14px; }
+  .msg-segment-text.msg-segment-process { font-size: 12px; }
+  .msg-segment-text.msg-segment-final { font-size: 14px; }
+  .code-block-wrapper pre code { font-size: 12px; }
   .input-wrapper { padding: 6px 10px; box-shadow: 3px 3px 0 var(--line); }
   .attach-btn { width: 38px; height: 38px; }
-  .send-btn, .abort-btn { width: 30px;
-  height: 30px; }
+  .send-btn, .abort-btn { width: 34px; height: 34px; }
   .new-chat-btn,
-  .new-chat-arrow { min-height: 38px; }
+  .new-chat-arrow { min-height: 44px; }
   .new-chat-arrow { width: 48px; }
   /* Mobile tool content overflow fix */
   .tool-call-content {
     max-height: 180px;
-    font-size: 10px;
+    font-size: 11px;
     padding: 6px 8px;
   }
   .tool-call-code {
-    font-size: 10px;
+    font-size: 11px;
     padding: 8px 10px;
   }
   .code-block-wrapper {
@@ -3689,7 +3699,7 @@ html[data-theme="localhost"] .localfile-pre {
   border: 2px solid var(--line);
   border-radius: var(--chat-card-border-radius);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
   box-shadow: var(--panel-shadow-soft);
@@ -3716,7 +3726,7 @@ body.ws-reconnecting::before {
   border: 2px solid var(--line);
   border-top: none;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3739,7 +3749,7 @@ body.ws-reconnecting::before {
 .settings-btn {
   background: none;
   border: none;
-  font-size: 13px;
+  font-size: 18px;
   cursor: pointer;
   color: var(--text-muted);
   padding: 4px 8px;
@@ -3771,7 +3781,7 @@ body.ws-reconnecting::before {
 }
 .settings-panel h3 {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3786,7 +3796,7 @@ body.ws-reconnecting::before {
   --compact-btn-color: var(--text-muted);
 
   margin-left: auto;
-  font-size: 13px;
+  font-size: 18px;
   padding: 2px 8px;
 }
 .settings-panel h3 .settings-close:hover { /* keep explicit block for readability */ }
@@ -3805,7 +3815,7 @@ body.ws-reconnecting::before {
   margin: 0;
   padding: 16px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
@@ -3832,7 +3842,7 @@ body.ws-reconnecting::before {
 
   width: 34px;
   height: 34px;
-  font-size: 13px;
+  font-size: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3863,7 +3873,7 @@ body.ws-reconnecting::before {
   margin-bottom: 4px;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -3873,7 +3883,7 @@ body.ws-reconnecting::before {
   --compact-btn-color: var(--text-muted);
 
   margin-left: auto;
-  font-size: 13px;
+  font-size: 18px;
   padding: 2px 8px;
 }
 .settings-header .settings-close:hover { /* keep explicit block for readability */ }
@@ -3892,7 +3902,7 @@ body.ws-reconnecting::before {
   align-items: center;
   gap: 6px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -3901,21 +3911,21 @@ body.ws-reconnecting::before {
 }
 .agent-context-title {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--text-primary);
   margin-bottom: 4px;
 }
 .agent-context-copy {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.65;
 }
 .settings-field label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -3929,7 +3939,7 @@ body.ws-reconnecting::before {
 }
 .tpl-fetch-toolbar-title {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -3944,7 +3954,7 @@ body.ws-reconnecting::before {
   background: var(--bg-secondary);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
   cursor: pointer;
@@ -3964,7 +3974,7 @@ body.ws-reconnecting::before {
 .tpl-fetch-toolbar-status {
   display: block;
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 .tpl-fetch-toolbar-status:empty {
@@ -3975,7 +3985,7 @@ body.ws-reconnecting::before {
   padding: 7px 10px;
   border: 1px dashed var(--inline-note-border);
   border-radius: var(--chat-card-border-radius);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.55;
   color: var(--text-muted);
   background: var(--inline-note-background);
@@ -3987,7 +3997,7 @@ body.ws-reconnecting::before {
 }
 .settings-inline-note code {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   padding: 1px 4px;
   border: 1px solid var(--line);
   border-radius: 2px;
@@ -4027,18 +4037,18 @@ body.ws-reconnecting::before {
 }
 .settings-nav-card-title {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--text-primary);
 }
 .settings-nav-card-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 .settings-nav-card-arrow {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 22px;
   line-height: 1;
   flex-shrink: 0;
 }
@@ -4061,15 +4071,15 @@ body.ws-reconnecting::before {
 }
 .settings-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 20px;
+  gap: 10px;
+  margin-top: 24px;
 }
 .settings-actions button {
   --nb-btn-shadow: 2px 2px 0 var(--line);
   --nb-btn-hover-shift: 1px;
 
   flex: 1;
-  padding: 9px;
+  padding: 10px;
 }
 .settings-actions .btn-test {
   --nb-btn-bg: var(--bg-secondary);
@@ -4091,7 +4101,7 @@ body.ws-reconnecting::before {
 .settings-status {
   margin-top: 12px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   text-align: center;
   min-height: 20px;
   text-transform: uppercase;
@@ -4127,8 +4137,8 @@ body.ws-reconnecting::before {
   box-shadow: var(--floating-card-shadow);
   animation: fadeIn 0.25s ease;
 }
-.force-change-panel .login-logo { width: 44px;
-  height: 44px;
+.force-change-panel .login-logo {
+  width: 56px; height: 56px;
   margin: 0 auto 12px;
   background: var(--line);
   color: var(--surface-strong);
@@ -4136,11 +4146,11 @@ body.ws-reconnecting::before {
   border-radius: 0;
   display: flex; align-items: center; justify-content: center;
   font-family: var(--font-mono);
-  font-size: 14px; font-weight: 700;
+  font-size: 20px; font-weight: 700;
 }
 .force-change-panel h2 {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 22px;
   margin-bottom: 4px;
   color: var(--text-primary);
   font-weight: 700;
@@ -4149,7 +4159,7 @@ body.ws-reconnecting::before {
 .force-change-panel p {
   color: var(--text-secondary);
   margin-bottom: 24px;
-  font-size: 12px;
+  font-size: 14px;
 }
 .force-change-form input {
   width: 100%;
@@ -4158,7 +4168,7 @@ body.ws-reconnecting::before {
 }
 .fc-submit-btn {
   --nb-btn-bg: var(--blue);
-  --nb-btn-font-size: 12px;
+  --nb-btn-font-size: 14px;
   --nb-btn-shadow: 3px 3px 0 var(--line);
 
   width: 100%;
@@ -4173,7 +4183,7 @@ body.ws-reconnecting::before {
 .fc-submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .fc-status {
   margin-top: 10px;
-  font-size: 12px;
+  font-size: 13px;
   min-height: 18px;
   color: var(--text-secondary);
 }
@@ -4182,7 +4192,7 @@ body.ws-reconnecting::before {
 
 /* === Password Hint === */
 .password-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   margin: -4px 0 10px 2px;
   text-align: left;
@@ -4200,7 +4210,7 @@ body.ws-reconnecting::before {
 /* === Settings Section Title === */
 .settings-section-title {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -4287,7 +4297,7 @@ body.ws-reconnecting::before {
 
 #import-session-btn {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   border-top: none !important;
 }
 #import-session-btn::before {
@@ -4309,7 +4319,7 @@ body.ws-reconnecting::before {
 /* === Chat CWD label === */
 .chat-cwd {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   background: var(--bg-tertiary);
   border: 2px solid var(--line);
@@ -4352,14 +4362,14 @@ body.ws-reconnecting::before {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px 10px;
+  padding: 16px 20px 12px;
   border-bottom: 2px solid var(--line);
   flex-shrink: 0;
 }
 .modal-title {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 16px;
   text-transform: uppercase;
   color: var(--text-primary);
 }
@@ -4367,27 +4377,27 @@ body.ws-reconnecting::before {
   --compact-btn-bg: transparent;
   --compact-btn-color: var(--text-muted);
 
-  font-size: 14px;
+  font-size: 16px;
   padding: 4px 8px;
 }
 .modal-close-btn:hover { /* keep explicit block for readability */ }
 .modal-body {
-  padding: 16px;
+  padding: 20px;
   overflow-y: auto;
   flex: 1;
 }
 .modal-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 10px 16px 14px;
+  gap: 10px;
+  padding: 12px 20px 16px;
   border-top: 2px solid var(--line);
   flex-shrink: 0;
 }
 .modal-field-label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -4405,16 +4415,16 @@ body.ws-reconnecting::before {
 .modal-stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 .modal-text-input {
   flex: 1;
-  padding: 9px 10px;
+  padding: 10px 12px;
 }
 .modal-btn-primary {
   --nb-btn-bg: var(--blue);
 
-  padding: 8px 16px;
+  padding: 9px 20px;
 }
 .modal-btn-primary:hover {
   /* keep explicit block for readability with shared button base */
@@ -4422,14 +4432,14 @@ body.ws-reconnecting::before {
 .modal-btn-secondary {
   --nb-btn-bg: var(--bg-secondary);
 
-  padding: 8px 16px;
+  padding: 9px 20px;
 }
 .modal-btn-secondary:hover {
   /* keep explicit block for readability with shared button base */
 }
 .modal-btn-danger {
   --nb-btn-bg: var(--danger, #d44);
-  padding: 8px 16px;
+  padding: 9px 20px;
 }
 .modal-btn-danger:hover {
   /* keep explicit block for readability with shared button base */
@@ -4446,7 +4456,7 @@ body.ws-reconnecting::before {
   text-align: center;
   color: var(--text-muted);
   padding: 32px 0;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 /* === New Session Project Picker === */
@@ -4465,24 +4475,24 @@ body.ws-reconnecting::before {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
 }
 .project-picker-head-copy {
   min-width: 0;
 }
 .project-picker-summary {
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--text-secondary);
 }
 .project-picker-total {
   flex-shrink: 0;
-  padding: 4px 9px;
+  padding: 5px 10px;
   border: 2px solid var(--line);
   border-radius: 2px;
   background: var(--bg-secondary);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -4490,12 +4500,12 @@ body.ws-reconnecting::before {
 }
 .project-picker-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 .project-picker-item {
   position: relative;
   width: 100%;
-  padding: 13px 42px 13px 14px;
+  padding: 15px 48px 15px 16px;
   border: 2px solid var(--line);
   border-radius: 2px;
   background: var(--surface);
@@ -4515,21 +4525,21 @@ body.ws-reconnecting::before {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 .project-picker-item-tag,
 .project-picker-item-count {
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
-  padding: 2px 7px;
+  min-height: 24px;
+  padding: 3px 8px;
   border: 1px solid var(--line);
   border-radius: 2px;
   font-family: var(--font-mono);
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 .project-picker-item-tag {
@@ -4544,35 +4554,35 @@ body.ws-reconnecting::before {
   display: block;
   padding-right: 8px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 700;
-  line-height: 1.3;
+  line-height: 1.35;
   text-transform: uppercase;
   color: var(--text-primary);
   word-break: break-word;
 }
 .project-picker-item-path {
   display: block;
-  margin-top: 6px;
-  font-size: 11px;
-  line-height: 1.5;
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--text-secondary);
   word-break: break-all;
 }
 .project-picker-item-note {
   display: block;
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
   border-top: 1px dashed var(--inline-note-border);
-  font-size: 10px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--text-secondary);
 }
 .project-picker-item-arrow {
   position: absolute;
-  right: 12px;
+  right: 14px;
   top: 50%;
-  font-size: 12px;
+  font-size: 24px;
   line-height: 1;
   color: var(--text-muted);
   transform: translateY(-50%);
@@ -4585,17 +4595,17 @@ body.ws-reconnecting::before {
 .project-picker-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
+  gap: 10px;
 }
 .project-picker-action-btn {
   --nb-btn-bg: var(--blue);
-  --nb-btn-font-size: 10px;
+  --nb-btn-font-size: 12px;
   --nb-btn-shadow: 3px 3px 0 var(--line);
   --nb-btn-hover-shift: 2px;
 
-  min-height: 40px;
-  padding: 8px 12px;
-  letter-spacing: 0.04em;
+  min-height: 46px;
+  padding: 10px 14px;
+  letter-spacing: 0.05em;
   transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease;
   touch-action: manipulation;
 }
@@ -4620,16 +4630,16 @@ body.ws-reconnecting::before {
   border-radius: 0;
   background: var(--accent-light);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.7;
 }
 
 /* === Directory Browser === */
 .dir-browser-shell {
-  gap: 12px;
+  gap: 14px;
 }
 .dir-browser-current {
-  padding: 12px 14px;
+  padding: 14px 16px;
   border: 2px solid var(--line);
   border-radius: 0;
   background: var(--surface);
@@ -4637,35 +4647,35 @@ body.ws-reconnecting::before {
 }
 .dir-browser-current-label {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
 .dir-browser-current-name {
-  margin-top: 5px;
+  margin-top: 6px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 700;
-  line-height: 1.3;
+  line-height: 1.35;
   text-transform: uppercase;
   color: var(--text-primary);
   word-break: break-word;
 }
 .dir-browser-current-path {
-  margin-top: 3px;
-  font-size: 10px;
-  line-height: 1.55;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.65;
   color: var(--text-secondary);
   word-break: break-all;
 }
 .dir-browser-pathbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 42px;
-  padding: 7px 8px;
+  gap: 8px;
+  min-height: 48px;
+  padding: 8px 10px;
   border: 2px solid var(--line);
   border-radius: 2px;
   background: var(--surface-strong);
@@ -4685,11 +4695,11 @@ body.ws-reconnecting::before {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 26px;
-  padding: 0 8px;
+  min-height: 28px;
+  padding: 0 9px;
   border-radius: 2px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1;
   white-space: nowrap;
 }
@@ -4714,20 +4724,20 @@ body.ws-reconnecting::before {
 }
 .dir-browser-crumb-sep {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .dir-browser-edit-btn,
 .dir-browser-go-btn {
   appearance: none;
-  min-width: 38px;
-  min-height: 38px;
-  padding: 0 10px;
+  min-width: 42px;
+  min-height: 42px;
+  padding: 0 12px;
   border: 2px solid var(--line);
   border-radius: 2px;
   background: var(--bg-secondary);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   box-shadow: 2px 2px 0 var(--line);
@@ -4749,11 +4759,11 @@ body.ws-reconnecting::before {
 .dir-browser-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-height: 280px;
-  max-height: 340px;
-  margin-top: 8px;
-  padding: 8px;
+  gap: 8px;
+  min-height: 300px;
+  max-height: 360px;
+  margin-top: 10px;
+  padding: 10px;
   overflow-y: auto;
   border: 2px solid var(--line);
   border-radius: 0;
@@ -4765,8 +4775,8 @@ body.ws-reconnecting::before {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 12px 14px;
   border: 2px solid var(--line);
   border-radius: 2px;
   background: var(--surface-strong);
@@ -4828,22 +4838,22 @@ body.ws-reconnecting::before {
 }
 .dir-browser-item-name {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
-  line-height: 1.35;
+  line-height: 1.4;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .dir-browser-item-note {
-  font-size: 10px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--text-secondary);
 }
 .dir-browser-item-arrow {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: 18px;
   line-height: 1;
   color: var(--text-muted);
   transition: transform 150ms ease, color 150ms ease;
@@ -4854,24 +4864,24 @@ body.ws-reconnecting::before {
 }
 .dir-browser-empty,
 .dir-browser-error {
-  padding: 18px 14px;
+  padding: 22px 16px;
   border: 2px dashed var(--line);
   border-radius: 0;
   background: var(--bg-secondary);
   color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.65;
   text-align: center;
 }
 .dir-browser-error-back {
-  margin-top: 10px;
-  padding: 7px 10px;
+  margin-top: 12px;
+  padding: 8px 12px;
   border: 2px solid var(--line);
   border-radius: 2px;
   background: var(--surface-strong);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   box-shadow: 2px 2px 0 var(--line);
@@ -4886,16 +4896,16 @@ body.ws-reconnecting::before {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 .dir-browser-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  line-height: 1.4;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -4906,13 +4916,13 @@ body.ws-reconnecting::before {
 }
 .dir-browser-selection-hint {
   max-width: 320px;
-  padding: 5px 8px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 2px;
   background: var(--surface-strong);
   font-family: var(--font-mono);
-  font-size: 9px;
-  line-height: 1.4;
+  font-size: 11px;
+  line-height: 1.5;
   color: var(--text-muted);
 }
 .project-picker-item:focus-visible,
@@ -4967,7 +4977,7 @@ body.ws-reconnecting::before {
   }
   .project-picker-item-name,
   .dir-browser-current-name {
-    font-size: 12px;
+    font-size: 14px;
   }
   .dir-browser-pathbar {
     padding: 8px;
@@ -4981,7 +4991,7 @@ body.ws-reconnecting::before {
 .import-group:last-child { margin-bottom: 0; }
 .import-group-title {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -5001,7 +5011,7 @@ body.ws-reconnecting::before {
   color: var(--text-primary);
 }
 .import-group-arrow {
-  font-size: 9px;
+  font-size: 10px;
   flex-shrink: 0;
   transition: none;
 }
@@ -5028,7 +5038,7 @@ body.ws-reconnecting::before {
   min-width: 0;
 }
 .import-item-title {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5043,7 +5053,7 @@ body.ws-reconnecting::before {
 }
 .import-item-tag {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -5054,7 +5064,7 @@ body.ws-reconnecting::before {
   padding: 2px 7px;
 }
 .import-item-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5065,7 +5075,7 @@ body.ws-reconnecting::before {
 
   flex-shrink: 0;
   padding: 6px 14px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .import-item-btn:hover {
   /* keep explicit block for readability with shared button base */
@@ -5102,7 +5112,7 @@ body.ws-reconnecting::before {
   padding: 16px;
 }
 .workspace-insights-content {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-secondary);
   line-height: 1.6;
 }
@@ -5142,7 +5152,7 @@ body.ws-reconnecting::before {
 }
 
 .insights-hero-stat span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -5150,7 +5160,7 @@ body.ws-reconnecting::before {
 
 .insights-hero-stat strong {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -5174,7 +5184,7 @@ body.ws-reconnecting::before {
 .insights-card-header h3 {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -5183,7 +5193,7 @@ body.ws-reconnecting::before {
 
 .insights-card-kicker {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -5197,7 +5207,7 @@ body.ws-reconnecting::before {
   border-radius: 2px;
   background: var(--bg-tertiary);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -5220,7 +5230,7 @@ body.ws-reconnecting::before {
 
 .git-insights-branch {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   min-width: 0;
   max-width: 100%;
@@ -5236,7 +5246,7 @@ body.ws-reconnecting::before {
   flex-wrap: wrap;
   margin-bottom: 6px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .git-insights-track {
@@ -5298,7 +5308,7 @@ body.ws-reconnecting::before {
   justify-content: space-between;
   align-items: center;
   gap: 10px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .insights-detail-item span {
@@ -5307,7 +5317,7 @@ body.ws-reconnecting::before {
 
 .insights-detail-item strong {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-primary);
 }
 
@@ -5315,7 +5325,7 @@ body.ws-reconnecting::before {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px dashed var(--line);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -5335,7 +5345,7 @@ body.ws-reconnecting::before {
   background: var(--action-button-background);
   color: var(--action-button-color);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -5375,7 +5385,7 @@ body.ws-reconnecting::before {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border-bottom: 2px solid var(--line);
   background: var(--surface);
   flex-shrink: 0;
@@ -5391,7 +5401,7 @@ body.ws-reconnecting::before {
   background: var(--toolbar-button-background);
   color: var(--toolbar-button-color);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -5521,7 +5531,7 @@ body.git-panel-resizing * {
   background: var(--yellow);
   color: var(--panel-inverse-background);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 16px;
   text-align: center;
@@ -5542,7 +5552,7 @@ body.git-panel-resizing * {
 
 .git-panel-title {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -5565,7 +5575,7 @@ body.git-panel-resizing * {
   background: transparent;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -5596,7 +5606,7 @@ body.git-panel-resizing * {
   border-radius: 2px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -5644,7 +5654,7 @@ body.git-panel-resizing * {
 
 .git-panel-status-branch {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1.3;
@@ -5652,7 +5662,7 @@ body.git-panel-resizing * {
 
 .git-panel-status-track {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-muted);
   line-height: 1.35;
 }
@@ -5739,7 +5749,7 @@ body.git-panel-resizing * {
 
 .git-tree-folder-meta {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.3;
   color: var(--text-secondary);
   text-align: left;
@@ -5778,7 +5788,7 @@ body.git-panel-resizing * {
   border-radius: 999px;
   background: var(--pill-surface);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.2;
   color: var(--text-secondary);
   white-space: nowrap;
@@ -5873,7 +5883,7 @@ body.git-panel-resizing * {
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text-primary);
   text-align: left;
@@ -5894,7 +5904,7 @@ body.git-panel-resizing * {
   border-radius: 999px;
   background: var(--git-tree-count-bg);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.2;
   color: var(--text-primary);
   text-align: center;
@@ -5952,7 +5962,7 @@ body.git-panel-resizing * {
 }
 
 .git-tree-file-name {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
   line-height: 1.35;
@@ -5967,7 +5977,7 @@ body.git-panel-resizing * {
 
 .git-tree-file-meta {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.02em;
   color: var(--text-secondary);
   line-height: 1.35;
@@ -6002,7 +6012,7 @@ body.git-panel-resizing * {
   min-width: auto !important;
   min-height: 26px;
   padding: 3px 8px !important;
-  font-size: 9px !important;
+  font-size: 10px !important;
   line-height: 1.1;
   white-space: nowrap;
   box-shadow: none !important;
@@ -6019,7 +6029,7 @@ body.git-panel-resizing * {
 .git-tree-stage-btn {
   min-height: 26px;
   padding: 3px 8px !important;
-  font-size: 9px !important;
+  font-size: 10px !important;
   border-color: var(--blue-strong) !important;
   background: var(--git-tree-stage-bg) !important;
 }
@@ -6037,7 +6047,7 @@ body.git-panel-resizing * {
   background: var(--git-panel-code-bg);
   color: var(--git-panel-code-text);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   box-shadow: 3px 3px 0 var(--line);
 }
@@ -6061,13 +6071,13 @@ body.git-panel-resizing * {
 
 .git-panel-log-hash {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--blue);
   font-weight: 700;
 }
 
 .git-panel-log-subject {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-primary);
   line-height: 1.4;
 }
@@ -6079,7 +6089,7 @@ body.git-panel-resizing * {
 }
 
 .git-panel-commit-area .settings-status {
-  font-size: 11px;
+  font-size: 12px;
   margin: 0;
 }
 
