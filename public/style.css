@@ -240,6 +240,30 @@
   --panel-inverse-background: var(--surface-inverse);
   --panel-inverse-text: var(--surface-inverse-text);
 
+  /* --- Button Size & Spacing Tiers --- */
+  --btn-icon-size: 32px;
+  --btn-sm-min-h: 28px;
+  --btn-md-min-h: 36px;
+  --btn-lg-min-h: 44px;
+  --btn-sm-font: 10px;
+  --btn-md-font: 11px;
+  --btn-lg-font: 12px;
+  --btn-sm-pad-x: 8px;
+  --btn-md-pad-x: 12px;
+  --btn-lg-pad-x: 14px;
+  --btn-sm-pad-y: 4px;
+  --btn-md-pad-y: 6px;
+  --btn-lg-pad-y: 10px;
+  --btn-letter-spacing: 0.03em;
+
+  /* --- Layout Spacing --- */
+  --space-xs: 4px;
+  --space-sm: 6px;
+  --space-md: 8px;
+  --space-lg: 12px;
+  --space-xl: 16px;
+  --space-2xl: 20px;
+
   /* --- Session loading --- */
   --loading-overlay-layer-a: rgba(244, 239, 234, 0.88);
   --loading-overlay-layer-b: rgba(225, 214, 203, 0.9);
@@ -615,13 +639,14 @@ body {
 }
 .login-box button {
   --nb-btn-bg: var(--blue);
-  --nb-btn-font-size: 12px;
+  --nb-btn-font-size: var(--btn-lg-font);
   --nb-btn-shadow: 3px 3px 0 var(--line);
   --nb-btn-hover-shift: 2px;
 
   width: 100%;
-  padding: 12px;
-  letter-spacing: 0.06em;
+  min-height: var(--btn-lg-min-h);
+  padding: var(--btn-lg-pad-y) var(--btn-lg-pad-x);
+  letter-spacing: var(--btn-letter-spacing);
 }
 .login-box button:hover {
   /* keep explicit block for readability with shared button base */
@@ -751,12 +776,12 @@ body {
 .agent-tab {
   color: var(--segmented-control-item-color);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--btn-md-font);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  min-height: 30px;
-  padding: 5px 12px;
+  letter-spacing: var(--btn-letter-spacing);
+  min-height: var(--btn-md-min-h);
+  padding: var(--btn-sm-pad-y) var(--btn-md-pad-x);
 }
 .agent-tab.active {
   background: var(--segmented-control-item-active-background);
@@ -764,14 +789,13 @@ body {
 
 /* Mode tabs in topbar */
 .mode-tab {
-  color: var(--segmented-control-item-color);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--btn-sm-font);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  min-height: 28px;
-  padding: 4px 9px;
+  letter-spacing: var(--btn-letter-spacing);
+  min-height: var(--btn-sm-min-h);
+  padding: var(--btn-sm-pad-y) var(--btn-sm-pad-x);
 }
 .mode-tab.active {
   background: var(--segmented-control-item-alt-active-background);
@@ -812,8 +836,8 @@ body {
 
 /* Topbar icon buttons */
 .topbar-icon-btn {
-  width: 32px;
-  height: 32px;
+  width: var(--btn-icon-size);
+  height: var(--btn-icon-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1654,7 +1678,7 @@ html[data-theme="localhost"] .localfile-pre {
 ) {
   --nb-btn-bg: var(--blue);
   --nb-btn-hover-bg: var(--yellow);
-  --nb-btn-font-size: 12px;
+  --nb-btn-font-size: var(--btn-lg-font);
   --nb-btn-shadow: var(--button-shadow-soft);
   --nb-btn-hover-shadow: var(--button-shadow-soft);
   --nb-btn-hover-shift: 0;
@@ -1662,10 +1686,11 @@ html[data-theme="localhost"] .localfile-pre {
   background: var(--nb-btn-bg);
   color: var(--text-primary);
   border: 2px solid var(--button-border);
-  border-radius: 10px;
+  border-radius: var(--button-radius);
   font-family: var(--font-mono);
   font-size: var(--nb-btn-font-size);
   font-weight: 700;
+  letter-spacing: var(--btn-letter-spacing);
   text-transform: uppercase;
   cursor: pointer;
   box-shadow: var(--nb-btn-shadow);
@@ -1696,13 +1721,13 @@ html[data-theme="localhost"] .localfile-pre {
   --nb-btn-hover-shift: -2px;
 
   width: 100%;
-  min-height: 38px;
-  padding: 6px 10px;
-  letter-spacing: 0.03em;
+  min-height: var(--btn-lg-min-h);
+  padding: var(--btn-md-pad-y) var(--btn-md-pad-x);
+  letter-spacing: var(--btn-letter-spacing);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-md);
 }
 .new-chat-btn:hover {
   /* keep explicit block for readability with shared button base */
@@ -3333,9 +3358,10 @@ html[data-theme="localhost"] .localfile-pre {
 }
 #msg-input::placeholder { color: var(--text-muted); }
 .send-btn, .abort-btn {
-  width: 30px; height: 30px;
+  width: var(--btn-icon-size);
+  height: var(--btn-icon-size);
   border: 2px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--button-radius);
   cursor: pointer;
   display: flex;
   align-items: center; justify-content: center;
