@@ -3411,7 +3411,7 @@ async function runHappyPathRegressionCase({ port, password, tempRoot, configDir,
       { type: 'list_codex_sessions' },
       'codex_sessions',
     );
-    const importedCodexItem = codexSessions.sessions.find((item) => item.threadId === codexFixture.threadId);
+    const importedCodexItem = codexSessions.groups.flatMap((g) => g.sessions).find((item) => item.threadId === codexFixture.threadId);
     assert(importedCodexItem, 'Codex session listing failed');
 
     const importedCodex = await client.sendAndWaitType(

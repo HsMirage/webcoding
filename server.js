@@ -6070,7 +6070,7 @@ function handleImportNativeSession(ws, msg) {
 
 function handleListCodexSessions(ws) {
   const imported = getImportedCodexThreadIds();
-  const items = [];
+  const cwdMap = new Map(); // cwd -> items[]
   const seen = new Set();
   for (const filePath of getCodexRolloutFiles()) {
     const parsed = parseCodexRolloutFile(filePath);
@@ -6078,7 +6078,9 @@ function handleListCodexSessions(ws) {
     if (seen.has(parsed.meta.threadId)) continue;
     seen.add(parsed.meta.threadId);
     const title = parsed.meta.title || parsed.meta.threadId.slice(0, 20);
-    items.push({
+    const cwd = parsed.meta.cwd || '/unknown';
+    if (!cwdMap.has(cwd)) cwdMap.set(cwd, []);
+    cwdMap.get(cwd).push({
       threadId: parsed.meta.threadId,
       title,
       cwd: parsed.meta.cwd || null,
@@ -6089,7 +6091,16 @@ function handleListCodexSessions(ws) {
       alreadyImported: imported.has(parsed.meta.threadId),
     });
   }
-  wsSend(ws, { type: 'codex_sessions', sessions: items });
+  const groups = [];
+  for (const [cwd, sessions] of cwdMap.entries()) {
+    sessions.sort((a, b) => {
+      if (!a.updatedAt) return 1;
+      if (!b.updatedAt) return -1;
+      return new Date(b.updatedAt) - new Date(a.updatedAt);
+    });
+    groups.push({ cwd, sessions });
+  }
+  wsSend(ws, { type: 'codex_sessions', groups });
 }
 
 function handleImportCodexSession(ws, msg) {
