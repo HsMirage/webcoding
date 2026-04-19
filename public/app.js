@@ -15,7 +15,7 @@
     { alias: 'haiku', value: 'haiku', label: 'Haiku', desc: 'Haiku 4.5，响应最快，适合快速问答', pricing: '输入/输出 $1 / $5 / 百万 Token' },
   ];
 
-  const SLASH_COMMANDS = [
+  const DEFAULT_SLASH_COMMANDS = [
     { cmd: '/clear', desc: '清除当前会话' },
     { cmd: '/model', desc: '查看/切换模型' },
     { cmd: '/mode', desc: '查看/切换权限模式' },
@@ -23,6 +23,7 @@
     { cmd: '/compact', desc: '压缩上下文' },
     { cmd: '/help', desc: '显示帮助' },
   ];
+  let currentSlashCommands = [...DEFAULT_SLASH_COMMANDS];
 
   const MODE_LABELS = {
     default: '默认',
@@ -2012,6 +2013,7 @@
     if (targetAgent === selectedAgent) return;
     const hadOpenSession = !!sessionState.currentSessionId;
     setSelectedAgent(targetAgent, { syncMode: !hadOpenSession });
+    requestSlashCommands(targetAgent);
     if (!hadOpenSession) {
       resetChatView(targetAgent);
       return;
@@ -2091,6 +2093,7 @@
     setLastSessionForAgent(snapshot.agent, sessionState.currentSessionId);
     chatTitle.textContent = snapshot.title || '新会话';
     setCurrentAgent(snapshot.agent);
+    requestSlashCommands(snapshot.agent);
     setCurrentSessionRunningState(snapshot.isRunning);
     setStatsDisplay(snapshot);
     const nextGitCwd = snapshot.cwd || null;
@@ -2547,6 +2550,7 @@
       app.hidden = false;
       send({ type: 'get_codex_config' });
       send({ type: 'get_projects' });
+      requestSlashCommands(selectedAgent);
       if (msg.mustChangePassword) {
         showForceChangePassword();
       } else {
@@ -2918,11 +2922,25 @@
     update_info: (msg) => { if (typeof window._ccOnUpdateInfo === 'function') window._ccOnUpdateInfo(msg); },
     git_result: handleGitResultMessage,
     projects_config: handleProjectsConfigMessage,
+    slash_commands_list: handleSlashCommandsListMessage,
   });
 
   function handleServerMessage(msg) {
     const handler = SERVER_MESSAGE_HANDLERS[msg?.type];
     if (typeof handler === 'function') handler(msg);
+  }
+
+  // --- Slash Commands Discovery ---
+  function requestSlashCommands(agent) {
+    send({ type: 'get_slash_commands', agent: agent || sessionState.currentAgent });
+  }
+
+  function handleSlashCommandsListMessage(msg) {
+    if (!msg || !Array.isArray(msg.commands)) return;
+    // Only update if the message is for the current agent
+    const msgAgent = msg.agent || 'claude';
+    if (msgAgent !== sessionState.currentAgent) return;
+    currentSlashCommands = msg.commands;
   }
 
   // --- Generating State ---
@@ -4765,6 +4783,8 @@
       showModePicker();
       return;
     }
+    // For non-core commands (CLI-native/skills), just insert the command text
+    // so it gets sent as a regular message to the CLI process
     msgInput.value = `${cmd} `;
     hideCmdMenu();
     msgInput.focus();
@@ -4781,7 +4801,7 @@
   }
 
   function showCmdMenu(filter) {
-    const filtered = SLASH_COMMANDS.filter(c =>
+    const filtered = currentSlashCommands.filter(c =>
       c.cmd.startsWith(filter) || c.desc.includes(filter.slice(1))
     );
     // Exact match first (fixes /mode vs /model ambiguity)
@@ -4812,6 +4832,8 @@
     items[cmdMenuIndex]?.classList.remove('active');
     cmdMenuIndex = (cmdMenuIndex + direction + items.length) % items.length;
     items[cmdMenuIndex]?.classList.add('active');
+    // Scroll active item into view
+    items[cmdMenuIndex]?.scrollIntoView({ block: 'nearest' });
   }
 
   function selectCmdMenuItem() {

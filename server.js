@@ -500,6 +500,255 @@ function clearPendingSlashCommand(sessionId, expected) {
 // Pending slash command metadata: sessionId -> { kind: string }
 const pendingSlashCommands = new Map();
 
+// Slash commands cache: per-agent discovered commands from CLI init events
+const SLASH_COMMAND_DESCRIPTIONS = {
+  // Webcoding core commands (server-side handled)
+  clear: '清除当前会话（含上下文）',
+  model: '查看/切换模型',
+  mode: '查看/切换权限模式',
+  cost: '查看会话费用/统计',
+  compact: '压缩上下文',
+  help: '显示帮助',
+  // Claude CLI native commands
+  debug: '调试模式',
+  simplify: '精简代码',
+  batch: '批量处理',
+  review: '代码审查',
+  'security-review': '安全审查',
+  init: '初始化项目',
+  context: '查看上下文',
+  heapdump: '堆内存快照',
+  insights: '洞察分析',
+  'team-onboarding': '团队引导',
+  // Claude skills (user-installed) — descriptions are best-effort; new skills show their raw name
+  'update-config': '更新配置',
+  loop: '循环执行',
+  'claude-api': 'Claude API 开发',
+  'web-access': '联网访问',
+  opencli: 'OpenCLI 社交操作',
+  'frontend-design': '前端设计',
+  // Claude plugin commands
+  'claude-hud:setup': '配置 HUD 状态栏',
+  'claude-hud:configure': '配置 HUD 显示',
+  'ralph-loop:help': 'Ralph Loop 帮助',
+  'ralph-loop:cancel-ralph': '取消 Ralph Loop',
+  'ralph-loop:ralph-loop': '启动 Ralph Loop',
+  // Codex CLI built-in interactive commands
+  status: '查看当前模型、审批和 Token 使用量',
+  fork: '分支当前对话到新线程',
+  new: '开始新的对话',
+  feedback: '发送反馈日志给维护者',
+  mcp: '列出已配置的 MCP 工具',
+  permissions: '控制 Codex 何时请求确认',
+  personality: '自定义 Codex 的沟通风格',
+  rename: '重命名线程',
+  skills: '列出可用技能',
+  statusline: '配置状态栏显示内容',
+  // Codex skills (user-installed) — discovered at runtime from ~/.codex/skills/
+  imagegen: 'AI 图像生成',
+  'openai-docs': 'OpenAI 官方文档查询',
+  'plugin-creator': '创建 Codex 插件',
+  'skill-creator': '创建 Codex 技能',
+  'skill-installer': '安装 Codex 技能',
+  pdf: 'PDF 文件处理',
+  slides: 'PowerPoint 演示文稿',
+  spreadsheets: 'Excel 电子表格',
+  'computer-use': 'macOS 桌面控制',
+};
+
+const slashCommandsCache = {
+  claude: { commands: null },
+  codex: { commands: null },
+};
+
+function buildSlashCommandList(agent) {
+  const cache = slashCommandsCache[agent];
+  const cliCommands = (cache && cache.commands) || [];
+  const isClaude = agent === 'claude';
+
+  // Webcoding core commands — always present, server-handled
+  const coreCmds = [
+    { cmd: '/clear', desc: SLASH_COMMAND_DESCRIPTIONS.clear, source: 'webcoding' },
+    { cmd: '/model', desc: SLASH_COMMAND_DESCRIPTIONS.model, source: 'webcoding' },
+    { cmd: '/mode', desc: SLASH_COMMAND_DESCRIPTIONS.mode, source: 'webcoding' },
+    { cmd: '/cost', desc: SLASH_COMMAND_DESCRIPTIONS.cost, source: 'webcoding' },
+    { cmd: '/compact', desc: SLASH_COMMAND_DESCRIPTIONS.compact, source: 'webcoding' },
+    { cmd: '/help', desc: SLASH_COMMAND_DESCRIPTIONS.help, source: 'webcoding' },
+  ];
+
+  // Deduplication set from core commands
+  const coreNames = new Set(coreCmds.map(c => c.cmd));
+
+  // Build CLI commands, skipping ones already in core
+  const cliCmds = [];
+  for (const raw of cliCommands) {
+    const cmd = raw.startsWith('/') ? raw : `/${raw}`;
+    if (coreNames.has(cmd)) continue;
+    const name = raw.startsWith('/') ? raw.slice(1) : raw;
+    const desc = SLASH_COMMAND_DESCRIPTIONS[name] || name;
+    cliCmds.push({ cmd, desc, source: isClaude ? 'claude-cli' : 'codex-cli' });
+  }
+  cliCmds.sort((a, b) => a.cmd.localeCompare(b.cmd));
+
+  return [...coreCmds, ...cliCmds];
+}
+
+function onSlashCommandsDiscovered(agent, commands) {
+  if (!agent || !Array.isArray(commands)) return;
+  slashCommandsCache[agent] = { commands };
+  // Broadcast to all connected clients
+  broadcastSlashCommands(agent);
+}
+
+function broadcastSlashCommands(agent) {
+  const list = buildSlashCommandList(agent);
+  const msg = { type: 'slash_commands_list', agent, commands: list };
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
+      wsSend(client, msg);
+    }
+  }
+}
+
+function discoverClaudeSlashCommands() {
+  return new Promise((resolve) => {
+    // Use text input with a minimal prompt — the init event arrives before any response
+    const args = ['-p', '--output-format', 'stream-json', '--verbose', 'say hi'];
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) { resolved = true; resolve(null); }
+    }, 30000);
+
+    try {
+      const proc = spawn(CLAUDE_PATH, args, {
+        env: { ...process.env },
+        cwd: __dirname,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: false,
+      });
+
+      let buf = '';
+      proc.stdout.on('data', (chunk) => {
+        buf += chunk.toString();
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const evt = JSON.parse(line);
+            if (evt.type === 'system' && Array.isArray(evt.slash_commands)) {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timer);
+                onSlashCommandsDiscovered('claude', evt.slash_commands);
+                proc.kill();
+                resolve(evt.slash_commands);
+              }
+            }
+          } catch {}
+        }
+      });
+
+      proc.stderr.on('data', () => {});
+      proc.on('error', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(null); } });
+      proc.on('close', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(null); } });
+    } catch {
+      if (!resolved) { resolved = true; clearTimeout(timer); resolve(null); }
+    }
+  });
+}
+
+// Codex has no runtime discovery API — discover slash commands by reading the filesystem:
+//   1. Built-in interactive commands (hardcoded from binary analysis)
+//   2. Skills from ~/.codex/skills/ (user-installed + .system/)
+//   3. Plugins from ~/.codex/.tmp/bundled-marketplaces/*/plugins/
+function discoverCodexSlashCommands() {
+  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const skillsDir = path.join(codexHome, 'skills');
+  const marketplacesDir = path.join(codexHome, '.tmp', 'bundled-marketplaces');
+  const commands = new Set();
+
+  // 1. Built-in interactive commands (from Codex binary analysis — stable across versions)
+  const builtIn = ['compact', 'model', 'status', 'review', 'fork', 'new',
+    'feedback', 'init', 'mcp', 'permissions', 'personality', 'rename', 'skills', 'statusline'];
+  builtIn.forEach(c => commands.add(c));
+
+  // 2. User-installed skills (directories under ~/.codex/skills/, excluding .system)
+  try {
+    const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name === '.system') continue;
+      // Each skill dir may contain sub-skills (e.g. codex-primary-runtime/slides)
+      if (entry.isDirectory()) {
+        const subDir = path.join(skillsDir, entry.name);
+        // Check for sub-directories (nested skills like codex-primary-runtime/slides)
+        try {
+          const subEntries = fs.readdirSync(subDir, { withFileTypes: true });
+          const hasSkillMd = subEntries.some(e => e.isFile() && e.name === 'SKILL.md');
+          if (hasSkillMd) {
+            commands.add(entry.name);
+          } else {
+            // Add sub-directories as individual skills (e.g. slides, spreadsheets)
+            for (const sub of subEntries) {
+              if (sub.isDirectory() && !sub.name.startsWith('.')) {
+                const subSkillMd = path.join(subDir, sub.name, 'SKILL.md');
+                if (fs.existsSync(subSkillMd)) {
+                  commands.add(sub.name);
+                }
+              }
+            }
+          }
+        } catch {}
+      } else if (entry.isSymbolicLink()) {
+        // Symlinked skills (e.g. frontend-design -> /path/to/skill)
+        const targetSkillMd = path.join(skillsDir, entry.name, 'SKILL.md');
+        try { if (fs.existsSync(targetSkillMd)) commands.add(entry.name); } catch {}
+      }
+    }
+  } catch {}
+
+  // 3. System skills (under ~/.codex/skills/.system/)
+  try {
+    const sysDir = path.join(skillsDir, '.system');
+    const sysEntries = fs.readdirSync(sysDir, { withFileTypes: true });
+    for (const entry of sysEntries) {
+      if (entry.name.startsWith('.')) continue;
+      if (entry.isDirectory()) {
+        const skillMd = path.join(sysDir, entry.name, 'SKILL.md');
+        try { if (fs.existsSync(skillMd)) commands.add(entry.name); } catch {}
+      }
+    }
+  } catch {}
+
+  // 4. Plugins (under bundled-marketplaces/*/plugins/)
+  try {
+    const mkDirs = fs.readdirSync(marketplacesDir, { withFileTypes: true });
+    for (const mk of mkDirs) {
+      if (!mk.isDirectory() || mk.name.startsWith('.')) continue;
+      const pluginsDir = path.join(marketplacesDir, mk.name, 'plugins');
+      try {
+        const pluginEntries = fs.readdirSync(pluginsDir, { withFileTypes: true });
+        for (const pe of pluginEntries) {
+          if (!pe.isDirectory()) continue;
+          // Read plugin.json for the plugin name
+          const pluginJsonPath = path.join(pluginsDir, pe.name, '.codex-plugin', 'plugin.json');
+          try {
+            if (fs.existsSync(pluginJsonPath)) {
+              const raw = fs.readFileSync(pluginJsonPath, 'utf8');
+              const parsed = JSON.parse(raw);
+              if (parsed.name) commands.add(parsed.name);
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+
+  const result = [...commands];
+  onSlashCommandsDiscovered('codex', result);
+  return result;
+}
+
 // Pending compact retry metadata: sessionId -> { text: string, mode: string, reason: string, autoRetryCount: number }
 const pendingCompactRetries = new Map();
 
@@ -4344,6 +4593,22 @@ wss.on('connection', (ws, req) => {
       case 'get_codex_config':
         wsSend(ws, { type: 'codex_config', config: getCodexConfigMasked() });
         break;
+      case 'get_slash_commands': {
+        const slashAgent = normalizeAgent(msg.agent || 'claude');
+        if (slashAgent === 'claude') {
+          // Claude: spawn CLI to capture init event (real-time discovery)
+          discoverClaudeSlashCommands().then(() => {
+            wsSend(ws, { type: 'slash_commands_list', agent: slashAgent, commands: buildSlashCommandList(slashAgent) });
+          }).catch(() => {
+            wsSend(ws, { type: 'slash_commands_list', agent: slashAgent, commands: buildSlashCommandList(slashAgent) });
+          });
+        } else {
+          // Codex: scan filesystem for skills/plugins (real-time discovery)
+          discoverCodexSlashCommands();
+          wsSend(ws, { type: 'slash_commands_list', agent: slashAgent, commands: buildSlashCommandList(slashAgent) });
+        }
+        break;
+      }
       case 'save_codex_config':
         handleSaveCodexConfig(ws, msg.config);
         break;
@@ -4942,8 +5207,14 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent) {
       break;
     }
 
-    default:
-      wsSend(ws, { type: 'system_message', message: `未知指令: ${cmd}\n输入 /help 查看可用指令` });
+    default: {
+      // For unrecognized slash commands, pass through to the CLI process if a session is active
+      if (sessionId && activeProcesses.has(sessionId)) {
+        handleMessage(ws, { text, sessionId, mode: session?.permissionMode || 'yolo' }, { hideInHistory: false });
+      } else {
+        wsSend(ws, { type: 'system_message', message: `未知指令: ${cmd}\n输入 /help 查看可用指令` });
+      }
+    }
   }
 }
 
@@ -5674,6 +5945,7 @@ const {
   getRuntimeSessionId,
   clearRuntimeSessionId,
   runtimeFingerprintsCompatible,
+  onSlashCommandsDiscovered,
 });
 
 // === Check Update ===

@@ -1,5 +1,19 @@
 # 更新记录
 
+## v1.4.4
+
+### 新功能
+
+- **斜杠命令实时发现** — 输入 `/` 后的命令列表不再是硬编码，而是实时从本地 CLI 获取：
+  - **Claude**：每次请求都 spawn Claude CLI 捕获 `system` init 事件，实时获取全部 slash_commands（含 skills、plugins、内置命令）
+  - **Codex**：每次请求都扫描 `~/.codex/skills/`（用户技能 + 系统技能）和 `~/.codex/.tmp/bundled-marketplaces/*/plugins/`（已安装插件），实时发现所有可用命令
+  - 未知斜杠命令自动转发给活跃的 CLI 进程处理，而非显示"未知指令"
+
+### 改进
+
+- **命令菜单滚动** — 命令列表超出时显示滚动条（`max-height: 320px`），键盘上下导航时自动滚动到当前项
+- **Agent 切换同步** — 切换 Claude/Codex 标签页或切换会话时自动请求对应 agent 的命令列表
+
 ## v1.4.3
 
 ### 修复
