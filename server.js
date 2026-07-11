@@ -4013,12 +4013,24 @@ function resolveProcessCompletionState(sessionId, entry, exitCode, signal) {
   return { pendingRetry, contextLimitExceeded, completionError };
 }
 
+function hasPersistableSegments(entry) {
+  if (!Array.isArray(entry?.segments) || entry.segments.length === 0) return false;
+  return entry.segments.some((segment) => {
+    if (!segment) return false;
+    if (segment.type === 'tool_call') return true;
+    if (segment.type === 'text' && String(segment.text || '').trim()) return true;
+    return false;
+  });
+}
+
 function persistProcessCompletionSession(sessionId, entry, pendingSlash) {
   const session = loadSession(sessionId);
-  if (session && (entry.fullText || (entry.toolCalls && entry.toolCalls.length > 0))) {
+  // Persist when we have final text, tool calls, OR thinking-only segments
+  // (extended thinking intentionally stays out of fullText).
+  if (session && (entry.fullText || (entry.toolCalls && entry.toolCalls.length > 0) || hasPersistableSegments(entry))) {
     session.messages.push({
       role: 'assistant',
-      content: entry.fullText,
+      content: entry.fullText || '',
       toolCalls: entry.toolCalls || [],
       segments: entry.segments || [],
       timestamp: new Date().toISOString(),
@@ -5681,11 +5693,24 @@ function handleMessage(ws, msg, options = {}) {
   saveSession(session);
 
   const currentSessionId = session.id;
+  const clientMessageId = typeof msg.clientMessageId === 'string' && msg.clientMessageId.trim()
+    ? msg.clientMessageId.trim().slice(0, 120)
+    : null;
 
   for (const [, entry] of activeProcesses) {
     if (entry.ws === ws) entry.ws = null;
   }
   wsSessionMap.set(ws, currentSessionId);
+
+  // Acknowledge persistence before spawn so the client can drop "sending" state
+  // even if CLI launch fails later.
+  if (clientMessageId) {
+    wsSend(ws, {
+      type: 'message_accepted',
+      sessionId: currentSessionId,
+      clientMessageId,
+    });
+  }
 
   if (!sessionId) {
     // Mark isRunning true before spawn so the client can preserve optimistic
@@ -5770,6 +5795,22 @@ function handleMessage(ws, msg, options = {}) {
   const outputFd = fs.openSync(outputPath, 'w');
   const errorFd = fs.openSync(errorPath, 'w');
 
+  function finalizeSpawnFailure(errMessage) {
+    try {
+      const active = activeProcesses.get(currentSessionId);
+      if (active?.tailer) {
+        try { active.tailer.stop(); } catch {}
+      }
+      removeActiveProcess(currentSessionId);
+    } catch {}
+    try { cleanRunDir(currentSessionId); } catch {}
+    const agent = getSessionAgent(session);
+    const message = formatRuntimeError(agent, errMessage, { exitCode: null, signal: null });
+    wsSend(ws, { type: 'error', sessionId: currentSessionId, message });
+    wsSend(ws, { type: 'done', sessionId: currentSessionId, costUsd: null });
+    sendSessionList(ws);
+  }
+
   let proc;
   let entry = null;
   try {
@@ -5785,10 +5826,9 @@ function handleMessage(ws, msg, options = {}) {
     fs.closeSync(inputFd);
     fs.closeSync(outputFd);
     fs.closeSync(errorFd);
-    cleanRunDir(currentSessionId);
     plog('ERROR', 'process_spawn_fail', { sessionId: currentSessionId.slice(0, 8), error: err.message });
-    const agent = getSessionAgent(session);
-    return wsSend(ws, { type: 'error', sessionId: currentSessionId, message: formatRuntimeError(agent, err.message, { exitCode: null, signal: null }) });
+    finalizeSpawnFailure(err.message);
+    return;
   }
 
   fs.closeSync(inputFd);
@@ -5799,9 +5839,7 @@ function handleMessage(ws, msg, options = {}) {
   // immediately after spawn, before any async work, to avoid unhandled 'error' event crash.
   proc.on('error', (err) => {
     plog('ERROR', 'process_spawn_fail', { sessionId: currentSessionId.slice(0, 8), error: err.message });
-    cleanRunDir(currentSessionId);
-    const agent = getSessionAgent(session);
-    wsSend(ws, { type: 'error', sessionId: currentSessionId, message: formatRuntimeError(agent, err.message, { exitCode: null, signal: null }) });
+    finalizeSpawnFailure(err.message);
   });
 
   fs.writeFileSync(path.join(dir, 'pid'), String(proc.pid));

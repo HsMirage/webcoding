@@ -58,6 +58,8 @@
   const RECONNECT_MAX_ATTEMPTS = 8;
   const SCROLL_NEAR_BOTTOM_PX = 96;
   const MAX_SEND_QUEUE = 5;
+  const MESSAGE_ACK_TIMEOUT_MS = 12000;
+  const THINKING_RENDER_DEBOUNCE = 80;
   const REMEMBERED_PASSWORD_STORAGE_KEY = 'webcoding-remembered-password';
   const THEME_STORAGE_KEY = 'webcoding-theme';
   const SEND_ON_ENTER_STORAGE_KEY = 'webcoding-send-on-enter';
@@ -107,9 +109,12 @@
   let activeSessionLoad = null;
   let sidebarSwipe = null;
   let pendingSendQueue = [];
+  let pendingMessageAcks = new Map(); // clientMessageId -> { item, timer }
   let sessionSearchQuery = '';
   let statusBannerAction = null;
   let flushQueueTimer = null;
+  let thinkingRenderTimer = null;
+  let pendingThinkingText = '';
   let pendingAttachments = [];
   let uploadingAttachments = [];
   let currentCwd = null;
@@ -2082,10 +2087,23 @@
     }
   }
 
-  // --- Send queue (offline retry + generate-while-busy) ---
+  // --- Send queue (session-scoped + ack-gated) ---
   function nextQueueId() {
     localIdCounter += 1;
     return `q-${Date.now().toString(36)}-${localIdCounter}`;
+  }
+
+  function normalizeQueueSessionId(sessionId) {
+    if (sessionId == null || sessionId === '') return null;
+    return String(sessionId);
+  }
+
+  function queueItemMatchesSession(item, sessionId) {
+    return normalizeQueueSessionId(item?.sessionId) === normalizeQueueSessionId(sessionId);
+  }
+
+  function isQueueItemForCurrentView(item) {
+    return queueItemMatchesSession(item, sessionState.currentSessionId);
   }
 
   function getQueuedBubble(queueId) {
@@ -2096,6 +2114,7 @@
   function queueStatusLabel(reason) {
     if (reason === 'offline') return '待重连发送';
     if (reason === 'busy') return '排队等待发送';
+    if (reason === 'sending') return '发送中…';
     if (reason === 'failed') return '发送失败 · 点击重试';
     return '待发送';
   }
@@ -2106,25 +2125,24 @@
     el.dataset.queueReason = reason || 'queued';
     el.classList.toggle('is-offline', reason === 'offline' || reason === 'failed');
     el.classList.toggle('is-busy', reason === 'busy');
+    el.classList.toggle('is-sending', reason === 'sending');
     const status = el.querySelector('.msg-queue-status');
     if (status) status.textContent = queueStatusLabel(reason);
   }
 
   function createQueuedUserBubble(item) {
     if (!item || String(item.text || '').startsWith('/')) return null;
-    // Only show pending bubbles for the currently viewed session (or new chat).
-    const targetSession = item.sessionId ?? null;
-    if (targetSession && sessionState.currentSessionId && targetSession !== sessionState.currentSessionId) {
-      return null;
-    }
+    if (!isQueueItemForCurrentView(item)) return null;
     const welcome = messagesDiv.querySelector('.welcome-msg');
     if (welcome) welcome.remove();
     const el = createMsgElement('user', item.text || '', item.attachments || []);
     el.classList.add('msg-queued');
     el.dataset.queueId = item.id;
     el.dataset.queueReason = item.reason || 'queued';
+    if (item.sessionId) el.dataset.queueSessionId = item.sessionId;
     if (item.reason === 'offline' || item.reason === 'failed') el.classList.add('is-offline');
     if (item.reason === 'busy') el.classList.add('is-busy');
+    if (item.reason === 'sending') el.classList.add('is-sending');
     const status = document.createElement('div');
     status.className = 'msg-queue-status';
     status.textContent = queueStatusLabel(item.reason);
@@ -2133,10 +2151,13 @@
     el.addEventListener('click', () => {
       const queued = pendingSendQueue.find((entry) => entry.id === item.id);
       if (!queued) return;
-      // Offline/failed: click retries immediately if possible; otherwise cancel.
+      if (queued.reason === 'sending') {
+        showToast('正在发送，请稍候…');
+        return;
+      }
       if (queued.reason === 'offline' || queued.reason === 'failed') {
-        if (canDispatchSendNow({ allowWhileGenerating: String(queued.text || '').startsWith('/') })) {
-          // Move to front and flush.
+        if (canDispatchQueueItem(queued)) {
+          // Move to front among same-session items and flush.
           pendingSendQueue = pendingSendQueue.filter((entry) => entry.id !== item.id);
           pendingSendQueue.unshift(queued);
           updateSendQueueIndicator();
@@ -2144,7 +2165,6 @@
           return;
         }
       }
-      // Default: cancel this queued item.
       removeQueuedItem(item.id, { toast: true });
     });
     messagesDiv.appendChild(el);
@@ -2155,12 +2175,12 @@
   function promoteQueuedBubble(queueId) {
     const el = getQueuedBubble(queueId);
     if (!el) return false;
-    el.classList.remove('msg-queued', 'is-offline', 'is-busy');
+    el.classList.remove('msg-queued', 'is-offline', 'is-busy', 'is-sending');
     el.removeAttribute('data-queue-id');
     el.removeAttribute('data-queue-reason');
+    el.removeAttribute('data-queue-session-id');
     el.removeAttribute('title');
     el.querySelector('.msg-queue-status')?.remove();
-    // Clone node to drop the cancel/retry click handler.
     const clone = el.cloneNode(true);
     el.replaceWith(clone);
     return true;
@@ -2170,7 +2190,16 @@
     getQueuedBubble(queueId)?.remove();
   }
 
+  function clearMessageAck(clientMessageId) {
+    const pending = pendingMessageAcks.get(clientMessageId);
+    if (!pending) return null;
+    if (pending.timer) clearTimeout(pending.timer);
+    pendingMessageAcks.delete(clientMessageId);
+    return pending;
+  }
+
   function removeQueuedItem(queueId, options = {}) {
+    clearMessageAck(queueId);
     const before = pendingSendQueue.length;
     pendingSendQueue = pendingSendQueue.filter((entry) => entry.id !== queueId);
     removeQueuedBubble(queueId);
@@ -2181,33 +2210,56 @@
     return pendingSendQueue.length < before;
   }
 
+  function rebindNullQueueItemsToSession(sessionId) {
+    const target = normalizeQueueSessionId(sessionId);
+    if (!target) return;
+    let changed = false;
+    pendingSendQueue.forEach((item) => {
+      if (item.sessionId == null) {
+        item.sessionId = target;
+        changed = true;
+      }
+    });
+    pendingMessageAcks.forEach((pending) => {
+      if (pending?.item && pending.item.sessionId == null) {
+        pending.item.sessionId = target;
+        changed = true;
+      }
+    });
+    if (changed) updateSendQueueIndicator();
+  }
+
   /** Re-draw pending bubbles after history re-render / session switch. */
   function restoreQueuedBubblesForCurrentView() {
-    // Drop orphan bubbles first.
     messagesDiv.querySelectorAll('.msg.user.msg-queued').forEach((el) => el.remove());
-    const currentId = sessionState.currentSessionId || null;
     for (const item of pendingSendQueue) {
       if (String(item.text || '').startsWith('/')) continue;
-      const target = item.sessionId ?? null;
-      // Show for matching session, or new-chat items when no session is open.
-      if (currentId && target && target !== currentId) continue;
-      if (currentId && !target) continue;
-      if (!currentId && target) continue;
+      if (!isQueueItemForCurrentView(item)) continue;
       if (!getQueuedBubble(item.id)) createQueuedUserBubble(item);
     }
   }
 
   function updateSendQueueIndicator() {
     if (!sendQueueBar || !sendQueueLabel) return;
-    const count = pendingSendQueue.length;
+    const visible = pendingSendQueue.filter((item) => isQueueItemForCurrentView(item));
+    const count = visible.length;
     if (count <= 0) {
+      // Still show global offline backlog if any other session is waiting.
+      const globalWaiting = pendingSendQueue.filter((item) => item.reason === 'offline' || item.reason === 'failed').length;
+      if (globalWaiting > 0) {
+        sendQueueBar.hidden = false;
+        sendQueueLabel.textContent = `其他会话待发送 ${globalWaiting} 条`;
+        return;
+      }
       sendQueueBar.hidden = true;
       sendQueueLabel.textContent = '队列中 0 条';
       return;
     }
-    const offlineCount = pendingSendQueue.filter((item) => item.reason === 'offline' || item.reason === 'failed').length;
-    const busyCount = count - offlineCount;
+    const offlineCount = visible.filter((item) => item.reason === 'offline' || item.reason === 'failed').length;
+    const sendingCount = visible.filter((item) => item.reason === 'sending').length;
+    const busyCount = count - offlineCount - sendingCount;
     const parts = [];
+    if (sendingCount > 0) parts.push(`发送中 ${sendingCount}`);
     if (busyCount > 0) parts.push(`排队 ${busyCount}`);
     if (offlineCount > 0) parts.push(`待重连 ${offlineCount}`);
     sendQueueLabel.textContent = `${parts.join(' · ')} 条消息 · 点气泡可取消`;
@@ -2215,11 +2267,21 @@
   }
 
   function clearSendQueue(options = {}) {
-    const ids = pendingSendQueue.map((item) => item.id);
-    pendingSendQueue = [];
-    ids.forEach((id) => removeQueuedBubble(id));
+    const onlyCurrent = options.onlyCurrent !== false;
+    const kept = [];
+    const removedIds = [];
+    pendingSendQueue.forEach((item) => {
+      if (onlyCurrent && !isQueueItemForCurrentView(item)) {
+        kept.push(item);
+        return;
+      }
+      removedIds.push(item.id);
+      clearMessageAck(item.id);
+    });
+    pendingSendQueue = kept;
+    removedIds.forEach((id) => removeQueuedBubble(id));
     updateSendQueueIndicator();
-    if (options.toast !== false) showToast('已清空待发送队列');
+    if (options.toast !== false) showToast(onlyCurrent ? '已清空当前会话待发送队列' : '已清空待发送队列');
   }
 
   function enqueueSendItem(item, options = {}) {
@@ -2236,7 +2298,7 @@
       id: item.id || nextQueueId(),
       text: item.text || '',
       attachments: Array.isArray(item.attachments) ? item.attachments.map((a) => ({ ...a })) : [],
-      sessionId: item.sessionId ?? sessionState.currentSessionId,
+      sessionId: normalizeQueueSessionId(item.sessionId ?? sessionState.currentSessionId),
       mode: item.mode || sessionState.currentMode,
       agent: item.agent || sessionState.currentAgent,
       reason: item.reason || 'queued',
@@ -2260,6 +2322,29 @@
     return !!(connectionState.ws && connectionState.ws.readyState === WebSocket.OPEN);
   }
 
+  function canDispatchQueueItem(item, options = {}) {
+    if (!item || item.reason === 'sending') return false;
+    if (!isWsOpen()) return false;
+    if (isBlockingSessionLoad() && isQueueItemForCurrentView(item)) return false;
+
+    const forCurrent = isQueueItemForCurrentView(item);
+    const isCommand = String(item.text || '').startsWith('/');
+    const allowWhileGenerating = options.allowWhileGenerating === true || isCommand;
+    const isPlanModeActive = sessionState.currentMode === 'plan' && sessionState.currentAgent === 'claude';
+
+    if (forCurrent) {
+      if (composeState.isGenerating && !isPlanModeActive && !allowWhileGenerating) return false;
+      return true;
+    }
+
+    // Background session: never drive the current view; only send if that session isn't running.
+    if (item.sessionId) {
+      const meta = getSessionMeta(item.sessionId);
+      if (meta?.isRunning) return false;
+    }
+    return true;
+  }
+
   function canDispatchSendNow(options = {}) {
     if (!isWsOpen()) return false;
     if (isBlockingSessionLoad()) return false;
@@ -2269,15 +2354,95 @@
     return true;
   }
 
+  function onMessageAckTimeout(clientMessageId) {
+    const pending = pendingMessageAcks.get(clientMessageId);
+    if (!pending) return;
+    pendingMessageAcks.delete(clientMessageId);
+    const item = pending.item;
+    if (!item) return;
+    // Put back as failed/offline so the user can retry; avoid silent loss.
+    item.reason = isWsOpen() ? 'failed' : 'offline';
+    const exists = pendingSendQueue.some((entry) => entry.id === item.id);
+    if (!exists) pendingSendQueue.unshift(item);
+    updateQueuedBubbleStatus(item.id, item.reason);
+    if (!getQueuedBubble(item.id) && isQueueItemForCurrentView(item) && !String(item.text || '').startsWith('/')) {
+      createQueuedUserBubble(item);
+    }
+    updateSendQueueIndicator();
+    showStatusBanner({
+      level: 'warn',
+      message: '消息可能未送达服务器，已放回待发送队列。',
+      actionLabel: '立即重试',
+      onAction: () => flushSendQueue(),
+    });
+    if (isQueueItemForCurrentView(item) && composeState.isGenerating) {
+      // Don't leave a blank spinner if we never got server acceptance.
+      const streamEl = document.getElementById('streaming-msg');
+      const hasContent = streamEl?.querySelector('.msg-segment-text, .tool-call, .msg-segment-thinking');
+      if (!hasContent) finishGenerating(item.sessionId);
+    }
+  }
+
+  function handleMessageAcceptedMessage(msg) {
+    const clientMessageId = msg?.clientMessageId;
+    if (!clientMessageId) return;
+    const pending = clearMessageAck(clientMessageId);
+    const item = pending?.item || pendingSendQueue.find((entry) => entry.id === clientMessageId) || null;
+
+    // Bind newly created session id onto still-queued null-session items.
+    if (msg.sessionId) {
+      rebindNullQueueItemsToSession(msg.sessionId);
+      if (item && item.sessionId == null) item.sessionId = msg.sessionId;
+    }
+
+    // Remove from queue on confirmed accept.
+    pendingSendQueue = pendingSendQueue.filter((entry) => entry.id !== clientMessageId);
+    updateSendQueueIndicator();
+
+    const forCurrent = item
+      ? isQueueItemForCurrentView(item)
+      : (!!msg.sessionId && msg.sessionId === sessionState.currentSessionId);
+
+    if (!item) {
+      // Late ack for already-handled item.
+      scheduleFlushSendQueue(40);
+      return;
+    }
+
+    const isCommand = String(item.text || '').startsWith('/');
+    if (!isCommand) {
+      if (forCurrent) {
+        if (!promoteQueuedBubble(item.id)) {
+          const welcome = messagesDiv.querySelector('.welcome-msg');
+          if (welcome) welcome.remove();
+          messagesDiv.appendChild(createMsgElement('user', item.text || '', item.attachments || []));
+        }
+        forceScrollToBottom();
+        if (!composeState.isGenerating) startGenerating();
+      } else {
+        removeQueuedBubble(item.id);
+        const title = getSessionMeta(item.sessionId)?.title || '后台会话';
+        showToast(`「${title}」排队消息已发送`);
+      }
+    } else {
+      removeQueuedBubble(item.id);
+    }
+
+    // Continue draining queue when possible.
+    scheduleFlushSendQueue(40);
+  }
+
   function dispatchSendItem(item, options = {}) {
     if (!item) return false;
+    if (item.reason === 'sending') return false;
     const isCommand = String(item.text || '').startsWith('/');
     const payload = {
       type: 'message',
       text: item.text || '',
-      sessionId: item.sessionId ?? sessionState.currentSessionId,
+      sessionId: item.sessionId ?? null,
       mode: item.mode || sessionState.currentMode,
       agent: item.agent || sessionState.currentAgent,
+      clientMessageId: item.id,
     };
     if (!isCommand && Array.isArray(item.attachments) && item.attachments.length > 0) {
       payload.attachments = item.attachments;
@@ -2286,18 +2451,11 @@
       return false;
     }
 
-    if (!isCommand) {
-      // Promote existing pending bubble, or create a normal user bubble.
-      if (!promoteQueuedBubble(item.id)) {
-        const welcome = messagesDiv.querySelector('.welcome-msg');
-        if (welcome) welcome.remove();
-        messagesDiv.appendChild(createMsgElement('user', item.text || '', item.attachments || []));
-      }
-      forceScrollToBottom();
-      if (!composeState.isGenerating) startGenerating();
-    } else {
-      removeQueuedBubble(item.id);
-    }
+    item.reason = 'sending';
+    updateQueuedBubbleStatus(item.id, 'sending');
+    clearMessageAck(item.id);
+    const timer = setTimeout(() => onMessageAckTimeout(item.id), MESSAGE_ACK_TIMEOUT_MS);
+    pendingMessageAcks.set(item.id, { item, timer });
     return true;
   }
 
@@ -2310,25 +2468,29 @@
   }
 
   function flushSendQueue() {
-    if (!canDispatchSendNow()) return;
-    if (pendingSendQueue.length === 0) {
+    if (!isWsOpen()) {
       updateSendQueueIndicator();
       return;
     }
-    const next = pendingSendQueue.shift();
-    updateSendQueueIndicator();
-    // Visual: about to send
-    updateQueuedBubbleStatus(next.id, 'queued');
+    // Prefer current-view items, then any dispatchable background item.
+    let idx = pendingSendQueue.findIndex((item) => isQueueItemForCurrentView(item) && canDispatchQueueItem(item));
+    if (idx < 0) {
+      idx = pendingSendQueue.findIndex((item) => canDispatchQueueItem(item));
+    }
+    if (idx < 0) {
+      updateSendQueueIndicator();
+      return;
+    }
+
+    const next = pendingSendQueue[idx];
     const ok = dispatchSendItem(next, { silent: false });
     if (!ok) {
-      // Put back at front and wait for reconnect.
       next.reason = 'offline';
-      pendingSendQueue.unshift(next);
       updateQueuedBubbleStatus(next.id, 'offline');
       updateSendQueueIndicator();
       showStatusBanner({
         level: 'warn',
-        message: `有 ${pendingSendQueue.length} 条消息等待连接恢复后发送。`,
+        message: `有 ${pendingSendQueue.filter((i) => i.reason === 'offline' || i.reason === 'failed').length} 条消息等待连接恢复后发送。`,
         actionLabel: '立即重连',
         onAction: () => {
           connectionState.reconnectAttempts = 0;
@@ -2337,19 +2499,8 @@
       });
       return;
     }
-    if (pendingSendQueue.length === 0) {
-      // Queue drained successfully — clear reconnect/offline banners.
-      if (appStatusBanner && !appStatusBanner.hidden) {
-        const text = appStatusBannerText?.textContent || '';
-        if (/重连|断开|待发送|网络/.test(text)) hideStatusBanner();
-      }
-      return;
-    }
-    // Regular messages start generating; remaining items wait for finishGenerating.
-    // Commands / plan-mode follow-ups can continue immediately.
-    if (!composeState.isGenerating) {
-      scheduleFlushSendQueue(40);
-    }
+    updateSendQueueIndicator();
+    // Next item waits for message_accepted (or finishGenerating for busy same-session items).
   }
 
   function shouldOverlayRuntimeBadge() {
@@ -2503,6 +2654,10 @@
 
   function applySessionSnapshot(snapshot, options = {}) {
     if (!snapshot) return;
+    // New chat bind: attach null-session queued items to the created session id.
+    if (!sessionState.currentSessionId && snapshot.sessionId) {
+      rebindNullQueueItemsToSession(snapshot.sessionId);
+    }
     // Preserve optimistic streaming when:
     // 1) explicit option says so, or
     // 2) first message of a new chat (currentSessionId was null) while still generating and server marks running.
@@ -3195,19 +3350,29 @@
     scheduleRender();
   }
 
+  function flushThinkingRender() {
+    thinkingRenderTimer = null;
+    if (!pendingThinkingText) return;
+    const chunk = pendingThinkingText;
+    pendingThinkingText = '';
+    const thinkingDiv = ensureStreamingThinkingSegment();
+    if (!thinkingDiv) return;
+    const nextText = `${thinkingDiv.dataset.rawText || ''}${chunk}`;
+    thinkingDiv.dataset.rawText = nextText;
+    thinkingDiv.innerHTML = renderMarkdown(nextText);
+    updateLiveProcessIndicator();
+    maybeScrollToBottom();
+  }
+
   function handleThinkingDeltaMessage(msg) {
     if (!isEventForCurrentSession(msg)) return;
     if (!composeState.isGenerating) startGenerating();
     if (composeState.pendingText) flushRender();
     const text = String(msg.text || '');
     if (!text) return;
-    const thinkingDiv = ensureStreamingThinkingSegment();
-    if (!thinkingDiv) return;
-    const nextText = `${thinkingDiv.dataset.rawText || ''}${text}`;
-    thinkingDiv.dataset.rawText = nextText;
-    thinkingDiv.innerHTML = renderMarkdown(nextText);
-    updateLiveProcessIndicator();
-    maybeScrollToBottom();
+    pendingThinkingText += text;
+    if (thinkingRenderTimer) return;
+    thinkingRenderTimer = setTimeout(flushThinkingRender, THINKING_RENDER_DEBOUNCE);
   }
 
   function handleToolStartMessage(msg) {
@@ -3352,8 +3517,39 @@
     }
   }
 
+  function failInflightAcksForSession(sessionId, reason = 'failed') {
+    const target = normalizeQueueSessionId(sessionId);
+    const ids = [];
+    pendingMessageAcks.forEach((pending, id) => {
+      const itemSession = normalizeQueueSessionId(pending?.item?.sessionId);
+      if (target) {
+        // Match explicit session, or still-null items while this is the current view.
+        if (itemSession && itemSession !== target) return;
+        if (!itemSession && target !== normalizeQueueSessionId(sessionState.currentSessionId)) return;
+      } else if (!isQueueItemForCurrentView(pending?.item)) {
+        return;
+      }
+      ids.push(id);
+    });
+    ids.forEach((id) => {
+      const pending = clearMessageAck(id);
+      if (!pending?.item) return;
+      pending.item.reason = reason;
+      if (!pendingSendQueue.some((entry) => entry.id === id)) {
+        pendingSendQueue.unshift(pending.item);
+      }
+      updateQueuedBubbleStatus(id, reason);
+      if (!getQueuedBubble(id) && isQueueItemForCurrentView(pending.item) && !String(pending.item.text || '').startsWith('/')) {
+        createQueuedUserBubble(pending.item);
+      }
+    });
+    if (ids.length > 0) updateSendQueueIndicator();
+  }
+
   function handleErrorMessage(msg) {
     if (!isEventForCurrentSession(msg)) return;
+    // Do not wait for ack timeout when the server already rejected the turn.
+    failInflightAcksForSession(msg.sessionId || sessionState.currentSessionId, 'failed');
     const errorMsg = msg.message || '发生未知错误';
     appendError(errorMsg);
     // Surface important failures in the persistent top banner.
@@ -3449,6 +3645,7 @@
     session_renamed: handleSessionRenamedMessage,
     text_delta: handleTextDeltaMessage,
     thinking_delta: handleThinkingDeltaMessage,
+    message_accepted: handleMessageAcceptedMessage,
     tool_start: handleToolStartMessage,
     tool_end: handleToolEndMessage,
     cost: handleCostMessage,
@@ -3541,6 +3738,13 @@
   }
 
   function finishGenerating(sessionId) {
+    // Ignore done events for other sessions so background completion cannot
+    // clear the current view's generating state or steal the stream bubble.
+    if (sessionId && sessionState.currentSessionId && sessionId !== sessionState.currentSessionId) {
+      scheduleFlushSendQueue(80);
+      return;
+    }
+
     composeState.isGenerating = false;
     composeState.isAborting = false;
     sendBtn.hidden = false;
@@ -3554,6 +3758,11 @@
       msgInput.focus({ preventScroll: true });
     }
 
+    if (thinkingRenderTimer) {
+      clearTimeout(thinkingRenderTimer);
+      thinkingRenderTimer = null;
+    }
+    if (pendingThinkingText) flushThinkingRender();
     if (composeState.pendingText) flushRender();
 
     // Collapse thinking/process/tools under a summary, leave the final answer expanded.
@@ -3567,7 +3776,7 @@
     }
     composeState.pendingText = '';
     composeState.activeToolCalls.clear();
-    // Auto-send next queued message after the turn completes.
+    // Auto-send next queued message for this session after the turn completes.
     scheduleFlushSendQueue(80);
   }
 
@@ -3653,16 +3862,18 @@
     const bubble = getStreamingBubble();
     if (!bubble) return null;
     clearStreamingPlaceholder(bubble);
-    let thinking = bubble.querySelector('.msg-segment-thinking');
-    if (thinking) return thinking;
-    thinking = createTextSegmentElement('', { phase: 'process' });
+    // Only continue a thinking segment if it is still the trailing content node.
+    // After tools / final text, open a NEW thinking segment to preserve order.
+    let cursor = bubble.lastElementChild;
+    while (cursor && cursor.classList.contains('msg-process-live')) {
+      cursor = cursor.previousElementSibling;
+    }
+    if (cursor && cursor.classList.contains('msg-segment-thinking')) {
+      return cursor;
+    }
+    const thinking = createTextSegmentElement('', { phase: 'process' });
     thinking.classList.add('msg-segment-thinking');
-    // Keep thinking above final answer text, after any live process indicator.
-    const indicator = bubble.querySelector('.msg-process-live');
-    const firstFinal = bubble.querySelector('.msg-segment-text.msg-segment-final');
-    if (indicator?.nextSibling) bubble.insertBefore(thinking, indicator.nextSibling);
-    else if (firstFinal) bubble.insertBefore(thinking, firstFinal);
-    else bubble.appendChild(thinking);
+    bubble.appendChild(thinking);
     updateLiveProcessIndicator();
     return thinking;
   }
@@ -6126,22 +6337,14 @@
         sessionId: sessionState.currentSessionId,
         mode: sessionState.currentMode,
         agent: sessionState.currentAgent,
+        reason: isWsOpen() ? 'queued' : 'offline',
       };
-      if (!canDispatchSendNow({ allowWhileGenerating: true })) {
-        if (!isWsOpen()) {
-          if (!enqueueSendItem({ ...commandItem, reason: 'offline' })) return;
-          msgInput.value = '';
-          autoResize();
-          return;
-        }
-        appendError('当前无法发送命令，请稍后再试。');
-        return;
-      }
-      if (!dispatchSendItem(commandItem)) {
-        if (!enqueueSendItem({ ...commandItem, reason: 'offline' })) return;
-      }
+      // Commands always go through the ack-gated queue (no user bubble).
+      if (!enqueueSendItem(commandItem, { toast: !isWsOpen() })) return;
       msgInput.value = '';
       autoResize();
+      if (isWsOpen()) flushSendQueue();
+      else scheduleReconnect();
       return;
     }
 
@@ -6173,7 +6376,7 @@
       autoResize();
       showStatusBanner({
         level: 'warn',
-        message: `连接已断开，${pendingSendQueue.length} 条消息将在恢复后自动发送。`,
+        message: `连接已断开，${pendingSendQueue.filter((i) => isQueueItemForCurrentView(i)).length} 条消息将在恢复后自动发送。`,
         actionLabel: '立即重连',
         onAction: () => {
           connectionState.reconnectAttempts = 0;
@@ -6184,19 +6387,13 @@
       return;
     }
 
-    if (!dispatchSendItem(item)) {
-      if (!enqueueSendItem({ ...item, reason: 'offline' })) return;
-      msgInput.value = '';
-      composeState.pendingAttachments = [];
-      renderPendingAttachments();
-      autoResize();
-      return;
-    }
-
+    // Always enqueue then flush so ack/timeout paths own the lifecycle.
+    if (!enqueueSendItem({ ...item, reason: 'queued' }, { toast: false })) return;
     msgInput.value = '';
     composeState.pendingAttachments = [];
     renderPendingAttachments();
     autoResize();
+    flushSendQueue();
   }
 
   function autoResize() {
@@ -6557,6 +6754,9 @@
   });
 
   msgInput.addEventListener('keydown', (e) => {
+    // Do not hijack Enter while IME is composing (Chinese/Japanese/Korean).
+    if (e.isComposing || e.keyCode === 229) return;
+
     // Command menu navigation
     if (!cmdMenu.hidden) {
       if (e.key === 'ArrowDown') { e.preventDefault(); navigateCmdMenu(1); return; }
