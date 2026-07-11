@@ -1,5 +1,25 @@
 # 更新记录
 
+## v1.5.0
+
+### 修复
+
+- **手机横滑表格误开侧栏（#4）** — 侧栏仅支持从屏幕左边缘滑出；宽表格/代码块的横向滚动优先于侧栏手势，避免浏览长表格时误开项目列表
+
+### 新功能
+
+- **Slash 能力登记与透传** — `/` 菜单合并平台命令与 CLI 实时发现；Codex 发现 `~/.codex/prompts`（`/prompts:*`）、skills、plugins；TUI-only 命令（如 `/fork`）明确拦截
+- **Headless 交互事件分类** — 检测审批 / AskUser / elicitation / Goals 更新并展示为 `interactive_request` 或 `goal_update`（诚实说明网页暂无法双向回应）
+- **RuntimeCapabilities** — slash 列表附带 headless 能力声明；custom Codex runtime 对 skills/prompts/plugins 做 overlay，挂载失败时命令标为不可用
+
+### 改进
+
+- **权限模式语义如实化** — 文案对齐真实 CLI 标志（YOLO / full-auto / plan·read-only）；运行中改模式下一轮生效，并写入 run-meta 快照
+- **中断与状态栏** — 停止任务显示「已中断」且不再触发 auto-compact；恢复 topbar 费用/token 与 cwd 展示
+- **本地 slash 生命周期** — `/model` `/mode` `/compact` `/web-help` 使用 `execution=local`，避免误开生成态或抢占下一轮 `done`
+- **进程组终止** — Unix 下 abort 优先向进程组发信号，更干净地停止 CLI 子进程
+- **回归覆盖** — 新增 headless parity 用例（interactive / goal / TUI 拦截 / capabilities / spawn mode），全套 30 项通过
+
 ## v1.4.5
 
 ### 改进
