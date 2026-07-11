@@ -2942,6 +2942,15 @@ html[data-theme="localhost"] .localfile-pre {
   color: var(--text-secondary);
   opacity: 0.88;
 }
+.msg-segment-text.msg-segment-thinking {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-muted);
+  opacity: 0.9;
+  font-style: italic;
+  border-left: 2px solid rgba(56, 56, 56, 0.18);
+  padding-left: 10px;
+}
 .msg-segment-text.msg-segment-final {
   font-size: 13px;
   line-height: 1.6;
@@ -2950,6 +2959,91 @@ html[data-theme="localhost"] .localfile-pre {
 }
 .msg-segment-pending {
   min-height: 24px;
+}
+
+/* Collapsed thinking / process group (Claude Code / Codex style) */
+.msg-process-group {
+  margin: 2px 0 8px;
+  border: 1px solid rgba(56, 56, 56, 0.16);
+  border-radius: 2px;
+  background: rgba(248, 248, 247, 0.72);
+  overflow: hidden;
+}
+.msg-process-group-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: transparent;
+}
+.msg-process-group-summary::-webkit-details-marker { display: none; }
+.msg-process-group-summary::marker { content: ''; }
+.msg-process-group-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+.msg-process-group[open] .msg-process-group-icon {
+  background: var(--blue-strong);
+  opacity: 0.85;
+}
+.msg-process-group-title {
+  flex: 1;
+  min-width: 0;
+}
+.msg-process-group-hint {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+.msg-process-group-summary:hover {
+  background: rgba(56, 56, 56, 0.04);
+}
+.msg-process-group-body {
+  padding: 4px 10px 10px;
+  border-top: 1px dashed rgba(56, 56, 56, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.msg-process-group-body .tool-call,
+.msg-process-group-body .tool-group {
+  margin: 0;
+}
+.msg-process-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.msg-process-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--blue-strong);
+  box-shadow: 0 0 0 0 rgba(43, 165, 255, 0.45);
+  animation: process-live-pulse 1.2s ease-out infinite;
+}
+@keyframes process-live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(43, 165, 255, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(43, 165, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(43, 165, 255, 0); }
 }
 
 /* System messages */

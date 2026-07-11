@@ -3195,6 +3195,21 @@
     scheduleRender();
   }
 
+  function handleThinkingDeltaMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
+    if (!composeState.isGenerating) startGenerating();
+    if (composeState.pendingText) flushRender();
+    const text = String(msg.text || '');
+    if (!text) return;
+    const thinkingDiv = ensureStreamingThinkingSegment();
+    if (!thinkingDiv) return;
+    const nextText = `${thinkingDiv.dataset.rawText || ''}${text}`;
+    thinkingDiv.dataset.rawText = nextText;
+    thinkingDiv.innerHTML = renderMarkdown(nextText);
+    updateLiveProcessIndicator();
+    maybeScrollToBottom();
+  }
+
   function handleToolStartMessage(msg) {
     if (!isEventForCurrentSession(msg)) return;
     if (!composeState.isGenerating) startGenerating();
@@ -3202,6 +3217,7 @@
     markStreamingProcessTextSegments();
     composeState.activeToolCalls.set(msg.toolUseId, { name: msg.name, input: msg.input, kind: msg.kind || null, meta: msg.meta || null, done: false });
     appendToolCall(msg.toolUseId, msg.name, msg.input, false, msg.kind || null, msg.meta || null);
+    updateLiveProcessIndicator();
   }
 
   function handleToolEndMessage(msg) {
@@ -3213,6 +3229,7 @@
       composeState.activeToolCalls.get(msg.toolUseId).result = msg.result;
     }
     updateToolCall(msg.toolUseId, msg.result);
+    updateLiveProcessIndicator();
   }
 
   function handleCostMessage(msg) {
@@ -3431,6 +3448,7 @@
     session_history_chunk: handleSessionHistoryChunkMessage,
     session_renamed: handleSessionRenamedMessage,
     text_delta: handleTextDeltaMessage,
+    thinking_delta: handleThinkingDeltaMessage,
     tool_start: handleToolStartMessage,
     tool_end: handleToolEndMessage,
     cost: handleCostMessage,
@@ -3538,6 +3556,9 @@
 
     if (composeState.pendingText) flushRender();
 
+    // Collapse thinking/process/tools under a summary, leave the final answer expanded.
+    collapseStreamingProcessForCompletedTurn();
+
     const streamEl = document.getElementById('streaming-msg');
     if (streamEl) streamEl.removeAttribute('id');
 
@@ -3611,11 +3632,72 @@
     const bubble = getStreamingBubble();
     if (!bubble) return null;
     clearStreamingPlaceholder(bubble);
+    removeLiveProcessIndicator(bubble);
     const last = bubble.lastElementChild;
-    if (last && last.classList.contains('msg-segment-text')) return last;
+    // Continue the latest final-phase text segment; process/thinking segments stay separate.
+    if (
+      last
+      && last.classList.contains('msg-segment-text')
+      && !last.classList.contains('msg-segment-thinking')
+      && last.dataset.phase !== 'process'
+    ) {
+      return last;
+    }
     const textDiv = createTextSegmentElement('', { phase: 'final' });
     bubble.appendChild(textDiv);
     return textDiv;
+  }
+
+  function ensureStreamingThinkingSegment() {
+    const bubble = getStreamingBubble();
+    if (!bubble) return null;
+    clearStreamingPlaceholder(bubble);
+    let thinking = bubble.querySelector('.msg-segment-thinking');
+    if (thinking) return thinking;
+    thinking = createTextSegmentElement('', { phase: 'process' });
+    thinking.classList.add('msg-segment-thinking');
+    // Keep thinking above final answer text, after any live process indicator.
+    const indicator = bubble.querySelector('.msg-process-live');
+    const firstFinal = bubble.querySelector('.msg-segment-text.msg-segment-final');
+    if (indicator?.nextSibling) bubble.insertBefore(thinking, indicator.nextSibling);
+    else if (firstFinal) bubble.insertBefore(thinking, firstFinal);
+    else bubble.appendChild(thinking);
+    updateLiveProcessIndicator();
+    return thinking;
+  }
+
+  function removeLiveProcessIndicator(bubble = getStreamingBubble()) {
+    bubble?.querySelector('.msg-process-live')?.remove();
+  }
+
+  function updateLiveProcessIndicator() {
+    const bubble = getStreamingBubble();
+    if (!bubble || !composeState.isGenerating) return;
+    const hasProcess = !!(
+      bubble.querySelector('.msg-segment-thinking')
+      || bubble.querySelector('.msg-segment-process')
+      || bubble.querySelector('.tool-call, .tool-group')
+    );
+    if (!hasProcess) {
+      removeLiveProcessIndicator(bubble);
+      return;
+    }
+    let live = bubble.querySelector('.msg-process-live');
+    if (!live) {
+      live = document.createElement('div');
+      live.className = 'msg-process-live msg-segment';
+      bubble.insertBefore(live, bubble.firstChild);
+    }
+    const runningTools = bubble.querySelectorAll('.tool-call-state.running').length;
+    const toolCount = bubble.querySelectorAll('.tool-call').length;
+    const thinking = bubble.querySelector('.msg-segment-thinking');
+    if (runningTools > 0) {
+      live.innerHTML = `<span class="msg-process-live-dot"></span>正在执行工具（${runningTools}/${Math.max(toolCount, runningTools)}）…`;
+    } else if (thinking) {
+      live.innerHTML = '<span class="msg-process-live-dot"></span>思考中…';
+    } else {
+      live.innerHTML = '<span class="msg-process-live-dot"></span>处理中…';
+    }
   }
 
   function createMsgElement(role, content, attachments = []) {
@@ -3673,6 +3755,7 @@
   }
 
   function toolTitle(tool) {
+    if (toolKind(tool) === 'reasoning') return tool?.meta?.title || '思考';
     if (tool?.meta?.title) return tool.meta.title;
     return tool?.name || 'Tool';
   }
@@ -3759,6 +3842,8 @@
     let finalTextIndex = -1;
     for (let index = list.length - 1; index >= 0; index -= 1) {
       const segment = list[index];
+      // Explicit thinking segments are never the final answer.
+      if (segment?.type === 'text' && segment.phase === 'thinking') continue;
       if (segment?.type === 'text' && String(segment.text || '').trim()) {
         finalTextIndex = index;
         break;
@@ -3770,6 +3855,9 @@
       : -1;
     return list.map((segment, index) => {
       if (!segment || segment.type !== 'text') return segment;
+      if (segment.phase === 'thinking') {
+        return { ...segment, phase: 'process', thinking: true };
+      }
       return {
         ...segment,
         phase: conclusionTextIndex !== -1 && index === conclusionTextIndex ? 'final' : 'process',
@@ -3791,10 +3879,204 @@
         return {
           type: 'text',
           text: typeof segment.text === 'string' ? segment.text : '',
+          phase: segment.phase || null,
         };
       })
       .filter((segment) => segment.type === 'tool_call' || segment.text);
     return annotateMessageSegmentPhases(collapseToolSegmentsForDisplay(normalized));
+  }
+
+  function isProcessDisplaySegment(segment) {
+    if (!segment) return false;
+    if (segment.type === 'tool_call' || segment.type === 'tool_group') return true;
+    if (segment.type === 'text') return segment.phase === 'process' || segment.thinking === true;
+    return false;
+  }
+
+  function summarizeProcessSegments(segments) {
+    const list = Array.isArray(segments) ? segments : [];
+    let toolCount = 0;
+    let reasoningCount = 0;
+    let hasThinkingText = false;
+    list.forEach((segment) => {
+      if (segment?.type === 'tool_group') {
+        const items = segment.items || [];
+        const reasoningInGroup = items.filter((item) => toolKind(item) === 'reasoning').length;
+        reasoningCount += reasoningInGroup;
+        toolCount += Math.max(0, items.length - reasoningInGroup);
+        return;
+      }
+      if (segment?.type === 'tool_call') {
+        if (toolKind(segment) === 'reasoning') reasoningCount += 1;
+        else toolCount += 1;
+        return;
+      }
+      if (segment?.type === 'text' && (segment.phase === 'process' || segment.thinking)) {
+        hasThinkingText = true;
+      }
+    });
+    const parts = [];
+    if (hasThinkingText || reasoningCount > 0) parts.push('思考');
+    if (toolCount > 0) parts.push(`${toolCount} 个工具`);
+    if (parts.length === 0) parts.push('过程');
+    return {
+      title: parts.join(' · '),
+      toolCount,
+      reasoningCount,
+      hasThinkingText,
+    };
+  }
+
+  function createProcessGroupElement(processNodes, options = {}) {
+    const nodes = (processNodes || []).filter(Boolean);
+    if (nodes.length === 0) return null;
+
+    const details = document.createElement('details');
+    details.className = 'msg-process-group msg-segment';
+    details.open = options.open === true;
+
+    const summary = document.createElement('summary');
+    summary.className = 'msg-process-group-summary';
+    const stats = options.stats || {};
+    const title = stats.title || '思考与过程';
+    summary.innerHTML = `
+      <span class="msg-process-group-icon" aria-hidden="true"></span>
+      <span class="msg-process-group-title">${escapeHtml(title)}</span>
+      <span class="msg-process-group-hint">${details.open ? '收起' : '展开查看'}</span>
+    `;
+    details.addEventListener('toggle', () => {
+      const hint = summary.querySelector('.msg-process-group-hint');
+      if (hint) hint.textContent = details.open ? '收起' : '展开查看';
+    });
+
+    const body = document.createElement('div');
+    body.className = 'msg-process-group-body';
+    nodes.forEach((node) => body.appendChild(node));
+
+    details.appendChild(summary);
+    details.appendChild(body);
+    return details;
+  }
+
+  function appendSegmentsWithProcessCollapse(bubble, segments, options = {}) {
+    if (!bubble) return;
+    const list = Array.isArray(segments) ? segments : [];
+    const processSegments = [];
+    const finalSegments = [];
+    list.forEach((segment) => {
+      if (isProcessDisplaySegment(segment)) processSegments.push(segment);
+      else finalSegments.push(segment);
+    });
+
+    const processNodes = processSegments
+      .map((segment) => buildMessageSegmentElement(segment))
+      .filter(Boolean);
+    const finalNodes = finalSegments
+      .map((segment) => buildMessageSegmentElement(segment))
+      .filter(Boolean);
+
+    // Collapse process when there is a final answer, or when process-only turn completed.
+    if (processNodes.length > 0 && (finalNodes.length > 0 || options.forceCollapseProcess)) {
+      const group = createProcessGroupElement(processNodes, {
+        open: options.processOpen === true,
+        stats: summarizeProcessSegments(processSegments),
+      });
+      if (group) bubble.appendChild(group);
+    } else {
+      processNodes.forEach((node) => bubble.appendChild(node));
+    }
+    finalNodes.forEach((node) => bubble.appendChild(node));
+  }
+
+  function collapseStreamingProcessForCompletedTurn() {
+    const bubble = getStreamingBubble();
+    if (!bubble) return;
+    removeLiveProcessIndicator(bubble);
+    clearStreamingPlaceholder(bubble);
+
+    const nodes = Array.from(bubble.children).filter((node) => (
+      !node.classList.contains('msg-segment-pending')
+      && !node.classList.contains('msg-process-live')
+    ));
+    if (nodes.length === 0) return;
+
+    let lastFinalTextIndex = -1;
+    nodes.forEach((node, index) => {
+      if (
+        node.classList.contains('msg-segment-text')
+        && !node.classList.contains('msg-segment-thinking')
+        && node.dataset.phase !== 'process'
+        && String(node.dataset.rawText || node.textContent || '').trim()
+      ) {
+        lastFinalTextIndex = index;
+      }
+    });
+
+    // Fallback: last text segment is treated as the conclusion.
+    if (lastFinalTextIndex === -1) {
+      for (let index = nodes.length - 1; index >= 0; index -= 1) {
+        const node = nodes[index];
+        if (node.classList.contains('msg-segment-text') && String(node.dataset.rawText || node.textContent || '').trim()) {
+          lastFinalTextIndex = index;
+          break;
+        }
+      }
+    }
+
+    const processNodes = [];
+    const finalNodes = [];
+    nodes.forEach((node, index) => {
+      const isProcessNode = (
+        node.classList.contains('msg-segment-thinking')
+        || node.classList.contains('msg-segment-process')
+        || node.classList.contains('tool-call')
+        || node.classList.contains('tool-group')
+        || (lastFinalTextIndex !== -1 && index < lastFinalTextIndex)
+      );
+      if (lastFinalTextIndex === -1) {
+        // Tools / thinking only — still collapse for a tidy transcript.
+        processNodes.push(node);
+        return;
+      }
+      if (isProcessNode && index !== lastFinalTextIndex) processNodes.push(node);
+      else finalNodes.push(node);
+    });
+
+    if (processNodes.length === 0) return;
+
+    // Build lightweight stats from DOM for the collapsed summary.
+    const toolCount = processNodes.reduce((count, node) => {
+      if (node.classList.contains('tool-call')) return count + 1;
+      if (node.classList.contains('tool-group')) {
+        return count + node.querySelectorAll('.tool-call').length;
+      }
+      return count;
+    }, 0);
+    const hasThinking = processNodes.some((node) => (
+      node.classList.contains('msg-segment-thinking')
+      || node.classList.contains('msg-segment-process')
+      || node.classList.contains('codex-reasoning')
+    ));
+    const titleParts = [];
+    if (hasThinking) titleParts.push('思考');
+    if (toolCount > 0) titleParts.push(`${toolCount} 个工具`);
+    if (titleParts.length === 0) titleParts.push('过程');
+
+    finalNodes.forEach((node) => {
+      if (node.classList.contains('msg-segment-text')) {
+        node.classList.remove('msg-segment-process', 'msg-segment-thinking');
+        node.classList.add('msg-segment-final');
+        node.dataset.phase = 'final';
+      }
+    });
+
+    const group = createProcessGroupElement(processNodes, {
+      open: false,
+      stats: { title: titleParts.join(' · ') },
+    });
+    bubble.innerHTML = '';
+    if (group) bubble.appendChild(group);
+    finalNodes.forEach((node) => bubble.appendChild(node));
   }
 
   function normalizeMessageSegments(message) {
@@ -3915,15 +4197,20 @@
     }
     const text = typeof segment.text === 'string' ? segment.text : '';
     if (!text) return null;
-    return createTextSegmentElement(text, { phase: segment.phase || 'final' });
+    const textEl = createTextSegmentElement(text, { phase: segment.phase || 'final' });
+    if (segment.thinking || segment.phase === 'thinking') {
+      textEl.classList.add('msg-segment-thinking');
+    }
+    return textEl;
   }
 
   function renderAssistantSegments(bubble, message) {
     if (!bubble) return;
     bubble.innerHTML = '';
-    normalizeMessageSegments(message).forEach((segment) => {
-      const segmentEl = buildMessageSegmentElement(segment);
-      if (segmentEl) bubble.appendChild(segmentEl);
+    // History: always collapse thinking/process/tools once the turn is complete.
+    appendSegmentsWithProcessCollapse(bubble, normalizeMessageSegments(message), {
+      forceCollapseProcess: true,
+      processOpen: false,
     });
     appendMessageAttachments(bubble, message?.attachments || []);
   }
@@ -3932,20 +4219,25 @@
     const bubble = getStreamingBubble();
     if (!bubble) return;
     bubble.innerHTML = '';
-    normalizeSegmentsForDisplay(segments).forEach((segment) => {
-      const segmentEl = buildMessageSegmentElement(segment);
-      if (segmentEl) bubble.appendChild(segmentEl);
+    // Live resume: keep process expanded so the user can follow thinking.
+    appendSegmentsWithProcessCollapse(bubble, normalizeSegmentsForDisplay(segments), {
+      forceCollapseProcess: false,
+      processOpen: true,
     });
+    updateLiveProcessIndicator();
   }
 
   function markStreamingProcessTextSegments() {
     const bubble = getStreamingBubble();
     if (!bubble) return;
     bubble.querySelectorAll('.msg-segment-text').forEach((segment) => {
+      // Leave pure thinking segments marked as thinking; demote answer drafts to process.
+      if (segment.classList.contains('msg-segment-thinking')) return;
       segment.classList.remove('msg-segment-final');
       segment.classList.add('msg-segment-process');
       segment.dataset.phase = 'process';
     });
+    updateLiveProcessIndicator();
   }
 
   function buildMsgElement(m) {
