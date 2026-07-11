@@ -674,12 +674,41 @@ function classifySlashCommand(agent, name, sourceHint = '') {
       reason: '仅 Codex 交互 TUI 可用，headless exec 不支持',
     };
   }
-  if (sourceHint === 'codex-prompts' || key.startsWith('prompts:')) {
-    return {
-      availability: 'passthrough',
-      execution: 'passthrough',
-      reason: 'Codex 自定义 prompt（~/.codex/prompts）',
-    };
+
+  // Custom/unified Codex: if managed runtime cannot see user content, do not advertise as runnable.
+  if (normalizedAgent === 'codex') {
+    const source = String(sourceHint || '');
+    const needsPrompts = source === 'codex-prompts' || key.startsWith('prompts:');
+    const needsSkills = source === 'codex-skills';
+    const needsPlugins = source === 'codex-plugin';
+    if (needsPrompts && !isCodexOverlayMountOk('prompts')) {
+      return {
+        availability: 'runtime-unavailable',
+        execution: 'blocked',
+        reason: 'Codex custom runtime 未成功挂载 prompts；子进程看不到该命令',
+      };
+    }
+    if (needsSkills && !isCodexOverlayMountOk('skills')) {
+      return {
+        availability: 'runtime-unavailable',
+        execution: 'blocked',
+        reason: 'Codex custom runtime 未成功挂载 skills；子进程看不到该技能',
+      };
+    }
+    if (needsPlugins && !isCodexOverlayMountOk('plugins')) {
+      return {
+        availability: 'runtime-unavailable',
+        execution: 'blocked',
+        reason: 'Codex custom runtime 未成功挂载 plugins；子进程看不到该插件命令',
+      };
+    }
+    if (needsPrompts) {
+      return {
+        availability: 'passthrough',
+        execution: 'passthrough',
+        reason: 'Codex 自定义 prompt（~/.codex/prompts）',
+      };
+    }
   }
   return {
     availability: 'passthrough',
@@ -727,6 +756,9 @@ function buildSlashCommandList(agent) {
     if (classified.availability === 'tui-only' && !/TUI|不支持|headless/i.test(desc)) {
       desc = `${desc}（仅 TUI）`;
     }
+    if (classified.availability === 'runtime-unavailable' && !/不可用|未挂载|runtime/i.test(desc)) {
+      desc = `${desc}（runtime 未挂载）`;
+    }
     out.push({
       cmd: `/${name}`,
       desc,
@@ -738,12 +770,13 @@ function buildSlashCommandList(agent) {
   }
 
   out.sort((a, b) => {
-    // platform first, then available passthrough, then tui-only last
+    // platform first, then available passthrough, then unavailable last
     const rank = (item) => {
       if (item.availability === 'platform') return 0;
       if (item.availability === 'passthrough') return 1;
       if (item.availability === 'tui-only') return 2;
-      return 3;
+      if (item.availability === 'runtime-unavailable') return 3;
+      return 4;
     };
     const d = rank(a) - rank(b);
     if (d !== 0) return d;
@@ -824,8 +857,14 @@ function onSlashCommandsDiscovered(agent, commands) {
 }
 
 function broadcastSlashCommands(agent) {
-  const list = buildSlashCommandList(agent);
-  const msg = { type: 'slash_commands_list', agent: normalizeAgent(agent), commands: list };
+  const normalizedAgent = normalizeAgent(agent);
+  const list = buildSlashCommandList(normalizedAgent);
+  const msg = {
+    type: 'slash_commands_list',
+    agent: normalizedAgent,
+    commands: list,
+    capabilities: getRuntimeCapabilities(normalizedAgent),
+  };
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
       wsSend(client, msg);
@@ -918,6 +957,7 @@ function discoverCodexSlashCommands() {
   try {
     const mode = normalizeCodexMode(loadCodexConfig()?.mode);
     if (mode && mode !== 'local') ensureCodexRuntimeOverlays(CODEX_RUNTIME_HOME);
+    else markCodexOverlayLocal();
   } catch {}
   const skillsDir = path.join(codexHome, 'skills');
   const marketplacesDir = path.join(codexHome, '.tmp', 'bundled-marketplaces');
@@ -966,13 +1006,13 @@ function discoverCodexSlashCommands() {
           const skillMdPath = path.join(subDir, 'SKILL.md');
           const hasSkillMd = subEntries.some((e) => e.isFile() && e.name === 'SKILL.md');
           if (hasSkillMd) {
-            addCommand(entry.name, readSkillDescriptionFromFile(skillMdPath));
+            addCommand(entry.name, readSkillDescriptionFromFile(skillMdPath), 'codex-skills');
           } else {
             for (const sub of subEntries) {
               if (sub.isDirectory() && !sub.name.startsWith('.')) {
                 const subSkillMd = path.join(subDir, sub.name, 'SKILL.md');
                 if (fs.existsSync(subSkillMd)) {
-                  addCommand(sub.name, readSkillDescriptionFromFile(subSkillMd));
+                  addCommand(sub.name, readSkillDescriptionFromFile(subSkillMd), 'codex-skills');
                 }
               }
             }
@@ -982,7 +1022,7 @@ function discoverCodexSlashCommands() {
         const targetSkillMd = path.join(skillsDir, entry.name, 'SKILL.md');
         try {
           if (fs.existsSync(targetSkillMd)) {
-            addCommand(entry.name, readSkillDescriptionFromFile(targetSkillMd));
+            addCommand(entry.name, readSkillDescriptionFromFile(targetSkillMd), 'codex-skills');
           }
         } catch {}
       }
@@ -999,7 +1039,7 @@ function discoverCodexSlashCommands() {
         const skillMd = path.join(sysDir, entry.name, 'SKILL.md');
         try {
           if (fs.existsSync(skillMd)) {
-            addCommand(entry.name, readSkillDescriptionFromFile(skillMd));
+            addCommand(entry.name, readSkillDescriptionFromFile(skillMd), 'codex-skills');
           }
         } catch {}
       }
@@ -1655,27 +1695,77 @@ function getUserCodexHome() {
   return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 }
 
+/** Last known Codex runtime overlay status (local = no overlay needed). */
+let codexOverlayState = {
+  updatedAt: null,
+  mode: 'local',
+  mounts: {
+    skills: { status: 'native' },
+    prompts: { status: 'native' },
+    plugins: { status: 'native' },
+  },
+};
+
+function markCodexOverlayLocal() {
+  codexOverlayState = {
+    updatedAt: Date.now(),
+    mode: 'local',
+    mounts: {
+      skills: { status: 'native' },
+      prompts: { status: 'native' },
+      plugins: { status: 'native' },
+    },
+  };
+  return codexOverlayState;
+}
+
+function isCodexOverlayMountOk(mountKey) {
+  const status = codexOverlayState?.mounts?.[mountKey]?.status;
+  return status === 'native' || status === 'linked' || status === 'missing';
+}
+
 /**
  * Ensure managed runtime home can see the same skills/prompts as the user's Codex install.
  * Uses directory symlinks (junction on Windows). Never deletes a real directory.
+ * @returns {{ mode: string, mounts: Record<string, { status: string, error?: string }> }}
  */
 function ensureCodexRuntimeOverlays(runtimeHome) {
   const userHome = getUserCodexHome();
-  if (!runtimeHome || path.resolve(runtimeHome) === path.resolve(userHome)) return;
+  if (!runtimeHome || path.resolve(runtimeHome) === path.resolve(userHome)) {
+    return markCodexOverlayLocal();
+  }
+  const mounts = {
+    skills: { status: 'missing' },
+    prompts: { status: 'missing' },
+    plugins: { status: 'missing' },
+  };
   try {
     fs.mkdirSync(runtimeHome, { recursive: true });
-  } catch {
-    return;
+  } catch (err) {
+    const failed = {
+      updatedAt: Date.now(),
+      mode: 'custom',
+      mounts: {
+        skills: { status: 'error', error: err.message },
+        prompts: { status: 'error', error: err.message },
+        plugins: { status: 'error', error: err.message },
+      },
+    };
+    codexOverlayState = failed;
+    return failed;
   }
   // skills/prompts: user-installed content. plugins live under .tmp/bundled-marketplaces.
   const overlays = [
-    { name: 'skills', target: path.join(userHome, 'skills') },
-    { name: 'prompts', target: path.join(userHome, 'prompts') },
-    { name: path.join('.tmp', 'bundled-marketplaces'), target: path.join(userHome, '.tmp', 'bundled-marketplaces') },
+    { key: 'skills', name: 'skills', target: path.join(userHome, 'skills') },
+    { key: 'prompts', name: 'prompts', target: path.join(userHome, 'prompts') },
+    { key: 'plugins', name: path.join('.tmp', 'bundled-marketplaces'), target: path.join(userHome, '.tmp', 'bundled-marketplaces') },
   ];
-  for (const { name, target } of overlays) {
+  for (const { key, name, target } of overlays) {
     const resolvedTarget = path.resolve(target);
-    if (!fs.existsSync(resolvedTarget)) continue;
+    if (!fs.existsSync(resolvedTarget)) {
+      mounts[key] = { status: 'missing' };
+      continue;
+    }
     const linkPath = path.join(runtimeHome, name);
     try {
       fs.mkdirSync(path.dirname(linkPath), { recursive: true });
@@ -1686,24 +1776,84 @@ function ensureCodexRuntimeOverlays(runtimeHome) {
           let current = '';
           try { current = fs.readlinkSync(linkPath); } catch { current = ''; }
           const resolved = path.resolve(path.isAbsolute(current) ? current : path.join(path.dirname(linkPath), current));
-          if (resolved === resolvedTarget) continue;
-          try { fs.unlinkSync(linkPath); } catch { continue; }
+          if (resolved === resolvedTarget) {
+            mounts[key] = { status: 'linked' };
+            continue;
+          }
+          try { fs.unlinkSync(linkPath); } catch (unlinkErr) {
+            mounts[key] = { status: 'blocked', error: unlinkErr.message };
+            continue;
+          }
         } else {
-          // Real dir/file already present — do not replace user data.
+          // Real dir/file already present — do not replace; child may not see user content.
+          mounts[key] = {
+            status: 'blocked',
+            error: `runtime home already has real ${name}; not replaced`,
+          };
           continue;
         }
       }
       fs.symlinkSync(resolvedTarget, linkPath, IS_WIN ? 'junction' : 'dir');
+      mounts[key] = { status: 'linked' };
     } catch (err) {
+      mounts[key] = { status: 'error', error: err.message };
       plog('WARN', 'codex_runtime_overlay_failed', { name, error: err.message });
     }
   }
+  codexOverlayState = { updatedAt: Date.now(), mode: 'custom', mounts };
+  return codexOverlayState;
+}
+
+/**
+ * Honest headless capability snapshot (not a fake TUI feature matrix).
+ */
+function getRuntimeCapabilities(agent) {
+  const normalizedAgent = normalizeAgent(agent);
+  let codexMode = 'local';
+  try {
+    codexMode = normalizeCodexMode(loadCodexConfig()?.mode) || 'local';
+  } catch {
+    codexMode = 'local';
+  }
+  if (normalizedAgent === 'codex' && codexMode !== 'local') {
+    // Refresh overlay status so capability report matches what spawn will see.
+    try { ensureCodexRuntimeOverlays(CODEX_RUNTIME_HOME); } catch {}
+  } else if (normalizedAgent === 'codex' && codexMode === 'local') {
+    markCodexOverlayLocal();
+  }
+  const overlay = codexOverlayState;
+  return {
+    agent: normalizedAgent,
+    headless: true,
+    interactiveApproval: false,
+    askUser: false,
+    planConfirmUi: false,
+    goalsStructured: false,
+    codexMode: normalizedAgent === 'codex' ? codexMode : null,
+    overlay: normalizedAgent === 'codex' ? {
+      mode: overlay.mode,
+      mounts: overlay.mounts,
+      skillsOk: isCodexOverlayMountOk('skills'),
+      promptsOk: isCodexOverlayMountOk('prompts'),
+      pluginsOk: isCodexOverlayMountOk('plugins'),
+    } : null,
+    notes: [
+      'Webcoding 通过 headless CLI（stream-json / codex exec --json）运行，不是完整 TUI。',
+      '审批 / AskUser / 计划确认双向交互协议尚未适配。',
+      normalizedAgent === 'codex' && codexMode !== 'local'
+        ? 'Codex custom/unified 模式依赖 managed runtime 对 skills/prompts/plugins 的 overlay。'
+        : null,
+    ].filter(Boolean),
+  };
 }
 
 function prepareCodexCustomRuntime(config) {
   const source = resolveCodexActiveSource(config);
   if (source?.error) return source;
-  if (!source || source.mode === 'local') return { mode: 'local' };
+  if (!source || source.mode === 'local') {
+    markCodexOverlayLocal();
+    return { mode: 'local' };
+  }
 
   let bridge = null;
   try {
@@ -5074,17 +5224,21 @@ wss.on('connection', (ws, req) => {
         break;
       case 'get_slash_commands': {
         const slashAgent = normalizeAgent(msg.agent || 'claude');
+        const sendSlashList = () => {
+          wsSend(ws, {
+            type: 'slash_commands_list',
+            agent: slashAgent,
+            commands: buildSlashCommandList(slashAgent),
+            capabilities: getRuntimeCapabilities(slashAgent),
+          });
+        };
         if (slashAgent === 'claude') {
           // Claude: spawn CLI to capture init event (real-time discovery)
-          discoverClaudeSlashCommands().then(() => {
-            wsSend(ws, { type: 'slash_commands_list', agent: slashAgent, commands: buildSlashCommandList(slashAgent) });
-          }).catch(() => {
-            wsSend(ws, { type: 'slash_commands_list', agent: slashAgent, commands: buildSlashCommandList(slashAgent) });
-          });
+          discoverClaudeSlashCommands().then(sendSlashList).catch(sendSlashList);
         } else {
           // Codex: scan filesystem for skills/plugins (real-time discovery)
           discoverCodexSlashCommands();
-          wsSend(ws, { type: 'slash_commands_list', agent: slashAgent, commands: buildSlashCommandList(slashAgent) });
+          sendSlashList();
         }
         break;
       }
@@ -5739,25 +5893,34 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent, clientMessageIdR
     return;
   }
 
-  // --- TUI-only commands: refuse before spawn (do not fake availability) ---
+  // --- Blocked commands: refuse before spawn (do not fake availability) ---
   // Classify directly so interception works even before discovery cache is warm.
+  // Prefer discovered source (skills/prompts/plugins) so overlay status is accurate.
   const cmdName = normalizeSlashCommandName(cmd);
-  const classified = classifySlashCommand(agent, cmdName);
-  const slashMeta = getSlashCommandMeta(agent, cmd) || {
-    availability: classified.availability,
-    execution: classified.execution,
-    reason: classified.reason,
-  };
-  if (classified.availability === 'tui-only' || classified.execution === 'blocked') {
+  const slashMeta = getSlashCommandMeta(agent, cmd);
+  const classified = classifySlashCommand(agent, cmdName, slashMeta?.source || (
+    cmdName.startsWith('prompts:') ? 'codex-prompts' : ''
+  ));
+  if (
+    classified.availability === 'tui-only'
+    || classified.availability === 'runtime-unavailable'
+    || classified.execution === 'blocked'
+  ) {
     if (ackLocal()) return;
     markLocalAccepted();
+    const reason = classified.reason || slashMeta?.reason || '';
+    const headline = classified.availability === 'runtime-unavailable'
+      ? `${cmd} 当前在 managed Codex runtime 中不可用（overlay 未就绪）。`
+      : `${cmd} 仅在 ${label} 交互式 TUI 中可用，Webcoding 的 headless 模式不支持。`;
     wsSend(ws, {
       type: 'system_message',
       sessionId: targetSessionId,
       message: [
-        `${cmd} 仅在 ${label} 交互式 TUI 中可用，Webcoding 的 headless 模式不支持。`,
-        slashMeta.reason || classified.reason || '',
-        '请在终端原生 CLI 中使用该命令，或改用网页侧等价能力（如 /mode、/model、侧栏新建会话）。',
+        headline,
+        reason,
+        classified.availability === 'runtime-unavailable'
+          ? '请切换到 Codex 本地模式，或检查 config/codex-runtime-home 下 skills/prompts 挂载。'
+          : '请在终端原生 CLI 中使用该命令，或改用网页侧等价能力（如 /mode、/model、侧栏新建会话）。',
       ].filter(Boolean).join('\n'),
     });
     return;

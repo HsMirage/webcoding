@@ -6126,9 +6126,11 @@
     const availability = item?.availability || 'passthrough';
     if (availability === 'platform') return { cls: 'is-platform', label: '平台' };
     if (availability === 'tui-only') return { cls: 'is-tui-only', label: '仅TUI' };
+    if (availability === 'runtime-unavailable') return { cls: 'is-unavailable-badge', label: '不可用' };
     if (item?.source === 'codex-prompts' || String(item?.cmd || '').startsWith('/prompts:')) {
       return { cls: 'is-prompt', label: 'prompt' };
     }
+    if (item?.source === 'codex-skills') return { cls: 'is-prompt', label: 'skill' };
     return null;
   }
 
@@ -6170,7 +6172,9 @@
         ? `<span class="cmd-item-badge ${badge.cls}">${escapeHtml(badge.label)}</span>`
         : '';
       const title = c.reason ? ` title="${escapeHtml(c.reason)}"` : '';
-      const tuiCls = c.availability === 'tui-only' ? ' is-unavailable' : '';
+      const tuiCls = (c.availability === 'tui-only' || c.availability === 'runtime-unavailable')
+        ? ' is-unavailable'
+        : '';
       return `<div class="cmd-item${i === 0 ? ' active' : ''}${tuiCls}" data-cmd="${escapeHtml(c.cmd)}"${title}>
         <span class="cmd-item-cmd">${escapeHtml(c.cmd)}</span>
         ${badgeHtml}

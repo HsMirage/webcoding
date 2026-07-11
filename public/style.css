@@ -2615,6 +2615,10 @@ html[data-theme="localhost"] .localfile-pre {
   color: var(--accent, #0f766e);
   border-color: currentColor;
 }
+.cmd-item-badge.is-unavailable-badge {
+  color: var(--danger, #b91c1c);
+  border-color: currentColor;
+}
 .cmd-item.is-unavailable .cmd-item-cmd,
 .cmd-item.is-unavailable .cmd-item-desc {
   opacity: 0.72;
