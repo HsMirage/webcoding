@@ -2878,6 +2878,29 @@ html[data-theme="localhost"] .localfile-pre {
   color: var(--message-user-text);
   box-shadow: var(--message-user-shadow);
 }
+.msg.user.msg-queued {
+  opacity: 0.82;
+  cursor: pointer;
+}
+.msg.user.msg-queued .msg-bubble {
+  border: 2px dashed rgba(255, 255, 255, 0.45);
+  box-shadow: none;
+}
+.msg.user.msg-queued.is-offline .msg-bubble {
+  border-color: rgba(255, 222, 0, 0.85);
+}
+.msg.user.msg-queued .msg-queue-status {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  opacity: 0.85;
+}
+.msg.user.msg-queued:hover .msg-queue-status {
+  opacity: 1;
+  text-decoration: underline;
+}
 .msg.user .msg-attachment-label {
   background: var(--message-user-attachment-bg);
   color: var(--message-user-attachment-text);

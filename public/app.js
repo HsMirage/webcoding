@@ -2006,6 +2006,120 @@
   }
 
   // --- Send queue (offline retry + generate-while-busy) ---
+  function nextQueueId() {
+    localIdCounter += 1;
+    return `q-${Date.now().toString(36)}-${localIdCounter}`;
+  }
+
+  function getQueuedBubble(queueId) {
+    if (!queueId) return null;
+    return messagesDiv.querySelector(`.msg.user.msg-queued[data-queue-id="${queueId}"]`);
+  }
+
+  function queueStatusLabel(reason) {
+    if (reason === 'offline') return '待重连发送';
+    if (reason === 'busy') return '排队等待发送';
+    if (reason === 'failed') return '发送失败 · 点击重试';
+    return '待发送';
+  }
+
+  function updateQueuedBubbleStatus(queueId, reason) {
+    const el = getQueuedBubble(queueId);
+    if (!el) return;
+    el.dataset.queueReason = reason || 'queued';
+    el.classList.toggle('is-offline', reason === 'offline' || reason === 'failed');
+    el.classList.toggle('is-busy', reason === 'busy');
+    const status = el.querySelector('.msg-queue-status');
+    if (status) status.textContent = queueStatusLabel(reason);
+  }
+
+  function createQueuedUserBubble(item) {
+    if (!item || String(item.text || '').startsWith('/')) return null;
+    // Only show pending bubbles for the currently viewed session (or new chat).
+    const targetSession = item.sessionId ?? null;
+    if (targetSession && sessionState.currentSessionId && targetSession !== sessionState.currentSessionId) {
+      return null;
+    }
+    const welcome = messagesDiv.querySelector('.welcome-msg');
+    if (welcome) welcome.remove();
+    const el = createMsgElement('user', item.text || '', item.attachments || []);
+    el.classList.add('msg-queued');
+    el.dataset.queueId = item.id;
+    el.dataset.queueReason = item.reason || 'queued';
+    if (item.reason === 'offline' || item.reason === 'failed') el.classList.add('is-offline');
+    if (item.reason === 'busy') el.classList.add('is-busy');
+    const status = document.createElement('div');
+    status.className = 'msg-queue-status';
+    status.textContent = queueStatusLabel(item.reason);
+    el.querySelector('.msg-bubble')?.appendChild(status);
+    el.title = '点击可取消此条排队消息';
+    el.addEventListener('click', () => {
+      const queued = pendingSendQueue.find((entry) => entry.id === item.id);
+      if (!queued) return;
+      // Offline/failed: click retries immediately if possible; otherwise cancel.
+      if (queued.reason === 'offline' || queued.reason === 'failed') {
+        if (canDispatchSendNow({ allowWhileGenerating: String(queued.text || '').startsWith('/') })) {
+          // Move to front and flush.
+          pendingSendQueue = pendingSendQueue.filter((entry) => entry.id !== item.id);
+          pendingSendQueue.unshift(queued);
+          updateSendQueueIndicator();
+          flushSendQueue();
+          return;
+        }
+      }
+      // Default: cancel this queued item.
+      removeQueuedItem(item.id, { toast: true });
+    });
+    messagesDiv.appendChild(el);
+    forceScrollToBottom();
+    return el;
+  }
+
+  function promoteQueuedBubble(queueId) {
+    const el = getQueuedBubble(queueId);
+    if (!el) return false;
+    el.classList.remove('msg-queued', 'is-offline', 'is-busy');
+    el.removeAttribute('data-queue-id');
+    el.removeAttribute('data-queue-reason');
+    el.removeAttribute('title');
+    el.querySelector('.msg-queue-status')?.remove();
+    // Clone node to drop the cancel/retry click handler.
+    const clone = el.cloneNode(true);
+    el.replaceWith(clone);
+    return true;
+  }
+
+  function removeQueuedBubble(queueId) {
+    getQueuedBubble(queueId)?.remove();
+  }
+
+  function removeQueuedItem(queueId, options = {}) {
+    const before = pendingSendQueue.length;
+    pendingSendQueue = pendingSendQueue.filter((entry) => entry.id !== queueId);
+    removeQueuedBubble(queueId);
+    updateSendQueueIndicator();
+    if (options.toast !== false && pendingSendQueue.length < before) {
+      showToast('已取消排队消息');
+    }
+    return pendingSendQueue.length < before;
+  }
+
+  /** Re-draw pending bubbles after history re-render / session switch. */
+  function restoreQueuedBubblesForCurrentView() {
+    // Drop orphan bubbles first.
+    messagesDiv.querySelectorAll('.msg.user.msg-queued').forEach((el) => el.remove());
+    const currentId = sessionState.currentSessionId || null;
+    for (const item of pendingSendQueue) {
+      if (String(item.text || '').startsWith('/')) continue;
+      const target = item.sessionId ?? null;
+      // Show for matching session, or new-chat items when no session is open.
+      if (currentId && target && target !== currentId) continue;
+      if (currentId && !target) continue;
+      if (!currentId && target) continue;
+      if (!getQueuedBubble(item.id)) createQueuedUserBubble(item);
+    }
+  }
+
   function updateSendQueueIndicator() {
     if (!sendQueueBar || !sendQueueLabel) return;
     const count = pendingSendQueue.length;
@@ -2014,17 +2128,19 @@
       sendQueueLabel.textContent = '队列中 0 条';
       return;
     }
-    const offlineCount = pendingSendQueue.filter((item) => item.reason === 'offline').length;
+    const offlineCount = pendingSendQueue.filter((item) => item.reason === 'offline' || item.reason === 'failed').length;
     const busyCount = count - offlineCount;
     const parts = [];
     if (busyCount > 0) parts.push(`排队 ${busyCount}`);
     if (offlineCount > 0) parts.push(`待重连 ${offlineCount}`);
-    sendQueueLabel.textContent = `${parts.join(' · ')} 条消息`;
+    sendQueueLabel.textContent = `${parts.join(' · ')} 条消息 · 点气泡可取消`;
     sendQueueBar.hidden = false;
   }
 
   function clearSendQueue(options = {}) {
+    const ids = pendingSendQueue.map((item) => item.id);
     pendingSendQueue = [];
+    ids.forEach((id) => removeQueuedBubble(id));
     updateSendQueueIndicator();
     if (options.toast !== false) showToast('已清空待发送队列');
   }
@@ -2039,7 +2155,8 @@
       });
       return false;
     }
-    pendingSendQueue.push({
+    const entry = {
+      id: item.id || nextQueueId(),
       text: item.text || '',
       attachments: Array.isArray(item.attachments) ? item.attachments.map((a) => ({ ...a })) : [],
       sessionId: item.sessionId ?? sessionState.currentSessionId,
@@ -2047,10 +2164,14 @@
       agent: item.agent || sessionState.currentAgent,
       reason: item.reason || 'queued',
       createdAt: Date.now(),
-    });
+    };
+    pendingSendQueue.push(entry);
+    if (!String(entry.text || '').startsWith('/')) {
+      createQueuedUserBubble(entry);
+    }
     updateSendQueueIndicator();
     if (options.toast !== false) {
-      const reasonLabel = item.reason === 'offline'
+      const reasonLabel = entry.reason === 'offline'
         ? '连接恢复后将自动发送'
         : '当前任务结束后将自动发送';
       showToast(`已加入队列（${pendingSendQueue.length}/${MAX_SEND_QUEUE}）· ${reasonLabel}`);
@@ -2089,11 +2210,16 @@
     }
 
     if (!isCommand) {
-      const welcome = messagesDiv.querySelector('.welcome-msg');
-      if (welcome) welcome.remove();
-      messagesDiv.appendChild(createMsgElement('user', item.text || '', item.attachments || []));
+      // Promote existing pending bubble, or create a normal user bubble.
+      if (!promoteQueuedBubble(item.id)) {
+        const welcome = messagesDiv.querySelector('.welcome-msg');
+        if (welcome) welcome.remove();
+        messagesDiv.appendChild(createMsgElement('user', item.text || '', item.attachments || []));
+      }
       forceScrollToBottom();
       if (!composeState.isGenerating) startGenerating();
+    } else {
+      removeQueuedBubble(item.id);
     }
     return true;
   }
@@ -2114,10 +2240,14 @@
     }
     const next = pendingSendQueue.shift();
     updateSendQueueIndicator();
+    // Visual: about to send
+    updateQueuedBubbleStatus(next.id, 'queued');
     const ok = dispatchSendItem(next, { silent: false });
     if (!ok) {
       // Put back at front and wait for reconnect.
-      pendingSendQueue.unshift({ ...next, reason: 'offline' });
+      next.reason = 'offline';
+      pendingSendQueue.unshift(next);
+      updateQueuedBubbleStatus(next.id, 'offline');
       updateSendQueueIndicator();
       showStatusBanner({
         level: 'warn',
@@ -2289,6 +2419,7 @@
     messagesDiv.innerHTML = buildWelcomeMarkup(baseAgent);
     setStatsDisplay(null);
     renderPendingAttachments();
+    restoreQueuedBubblesForCurrentView();
     highlightActiveSession();
     renderWorkspaceInsights();
   }
@@ -2344,6 +2475,7 @@
     if (!preserveStreaming) {
       renderMessages(snapshot.messages || [], { immediate: !!options.immediate });
     }
+    restoreQueuedBubblesForCurrentView();
     highlightActiveSession();
     renderSessionList();
     if (!options.skipCloseSidebar) closeSidebar();
