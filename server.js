@@ -4048,14 +4048,14 @@ function handleConnectedProcessCompletion(sessionId, entry, session, pendingSlas
     if (autoRetryRequested) {
       if (contextLimitExceeded) {
         pendingCompactRetries.delete(sessionId);
-        wsSend(entry.ws, { type: 'system_message', message: '已尝试执行 /compact，但仍未成功解除上下文超限。请手动缩小输入范围后重试。' });
+        wsSend(entry.ws, { type: 'system_message', sessionId, message: '已尝试执行 /compact，但仍未成功解除上下文超限。请手动缩小输入范围后重试。' });
       } else {
-        wsSend(entry.ws, { type: 'system_message', message: compactDoneMessage(entry.agent || 'claude') });
-        wsSend(entry.ws, { type: 'system_message', message: compactAutoResumeMessage(entry.agent || 'claude') });
+        wsSend(entry.ws, { type: 'system_message', sessionId, message: compactDoneMessage(entry.agent || 'claude') });
+        wsSend(entry.ws, { type: 'system_message', sessionId, message: compactAutoResumeMessage(entry.agent || 'claude') });
         shouldReturnForFollowup = true;
       }
     } else {
-      wsSend(entry.ws, { type: 'system_message', message: compactDoneMessage(entry.agent || 'claude') });
+      wsSend(entry.ws, { type: 'system_message', sessionId, message: compactDoneMessage(entry.agent || 'claude') });
     }
   }
 
@@ -4063,7 +4063,7 @@ function handleConnectedProcessCompletion(sessionId, entry, session, pendingSlas
     const nextRetryCount = Number(pendingRetry?.autoRetryCount || 0) + 1;
     if (nextRetryCount > MAX_AUTO_COMPACT_RETRIES) {
       pendingCompactRetries.delete(sessionId);
-      wsSend(entry.ws, { type: 'system_message', message: '自动 /compact 重试已达到上限，请手动缩短输入内容后再试。' });
+      wsSend(entry.ws, { type: 'system_message', sessionId, message: '自动 /compact 重试已达到上限，请手动缩短输入内容后再试。' });
     } else {
       pendingCompactRetries.set(sessionId, {
         text: pendingRetry?.text || '',
@@ -4071,14 +4071,14 @@ function handleConnectedProcessCompletion(sessionId, entry, session, pendingSlas
         reason: 'auto',
         autoRetryCount: nextRetryCount,
       });
-      wsSend(entry.ws, { type: 'system_message', message: compactAutoStartMessage(entry.agent || 'claude') });
+      wsSend(entry.ws, { type: 'system_message', sessionId, message: compactAutoStartMessage(entry.agent || 'claude') });
       shouldAutoCompact = true;
     }
   }
 
   if (completionError && !entry.errorSent && !shouldAutoCompact) {
     entry.errorSent = true;
-    wsSend(entry.ws, { type: 'error', message: completionError });
+    wsSend(entry.ws, { type: 'error', sessionId, message: completionError });
   }
 
   wsSend(entry.ws, { type: 'done', sessionId, costUsd: entry.lastCost ?? null });
@@ -5688,6 +5688,8 @@ function handleMessage(ws, msg, options = {}) {
   wsSessionMap.set(ws, currentSessionId);
 
   if (!sessionId) {
+    // Mark isRunning true before spawn so the client can preserve optimistic
+    // streaming UI when the first session_info arrives for a brand-new chat.
     wsSend(ws, {
       type: 'session_info',
       sessionId: currentSessionId,
@@ -5702,7 +5704,7 @@ function handleMessage(ws, msg, options = {}) {
       updated: session.updated,
       hasUnread: false,
       historyPending: false,
-      isRunning: false,
+      isRunning: true,
       ...buildSessionRuntimeMeta(session),
     });
   }
@@ -5712,7 +5714,9 @@ function handleMessage(ws, msg, options = {}) {
     ? buildClaudeSpawnSpec(session, { attachments: resolvedAttachments })
     : buildCodexSpawnSpec(session, { attachments: resolvedAttachments });
   if (spawnSpec?.error) {
-    return wsSend(ws, { type: 'error', message: spawnSpec.error });
+    // New-chat session_info may have advertised isRunning=true; clear client state.
+    wsSend(ws, { type: 'error', sessionId: currentSessionId, message: spawnSpec.error });
+    return wsSend(ws, { type: 'done', sessionId: currentSessionId, costUsd: null });
   }
   const shouldInjectCarryover = !!(spawnSpec?.threadReset && !hideInHistory && !normalizedText.startsWith('/'));
   const carryoverHistory = shouldInjectCarryover
@@ -5722,10 +5726,10 @@ function handleMessage(ws, msg, options = {}) {
     ? buildThreadCarryoverPayload(session, textValue, resolvedAttachments, carryoverHistory, spawnSpec.threadReset)
     : null;
   if (spawnSpec?.warningMessage) {
-    wsSend(ws, { type: 'system_message', message: spawnSpec.warningMessage });
+    wsSend(ws, { type: 'system_message', sessionId: currentSessionId, message: spawnSpec.warningMessage });
   }
   if (spawnSpec?.threadReset) {
-    wsSend(ws, { type: 'system_message', message: buildThreadCarryoverNotice(threadCarryover) });
+    wsSend(ws, { type: 'system_message', sessionId: currentSessionId, message: buildThreadCarryoverNotice(threadCarryover) });
   }
   const runtimeInputText = threadCarryover?.prompt || textValue;
 
@@ -5784,7 +5788,7 @@ function handleMessage(ws, msg, options = {}) {
     cleanRunDir(currentSessionId);
     plog('ERROR', 'process_spawn_fail', { sessionId: currentSessionId.slice(0, 8), error: err.message });
     const agent = getSessionAgent(session);
-    return wsSend(ws, { type: 'error', message: formatRuntimeError(agent, err.message, { exitCode: null, signal: null }) });
+    return wsSend(ws, { type: 'error', sessionId: currentSessionId, message: formatRuntimeError(agent, err.message, { exitCode: null, signal: null }) });
   }
 
   fs.closeSync(inputFd);
@@ -5797,7 +5801,7 @@ function handleMessage(ws, msg, options = {}) {
     plog('ERROR', 'process_spawn_fail', { sessionId: currentSessionId.slice(0, 8), error: err.message });
     cleanRunDir(currentSessionId);
     const agent = getSessionAgent(session);
-    wsSend(ws, { type: 'error', message: formatRuntimeError(agent, err.message, { exitCode: null, signal: null }) });
+    wsSend(ws, { type: 'error', sessionId: currentSessionId, message: formatRuntimeError(agent, err.message, { exitCode: null, signal: null }) });
   });
 
   fs.writeFileSync(path.join(dir, 'pid'), String(proc.pid));

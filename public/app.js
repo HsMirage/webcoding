@@ -54,6 +54,8 @@
   const SESSION_LIST_COLLATOR = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   const INPUT_MAX_HEIGHT_FALLBACK = 200;
   const RECONNECT_MAX_ATTEMPTS = 8;
+  const SCROLL_NEAR_BOTTOM_PX = 96;
+  const MAX_SEND_QUEUE = 5;
   const REMEMBERED_PASSWORD_STORAGE_KEY = 'webcoding-remembered-password';
   const THEME_STORAGE_KEY = 'webcoding-theme';
   const DEFAULT_THEME = 'default';
@@ -79,8 +81,11 @@
   let sessions = [];
   let sessionCache = new Map();
   let isGenerating = false;
+  let isAborting = false;
   let reconnectAttempts = 0;
   let reconnectTimer = null;
+  let pendingReconnectResync = false;
+  let stickToBottom = true;
   let pendingText = '';
   let renderTimer = null;
   let activeToolCalls = new Map();
@@ -98,6 +103,10 @@
   let loadedHistorySessionId = null;
   let activeSessionLoad = null;
   let sidebarSwipe = null;
+  let pendingSendQueue = [];
+  let sessionSearchQuery = '';
+  let statusBannerAction = null;
+  let flushQueueTimer = null;
   let pendingAttachments = [];
   let uploadingAttachments = [];
   let currentCwd = null;
@@ -140,6 +149,8 @@
     set reconnectTimer(value) { reconnectTimer = value; },
     get pendingInitialSessionLoad() { return pendingInitialSessionLoad; },
     set pendingInitialSessionLoad(value) { pendingInitialSessionLoad = value; },
+    get pendingReconnectResync() { return pendingReconnectResync; },
+    set pendingReconnectResync(value) { pendingReconnectResync = value; },
     get authToken() { return authToken; },
     set authToken(value) { authToken = value; },
   };
@@ -174,6 +185,10 @@
   const composeState = {
     get isGenerating() { return isGenerating; },
     set isGenerating(value) { isGenerating = value; },
+    get isAborting() { return isAborting; },
+    set isAborting(value) { isAborting = value; },
+    get stickToBottom() { return stickToBottom; },
+    set stickToBottom(value) { stickToBottom = value; },
     get pendingText() { return pendingText; },
     set pendingText(value) { pendingText = value; },
     get activeToolCalls() { return activeToolCalls; },
@@ -211,15 +226,25 @@
   const newChatDropdown = $('#new-chat-dropdown');
   const importSessionBtn = $('#import-session-btn');
   const sessionList = $('#session-list');
+  const sessionSearchInput = $('#session-search-input');
+  const sessionSearchClear = $('#session-search-clear');
   const chatTitle = $('#chat-title');
   const chatAgentContext = $('#chat-agent-context');
   const chatRuntimeState = $('#chat-runtime-state');
   const chatCwd = $('#topbar-chat-cwd');
   const costDisplay = $('#topbar-cost-display');
+  const appStatusBanner = $('#app-status-banner');
+  const appStatusBannerText = $('#app-status-banner-text');
+  const appStatusBannerAction = $('#app-status-banner-action');
+  const appStatusBannerClose = $('#app-status-banner-close');
+  const sendQueueBar = $('#send-queue-bar');
+  const sendQueueLabel = $('#send-queue-label');
+  const sendQueueClear = $('#send-queue-clear');
   const attachmentTray = $('#attachment-tray');
   const imageUploadInput = $('#image-upload-input');
   const attachBtn = $('#attach-btn');
   const messagesDiv = $('#messages');
+  const scrollToBottomBtn = $('#scroll-to-bottom-btn');
   const msgInput = $('#msg-input');
   const inputWrapper = msgInput.closest('.input-wrapper');
   const sendBtn = $('#send-btn');
@@ -1933,7 +1958,191 @@
   }
 
   function getVisibleSessions() {
-    return sessionState.sessions;
+    const query = String(sessionSearchQuery || '').trim().toLowerCase();
+    if (!query) return sessionState.sessions;
+    const projectsById = new Map((projects || []).map((project) => [project.id, project]));
+    return sessionState.sessions.filter((session) => {
+      const title = String(session.title || '').toLowerCase();
+      const cwd = String(session.cwd || '').toLowerCase();
+      const agent = String(session.agent || '').toLowerCase();
+      const projectName = String(projectsById.get(session.projectId)?.name || '').toLowerCase();
+      const haystack = `${title} ${cwd} ${agent} ${projectName}`;
+      return haystack.includes(query);
+    });
+  }
+
+  // --- Status banner (connection / critical errors) ---
+  function hideStatusBanner() {
+    if (!appStatusBanner) return;
+    appStatusBanner.hidden = true;
+    appStatusBanner.classList.remove('is-error', 'is-warn', 'is-info', 'is-success');
+    statusBannerAction = null;
+    if (appStatusBannerAction) {
+      appStatusBannerAction.hidden = true;
+      appStatusBannerAction.textContent = '';
+    }
+    if (appStatusBannerText) appStatusBannerText.textContent = '';
+  }
+
+  function showStatusBanner(options = {}) {
+    if (!appStatusBanner || !appStatusBannerText) return;
+    const level = options.level || 'info';
+    const message = String(options.message || '').trim();
+    if (!message) return;
+    appStatusBanner.hidden = false;
+    appStatusBanner.classList.remove('is-error', 'is-warn', 'is-info', 'is-success');
+    appStatusBanner.classList.add(`is-${level}`);
+    appStatusBannerText.textContent = message;
+    statusBannerAction = typeof options.onAction === 'function' ? options.onAction : null;
+    if (appStatusBannerAction) {
+      if (options.actionLabel && statusBannerAction) {
+        appStatusBannerAction.hidden = false;
+        appStatusBannerAction.textContent = options.actionLabel;
+      } else {
+        appStatusBannerAction.hidden = true;
+        appStatusBannerAction.textContent = '';
+      }
+    }
+  }
+
+  // --- Send queue (offline retry + generate-while-busy) ---
+  function updateSendQueueIndicator() {
+    if (!sendQueueBar || !sendQueueLabel) return;
+    const count = pendingSendQueue.length;
+    if (count <= 0) {
+      sendQueueBar.hidden = true;
+      sendQueueLabel.textContent = '队列中 0 条';
+      return;
+    }
+    const offlineCount = pendingSendQueue.filter((item) => item.reason === 'offline').length;
+    const busyCount = count - offlineCount;
+    const parts = [];
+    if (busyCount > 0) parts.push(`排队 ${busyCount}`);
+    if (offlineCount > 0) parts.push(`待重连 ${offlineCount}`);
+    sendQueueLabel.textContent = `${parts.join(' · ')} 条消息`;
+    sendQueueBar.hidden = false;
+  }
+
+  function clearSendQueue(options = {}) {
+    pendingSendQueue = [];
+    updateSendQueueIndicator();
+    if (options.toast !== false) showToast('已清空待发送队列');
+  }
+
+  function enqueueSendItem(item, options = {}) {
+    if (!item) return false;
+    if (pendingSendQueue.length >= MAX_SEND_QUEUE) {
+      showToast(`待发送队列已满（最多 ${MAX_SEND_QUEUE} 条）`);
+      showStatusBanner({
+        level: 'warn',
+        message: `待发送队列已满（最多 ${MAX_SEND_QUEUE} 条），请等待发送完成或清空队列。`,
+      });
+      return false;
+    }
+    pendingSendQueue.push({
+      text: item.text || '',
+      attachments: Array.isArray(item.attachments) ? item.attachments.map((a) => ({ ...a })) : [],
+      sessionId: item.sessionId ?? sessionState.currentSessionId,
+      mode: item.mode || sessionState.currentMode,
+      agent: item.agent || sessionState.currentAgent,
+      reason: item.reason || 'queued',
+      createdAt: Date.now(),
+    });
+    updateSendQueueIndicator();
+    if (options.toast !== false) {
+      const reasonLabel = item.reason === 'offline'
+        ? '连接恢复后将自动发送'
+        : '当前任务结束后将自动发送';
+      showToast(`已加入队列（${pendingSendQueue.length}/${MAX_SEND_QUEUE}）· ${reasonLabel}`);
+    }
+    return true;
+  }
+
+  function isWsOpen() {
+    return !!(connectionState.ws && connectionState.ws.readyState === WebSocket.OPEN);
+  }
+
+  function canDispatchSendNow(options = {}) {
+    if (!isWsOpen()) return false;
+    if (isBlockingSessionLoad()) return false;
+    const allowWhileGenerating = options.allowWhileGenerating === true;
+    const isPlanModeActive = sessionState.currentMode === 'plan' && sessionState.currentAgent === 'claude';
+    if (composeState.isGenerating && !isPlanModeActive && !allowWhileGenerating) return false;
+    return true;
+  }
+
+  function dispatchSendItem(item, options = {}) {
+    if (!item) return false;
+    const isCommand = String(item.text || '').startsWith('/');
+    const payload = {
+      type: 'message',
+      text: item.text || '',
+      sessionId: item.sessionId ?? sessionState.currentSessionId,
+      mode: item.mode || sessionState.currentMode,
+      agent: item.agent || sessionState.currentAgent,
+    };
+    if (!isCommand && Array.isArray(item.attachments) && item.attachments.length > 0) {
+      payload.attachments = item.attachments;
+    }
+    if (!send(payload, { silent: options.silent === true })) {
+      return false;
+    }
+
+    if (!isCommand) {
+      const welcome = messagesDiv.querySelector('.welcome-msg');
+      if (welcome) welcome.remove();
+      messagesDiv.appendChild(createMsgElement('user', item.text || '', item.attachments || []));
+      forceScrollToBottom();
+      if (!composeState.isGenerating) startGenerating();
+    }
+    return true;
+  }
+
+  function scheduleFlushSendQueue(delayMs = 0) {
+    if (flushQueueTimer) clearTimeout(flushQueueTimer);
+    flushQueueTimer = setTimeout(() => {
+      flushQueueTimer = null;
+      flushSendQueue();
+    }, delayMs);
+  }
+
+  function flushSendQueue() {
+    if (!canDispatchSendNow()) return;
+    if (pendingSendQueue.length === 0) {
+      updateSendQueueIndicator();
+      return;
+    }
+    const next = pendingSendQueue.shift();
+    updateSendQueueIndicator();
+    const ok = dispatchSendItem(next, { silent: false });
+    if (!ok) {
+      // Put back at front and wait for reconnect.
+      pendingSendQueue.unshift({ ...next, reason: 'offline' });
+      updateSendQueueIndicator();
+      showStatusBanner({
+        level: 'warn',
+        message: `有 ${pendingSendQueue.length} 条消息等待连接恢复后发送。`,
+        actionLabel: '立即重连',
+        onAction: () => {
+          connectionState.reconnectAttempts = 0;
+          connect();
+        },
+      });
+      return;
+    }
+    if (pendingSendQueue.length === 0) {
+      // Queue drained successfully — clear reconnect/offline banners.
+      if (appStatusBanner && !appStatusBanner.hidden) {
+        const text = appStatusBannerText?.textContent || '';
+        if (/重连|断开|待发送|网络/.test(text)) hideStatusBanner();
+      }
+      return;
+    }
+    // Regular messages start generating; remaining items wait for finishGenerating.
+    // Commands / plan-mode follow-ups can continue immediately.
+    if (!composeState.isGenerating) {
+      scheduleFlushSendQueue(40);
+    }
   }
 
   function shouldOverlayRuntimeBadge() {
@@ -2058,6 +2267,8 @@
     sessionState.currentActiveRuntime = null;
     sessionState.currentRuntimeCount = 0;
     composeState.isGenerating = false;
+    composeState.isAborting = false;
+    composeState.stickToBottom = true;
     composeState.pendingText = '';
     composeState.pendingAttachments = [];
     composeState.uploadingAttachments = [];
@@ -2066,6 +2277,10 @@
     _previewCodeId = 0;
     sendBtn.hidden = false;
     abortBtn.hidden = true;
+    abortBtn.disabled = false;
+    abortBtn.classList.remove('is-aborting');
+    abortBtn.title = '停止生成';
+    if (scrollToBottomBtn) scrollToBottomBtn.hidden = true;
     sessionState.currentMode = getSavedModeForAgent(baseAgent);
     modeSelect.value = sessionState.currentMode;
     updateAgentScopedUI();
@@ -2080,11 +2295,27 @@
 
   function applySessionSnapshot(snapshot, options = {}) {
     if (!snapshot) return;
-    const preserveStreaming = !!(options.preserveStreaming && composeState.isGenerating && snapshot.sessionId === sessionState.currentSessionId && snapshot.isRunning);
+    // Preserve optimistic streaming when:
+    // 1) explicit option says so, or
+    // 2) first message of a new chat (currentSessionId was null) while still generating and server marks running.
+    const isNewSessionBind = !sessionState.currentSessionId && !!snapshot.sessionId && composeState.isGenerating;
+    const preserveStreaming = !!(
+      composeState.isGenerating
+      && snapshot.isRunning
+      && (
+        options.preserveStreaming
+        || isNewSessionBind
+        || snapshot.sessionId === sessionState.currentSessionId
+      )
+    );
     if (composeState.isGenerating && !preserveStreaming) {
       composeState.isGenerating = false;
+      composeState.isAborting = false;
       sendBtn.hidden = false;
       abortBtn.hidden = true;
+      abortBtn.disabled = false;
+      abortBtn.classList.remove('is-aborting');
+      abortBtn.title = '停止生成';
       composeState.pendingText = '';
       composeState.activeToolCalls.clear();
     }
@@ -2470,11 +2701,25 @@
     connectionState.ws = new WebSocket(WS_URL);
 
     connectionState.ws.onopen = () => {
+      const wasReconnecting = document.body.classList.contains('ws-reconnecting')
+        || connectionState.reconnectAttempts > 0;
       connectionState.reconnectAttempts = 0;
-      // Show reconnection success toast if this was a reconnect
-      if (connectionState.reconnectAttempts === 0 && document.body.classList.contains('ws-reconnecting')) {
+      if (wasReconnecting) {
+        connectionState.pendingReconnectResync = true;
         document.body.classList.remove('ws-reconnecting');
         showToast('连接已恢复');
+        const queueCount = pendingSendQueue.length;
+        showStatusBanner({
+          level: 'success',
+          message: queueCount > 0
+            ? `连接已恢复，准备发送 ${queueCount} 条排队消息…`
+            : '连接已恢复',
+        });
+        if (queueCount === 0) {
+          setTimeout(() => {
+            if ((appStatusBannerText?.textContent || '') === '连接已恢复') hideStatusBanner();
+          }, 2500);
+        }
       }
       if (connectionState.authToken) send({ type: 'auth', token: connectionState.authToken });
     };
@@ -2497,25 +2742,59 @@
     };
   }
 
-  function send(data) {
+  function send(data, options = {}) {
     if (connectionState.ws && connectionState.ws.readyState === WebSocket.OPEN) {
-      connectionState.ws.send(JSON.stringify(data));
-    } else {
-      // Warn user if trying to send while disconnected
-      showToast('连接已断开，正在重连…');
+      try {
+        connectionState.ws.send(JSON.stringify(data));
+        return true;
+      } catch (error) {
+        console.warn('[WEBCODING-WS-SEND]', error);
+        if (options.silent !== true) showToast('发送失败，请重试');
+        return false;
+      }
     }
+    if (options.silent !== true) showToast('连接已断开，正在重连…');
+    scheduleReconnect();
+    return false;
   }
 
   function scheduleReconnect() {
     if (connectionState.reconnectTimer) return;
     if (connectionState.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-      // Max reconnect attempts reached - show persistent error
-      appendError('连接已断开且重连失败，请刷新页面重试。', { type: 'connection', dismissible: false });
+      // Max reconnect attempts reached - show actionable error
+      const queueHint = pendingSendQueue.length > 0
+        ? `（另有 ${pendingSendQueue.length} 条消息待发送）`
+        : '';
+      showStatusBanner({
+        level: 'error',
+        message: `连接已断开且重连失败${queueHint}。可点击重试或刷新页面。`,
+        actionLabel: '立即重试',
+        onAction: () => {
+          connectionState.reconnectAttempts = 0;
+          document.body.classList.add('ws-reconnecting');
+          connect();
+        },
+      });
+      appendError('连接已断开且重连失败。点击此处重试，或刷新页面。', {
+        type: 'connection',
+        dismissible: true,
+        onClick: () => {
+          connectionState.reconnectAttempts = 0;
+          document.body.classList.add('ws-reconnecting');
+          connect();
+        },
+      });
       return;
     }
     if (navigator.onLine === false) {
       // Offline - wait for online event
       showToast('网络已断开，等待恢复…');
+      showStatusBanner({
+        level: 'warn',
+        message: pendingSendQueue.length > 0
+          ? `网络已断开，${pendingSendQueue.length} 条消息将在恢复后发送。`
+          : '网络已断开，等待恢复…',
+      });
       return;
     }
     
@@ -2527,6 +2806,10 @@
     // Show reconnection attempt toast every few attempts
     if (connectionState.reconnectAttempts <= 3 || connectionState.reconnectAttempts % 3 === 0) {
       showToast(`正在重连 (${connectionState.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})…`);
+      showStatusBanner({
+        level: 'info',
+        message: `正在重连 (${connectionState.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})…`,
+      });
     }
     
     connectionState.reconnectTimer = setTimeout(() => {
@@ -2551,10 +2834,16 @@
       send({ type: 'get_codex_config' });
       send({ type: 'get_projects' });
       requestSlashCommands(selectedAgent);
+      hideStatusBanner();
       if (msg.mustChangePassword) {
         showForceChangePassword();
+      } else if (connectionState.pendingReconnectResync && sessionState.currentSessionId) {
+        // Mid-session reconnect: re-attach after session_list arrives.
+        connectionState.pendingInitialSessionLoad = false;
       } else {
         connectionState.pendingInitialSessionLoad = true;
+        // Fresh auth without session resync path — still flush any offline queue.
+        scheduleFlushSendQueue(250);
       }
       return;
     }
@@ -2575,6 +2864,26 @@
     renderSessionList();
     if (sessionState.currentSessionId) {
       setCurrentSessionRunningState(!!getSessionMeta(sessionState.currentSessionId)?.isRunning);
+    }
+    if (connectionState.pendingReconnectResync) {
+      connectionState.pendingReconnectResync = false;
+      if (sessionState.currentSessionId && getSessionMeta(sessionState.currentSessionId)) {
+        connectionState.pendingInitialSessionLoad = false;
+        openSession(sessionState.currentSessionId, {
+          forceSync: true,
+          blocking: false,
+          label: '连接已恢复，正在同步会话…',
+        });
+        // Flush offline queue after session re-attach settles.
+        scheduleFlushSendQueue(200);
+        return;
+      }
+      if (connectionState.pendingInitialSessionLoad) {
+        connectionState.pendingInitialSessionLoad = false;
+        restoreInitialSession(selectedAgent);
+      }
+      scheduleFlushSendQueue(200);
+      return;
     }
     if (connectionState.pendingInitialSessionLoad) {
       connectionState.pendingInitialSessionLoad = false;
@@ -2618,7 +2927,10 @@
     applySessionSnapshot(snapshot, {
       immediate: isBlockingSessionLoad(msg.sessionId),
       suppressUnreadToast: false,
-      preserveStreaming: msg.sessionId === sessionState.currentSessionId && msg.isRunning,
+      // Keep live streaming across session_info (incl. first message of a new chat).
+      preserveStreaming: !!(msg.isRunning && composeState.isGenerating && (
+        !sessionState.currentSessionId || msg.sessionId === sessionState.currentSessionId
+      )),
     });
     if (msg.historyPending) return;
     if (sessionState.activeSessionLoad?.sessionId === msg.sessionId) {
@@ -2660,13 +2972,22 @@
     renderSessionList();
   }
 
+  /** Stream/runtime events for another session must not mutate the current view. */
+  function isEventForCurrentSession(msg) {
+    if (!msg || msg.sessionId == null || msg.sessionId === '') return true;
+    if (!sessionState.currentSessionId) return true;
+    return msg.sessionId === sessionState.currentSessionId;
+  }
+
   function handleTextDeltaMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
     if (!composeState.isGenerating) startGenerating();
     composeState.pendingText += msg.text;
     scheduleRender();
   }
 
   function handleToolStartMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
     if (!composeState.isGenerating) startGenerating();
     if (composeState.pendingText) flushRender();
     markStreamingProcessTextSegments();
@@ -2675,6 +2996,7 @@
   }
 
   function handleToolEndMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
     if (composeState.activeToolCalls.has(msg.toolUseId)) {
       composeState.activeToolCalls.get(msg.toolUseId).done = true;
       if (msg.kind) composeState.activeToolCalls.get(msg.toolUseId).kind = msg.kind;
@@ -2685,6 +3007,7 @@
   }
 
   function handleCostMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
     costDisplay.textContent = `$${msg.costUsd.toFixed(4)}`;
     if (sessionState.currentSessionId) {
       updateCachedSession(sessionState.currentSessionId, (snapshot) => { snapshot.totalCost = msg.costUsd; });
@@ -2693,6 +3016,7 @@
   }
 
   function handleUsageMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
     if (msg.totalUsage) {
       const cacheText = msg.totalUsage.cachedInputTokens ? ` · cache ${msg.totalUsage.cachedInputTokens}` : '';
       costDisplay.textContent = `in ${msg.totalUsage.inputTokens} · out ${msg.totalUsage.outputTokens}${cacheText}`;
@@ -2751,7 +3075,12 @@
   }
 
   function handleResumeGeneratingMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
     setCurrentSessionRunningState(true);
+    composeState.isAborting = false;
+    abortBtn.disabled = false;
+    abortBtn.classList.remove('is-aborting');
+    abortBtn.title = '停止生成';
     if (!composeState.isGenerating || !document.getElementById('streaming-msg')) {
       startGenerating();
     } else {
@@ -2798,17 +3127,26 @@
   }
 
   function handleErrorMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
     const errorMsg = msg.message || '发生未知错误';
     appendError(errorMsg);
-    // Also show toast for critical errors to ensure user notice
-    if (msg.critical || msg.fatal) {
+    // Surface important failures in the persistent top banner.
+    const lower = errorMsg.toLowerCase();
+    const isAuth = /auth|登录|认证|api key|credential|unauthorized|forbidden/i.test(errorMsg);
+    const isQuota = /rate limit|quota|额度|billing|credits/i.test(errorMsg);
+    const isNetwork = /network|timeout|timed out|econnreset|断连|断开/i.test(lower);
+    if (msg.critical || msg.fatal || isAuth || isQuota || isNetwork) {
+      showStatusBanner({
+        level: isAuth || isQuota ? 'error' : 'warn',
+        message: errorMsg,
+      });
       showToast(`错误: ${errorMsg}`, null);
     }
     clearSessionLoading();
     if (!composeState.isGenerating && sessionState.currentSessionId) {
       setCurrentSessionRunningState(!!getSessionMeta(sessionState.currentSessionId)?.isRunning);
     }
-    if (composeState.isGenerating) finishGenerating();
+    if (composeState.isGenerating) finishGenerating(msg.sessionId);
   }
 
   function handleBackgroundDoneMessage(msg) {
@@ -2888,8 +3226,14 @@
     tool_end: handleToolEndMessage,
     cost: handleCostMessage,
     usage: handleUsageMessage,
-    done: (msg) => finishGenerating(msg.sessionId),
-    system_message: (msg) => appendSystemMessage(msg.message),
+    done: (msg) => {
+      if (!isEventForCurrentSession(msg)) return;
+      finishGenerating(msg.sessionId);
+    },
+    system_message: (msg) => {
+      if (!isEventForCurrentSession(msg)) return;
+      appendSystemMessage(msg.message);
+    },
     mode_changed: handleModeChangedMessage,
     model_changed: handleModelChangedMessage,
     model_list: handleModelListMessage,
@@ -2946,11 +3290,15 @@
   // --- Generating State ---
   function startGenerating() {
     composeState.isGenerating = true;
+    composeState.isAborting = false;
     setCurrentSessionRunningState(true);
     composeState.pendingText = '';
     composeState.activeToolCalls.clear();
     sendBtn.hidden = true;
     abortBtn.hidden = false;
+    abortBtn.disabled = false;
+    abortBtn.classList.remove('is-aborting');
+    abortBtn.title = '停止生成';
     // 不禁用输入框，允许用户继续输入（但无法发送）
 
     const welcome = messagesDiv.querySelector('.welcome-msg');
@@ -2962,15 +3310,22 @@
     bubble.innerHTML = '';
     bubble.appendChild(createStreamingPlaceholder());
     messagesDiv.appendChild(msgEl);
-    scrollToBottom();
+    forceScrollToBottom();
   }
 
   function finishGenerating(sessionId) {
     composeState.isGenerating = false;
+    composeState.isAborting = false;
     sendBtn.hidden = false;
     abortBtn.hidden = true;
+    abortBtn.disabled = false;
+    abortBtn.classList.remove('is-aborting');
+    abortBtn.title = '停止生成';
     setCurrentSessionRunningState(false);
-    msgInput.focus();
+    // Avoid popping the mobile keyboard after every turn.
+    if (!isMobileInputMode()) {
+      msgInput.focus({ preventScroll: true });
+    }
 
     if (composeState.pendingText) flushRender();
 
@@ -2982,6 +3337,8 @@
     }
     composeState.pendingText = '';
     composeState.activeToolCalls.clear();
+    // Auto-send next queued message after the turn completes.
+    scheduleFlushSendQueue(80);
   }
 
   // --- Rendering ---
@@ -3001,7 +3358,7 @@
     textDiv.dataset.rawText = nextText;
     textDiv.innerHTML = renderMarkdown(nextText);
     composeState.pendingText = '';
-    scrollToBottom();
+    maybeScrollToBottom();
   }
 
   function renderMarkdown(text) {
@@ -3130,11 +3487,11 @@
   }
 
   function toolStateLabel(tool, done) {
-    if (!done) return 'Running';
+    if (!done) return '执行中';
     if (toolKind(tool) === 'command_execution' && typeof tool?.meta?.exitCode === 'number') {
-      return `Exit ${tool.meta.exitCode}`;
+      return `退出码 ${tool.meta.exitCode}`;
     }
-    return 'Done';
+    return '已完成';
   }
 
   function toolStateClass(tool, done) {
@@ -3745,7 +4102,7 @@
     } else {
       bubble.appendChild(details);
     }
-    scrollToBottom();
+    maybeScrollToBottom();
   }
 
   function updateToolCall(toolUseId, result) {
@@ -3804,7 +4161,7 @@
     const welcome = messagesDiv.querySelector('.welcome-msg');
     if (welcome) welcome.remove();
     messagesDiv.appendChild(createMsgElement('system', message));
-    scrollToBottom();
+    maybeScrollToBottom();
   }
 
   function appendError(message, options = {}) {
@@ -3823,22 +4180,58 @@
     if (dismissible) {
       const dismissBtn = div.querySelector('.error-dismiss-btn');
       if (dismissBtn) {
-        dismissBtn.addEventListener('click', () => div.remove());
+        dismissBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          div.remove();
+        });
       }
+    }
+    if (typeof options.onClick === 'function') {
+      div.style.cursor = 'pointer';
+      div.title = '点击重试';
+      div.addEventListener('click', () => {
+        options.onClick();
+        div.remove();
+      });
     }
     
     messagesDiv.appendChild(div);
-    scrollToBottom();
+    forceScrollToBottom();
     
     // Auto-scroll to make error visible
     div.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
-  function scrollToBottom() {
+  function isNearBottom(threshold = SCROLL_NEAR_BOTTOM_PX) {
+    const distance = messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight;
+    return distance <= threshold;
+  }
+
+  function updateScrollToBottomButton(forceHide = false) {
+    if (!scrollToBottomBtn) return;
+    const shouldShow = !forceHide && !composeState.stickToBottom && !isNearBottom();
+    scrollToBottomBtn.hidden = !shouldShow;
+  }
+
+  function forceScrollToBottom() {
+    composeState.stickToBottom = true;
     requestAnimationFrame(() => {
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
       updateScrollbar();
+      updateScrollToBottomButton(true);
     });
+  }
+
+  function maybeScrollToBottom() {
+    if (composeState.stickToBottom || isNearBottom()) {
+      forceScrollToBottom();
+      return;
+    }
+    updateScrollToBottomButton();
+  }
+
+  function scrollToBottom() {
+    forceScrollToBottom();
   }
 
   // --- Custom Scrollbar ---
@@ -3862,6 +4255,8 @@
 
   messagesDiv.addEventListener('scroll', () => {
     updateScrollbar();
+    composeState.stickToBottom = isNearBottom();
+    updateScrollToBottomButton(composeState.stickToBottom);
     // 移动端：滚动时短暂显示滑块，停止后淡出
     scrollbarEl.classList.add('scrolling');
     clearTimeout(scrollbarEl._hideTimer);
@@ -3870,6 +4265,9 @@
     }, 1200);
   }, { passive: true });
   new ResizeObserver(updateScrollbar).observe(messagesDiv);
+  if (scrollToBottomBtn) {
+    scrollToBottomBtn.addEventListener('click', () => forceScrollToBottom());
+  }
 
   // Drag logic
   let dragStartY = 0, dragStartScrollTop = 0, isDragging = false;
@@ -4433,7 +4831,9 @@
     if (visibleSessions.length === 0 && !hasProjects) {
       const empty = document.createElement('div');
       empty.className = 'session-list-empty';
-      empty.textContent = '暂无会话，点击“新建/打开项目”开始。';
+      empty.textContent = sessionSearchQuery.trim()
+        ? `没有匹配「${sessionSearchQuery.trim()}」的会话。`
+        : '暂无会话，点击“新建/打开项目”开始。';
       listFragment.appendChild(empty);
       sessionList.appendChild(listFragment);
       renderWorkspaceInsights();
@@ -4443,7 +4843,9 @@
     if (visibleSessions.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'session-list-empty';
-      empty.textContent = '当前还没有会话，你可以从下面任意项目继续新建。';
+      empty.textContent = sessionSearchQuery.trim()
+        ? `没有匹配「${sessionSearchQuery.trim()}」的会话。`
+        : '当前还没有会话，你可以从下面任意项目继续新建。';
       listFragment.appendChild(empty);
     }
 
@@ -4503,7 +4905,10 @@
       return SESSION_LIST_COLLATOR.compare(a.project.name || '', b.project.name || '');
     });
 
+    const searching = !!sessionSearchQuery.trim();
     for (const entry of groupEntries) {
+      // While searching, hide empty project folders that have no matching sessions.
+      if (searching && entry.groupSessions.length === 0) continue;
       renderProjectGroup(entry.project, entry.groupSessions, listFragment, sessionTimestampCache);
     }
     if (ungrouped.length > 0) {
@@ -5084,7 +5489,6 @@
     const text = msgInput.value.trim();
     const isPlanModeActive = sessionState.currentMode === 'plan' && sessionState.currentAgent === 'claude';
     if ((!text && composeState.pendingAttachments.length === 0) || isBlockingSessionLoad()) return;
-    if (composeState.isGenerating && !isPlanModeActive) return;
     hideCmdMenu();
     hideOptionPicker();
 
@@ -5108,25 +5512,83 @@
         autoResize();
         return;
       }
-      send({ type: 'message', text, sessionId: sessionState.currentSessionId, mode: sessionState.currentMode, agent: sessionState.currentAgent });
+      const commandItem = {
+        text,
+        attachments: [],
+        sessionId: sessionState.currentSessionId,
+        mode: sessionState.currentMode,
+        agent: sessionState.currentAgent,
+      };
+      if (!canDispatchSendNow({ allowWhileGenerating: true })) {
+        if (!isWsOpen()) {
+          if (!enqueueSendItem({ ...commandItem, reason: 'offline' })) return;
+          msgInput.value = '';
+          autoResize();
+          return;
+        }
+        appendError('当前无法发送命令，请稍后再试。');
+        return;
+      }
+      if (!dispatchSendItem(commandItem)) {
+        if (!enqueueSendItem({ ...commandItem, reason: 'offline' })) return;
+      }
       msgInput.value = '';
       autoResize();
       return;
     }
 
-    // Regular message
-    const welcome = messagesDiv.querySelector('.welcome-msg');
-    if (welcome) welcome.remove();
     const attachments = composeState.pendingAttachments.map((attachment) => ({ ...attachment }));
-    messagesDiv.appendChild(createMsgElement('user', text, attachments));
-    scrollToBottom();
+    const item = {
+      text,
+      attachments,
+      sessionId: sessionState.currentSessionId,
+      mode: sessionState.currentMode,
+      agent: sessionState.currentAgent,
+    };
 
-    send({ type: 'message', text, attachments, sessionId: sessionState.currentSessionId, mode: sessionState.currentMode, agent: sessionState.currentAgent });
+    // Busy generating (non-plan): queue for auto-send after current turn.
+    if (composeState.isGenerating && !isPlanModeActive) {
+      if (!enqueueSendItem({ ...item, reason: 'busy' })) return;
+      msgInput.value = '';
+      composeState.pendingAttachments = [];
+      renderPendingAttachments();
+      autoResize();
+      return;
+    }
+
+    // Offline: queue for reconnect flush.
+    if (!isWsOpen()) {
+      if (!enqueueSendItem({ ...item, reason: 'offline' })) return;
+      msgInput.value = '';
+      composeState.pendingAttachments = [];
+      renderPendingAttachments();
+      autoResize();
+      showStatusBanner({
+        level: 'warn',
+        message: `连接已断开，${pendingSendQueue.length} 条消息将在恢复后自动发送。`,
+        actionLabel: '立即重连',
+        onAction: () => {
+          connectionState.reconnectAttempts = 0;
+          connect();
+        },
+      });
+      scheduleReconnect();
+      return;
+    }
+
+    if (!dispatchSendItem(item)) {
+      if (!enqueueSendItem({ ...item, reason: 'offline' })) return;
+      msgInput.value = '';
+      composeState.pendingAttachments = [];
+      renderPendingAttachments();
+      autoResize();
+      return;
+    }
+
     msgInput.value = '';
     composeState.pendingAttachments = [];
     renderPendingAttachments();
     autoResize();
-    if (!composeState.isGenerating) startGenerating();
   }
 
   function autoResize() {
@@ -5367,7 +5829,64 @@
     }
   });
   sendBtn.addEventListener('click', sendMessage);
-  abortBtn.addEventListener('click', () => send({ type: 'abort' }));
+  abortBtn.addEventListener('click', () => {
+    if (composeState.isAborting) {
+      showToast('正在停止…');
+      return;
+    }
+    if (!send({ type: 'abort' })) return;
+    composeState.isAborting = true;
+    abortBtn.disabled = true;
+    abortBtn.classList.add('is-aborting');
+    abortBtn.title = '正在停止…';
+    showToast('已请求停止');
+    // If the process is stuck, re-enable after a grace period so the user can retry.
+    setTimeout(() => {
+      if (!composeState.isAborting) return;
+      abortBtn.disabled = false;
+      abortBtn.classList.remove('is-aborting');
+      abortBtn.title = '停止生成';
+      composeState.isAborting = false;
+      showToast('停止可能仍在进行，可再次点击');
+    }, 5000);
+  });
+  if (sendQueueClear) {
+    sendQueueClear.addEventListener('click', () => clearSendQueue());
+  }
+  if (appStatusBannerAction) {
+    appStatusBannerAction.addEventListener('click', () => {
+      const action = statusBannerAction;
+      if (typeof action === 'function') action();
+    });
+  }
+  if (appStatusBannerClose) {
+    appStatusBannerClose.addEventListener('click', () => hideStatusBanner());
+  }
+  if (sessionSearchInput) {
+    sessionSearchInput.addEventListener('input', () => {
+      sessionSearchQuery = sessionSearchInput.value || '';
+      if (sessionSearchClear) sessionSearchClear.hidden = !sessionSearchQuery.trim();
+      renderSessionList();
+    });
+    sessionSearchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        sessionSearchInput.value = '';
+        sessionSearchQuery = '';
+        if (sessionSearchClear) sessionSearchClear.hidden = true;
+        renderSessionList();
+        sessionSearchInput.blur();
+      }
+    });
+  }
+  if (sessionSearchClear) {
+    sessionSearchClear.addEventListener('click', () => {
+      if (sessionSearchInput) sessionSearchInput.value = '';
+      sessionSearchQuery = '';
+      sessionSearchClear.hidden = true;
+      renderSessionList();
+      sessionSearchInput?.focus();
+    });
+  }
   if (attachBtn && imageUploadInput) {
     attachBtn.addEventListener('click', () => imageUploadInput.click());
     imageUploadInput.addEventListener('change', () => {
@@ -5450,7 +5969,7 @@
         e.preventDefault();
         // If menu is open and user presses Enter, select the item
         selectCmdMenuItem();
-      } else if (e.ctrlKey) {
+      } else if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         sendMessage();
       }

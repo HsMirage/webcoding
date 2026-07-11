@@ -86,6 +86,10 @@
             <hr class="dropdown-divider">
             <button id="import-session-btn">导入本地 CLI 会话</button>
           </div>
+          <div class="session-search-wrap">
+            <input id="session-search-input" class="session-search-input" type="search" placeholder="搜索会话 / 项目…" autocomplete="off" spellcheck="false">
+            <button type="button" id="session-search-clear" class="session-search-clear" hidden title="清除搜索" aria-label="清除搜索">×</button>
+          </div>
         </div>
         <div id="session-list" class="session-list"></div>
       </aside>
@@ -114,6 +118,11 @@
                 </select>
               </div>
             </header>
+            <div id="app-status-banner" class="app-status-banner" hidden role="status" aria-live="polite">
+              <span id="app-status-banner-text" class="app-status-banner-text"></span>
+              <button type="button" id="app-status-banner-action" class="app-status-banner-action" hidden></button>
+              <button type="button" id="app-status-banner-close" class="app-status-banner-close" aria-label="关闭">×</button>
+            </div>
 
             <div class="messages-wrap">
               <div id="messages" class="messages">
@@ -125,6 +134,7 @@
                   <p>开始与 Claude 对话</p>
                 </div>
               </div>
+              <button type="button" id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" hidden aria-label="滚动到最新消息">↓ 有新内容</button>
               <div class="custom-scrollbar" id="custom-scrollbar">
                 <div class="custom-scrollbar-thumb" id="custom-scrollbar-thumb"></div>
               </div>
@@ -134,6 +144,10 @@
             <div id="cmd-menu" class="cmd-menu" hidden></div>
 
             <div class="input-area">
+              <div id="send-queue-bar" class="send-queue-bar" hidden>
+                <span id="send-queue-label" class="send-queue-label">队列中 0 条</span>
+                <button type="button" id="send-queue-clear" class="send-queue-clear" title="清空待发送队列">清空</button>
+              </div>
               <div id="attachment-tray" class="attachment-tray" hidden></div>
               <div class="input-wrapper">
                 <input id="image-upload-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
@@ -142,13 +156,13 @@
                     <path d="M21.44 11.05l-8.49 8.49a6 6 0 1 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                   </svg>
                 </button>
-                <textarea id="msg-input" rows="1" placeholder="输入消息… 输入 / 查看指令" autocomplete="off"></textarea>
-                <button id="send-btn" class="send-btn" title="发送">
+                <textarea id="msg-input" rows="1" placeholder="输入消息… 输入 / 查看指令 · ⌘/Ctrl+Enter 发送" autocomplete="off"></textarea>
+                <button id="send-btn" class="send-btn" title="发送（⌘/Ctrl+Enter）">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                   </svg>
                 </button>
-                <button id="abort-btn" class="abort-btn" title="停止" hidden>
+                <button id="abort-btn" class="abort-btn" title="停止生成" hidden>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                     <rect x="6" y="6" width="12" height="12" rx="2"></rect>
                   </svg>
