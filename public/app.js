@@ -3632,7 +3632,7 @@
     const bubble = getStreamingBubble();
     if (!bubble) return null;
     clearStreamingPlaceholder(bubble);
-    removeLiveProcessIndicator(bubble);
+    // Keep the live process indicator at the top if present.
     const last = bubble.lastElementChild;
     // Continue the latest final-phase text segment; process/thinking segments stay separate.
     if (
@@ -3640,6 +3640,7 @@
       && last.classList.contains('msg-segment-text')
       && !last.classList.contains('msg-segment-thinking')
       && last.dataset.phase !== 'process'
+      && !last.classList.contains('msg-process-live')
     ) {
       return last;
     }
@@ -3837,30 +3838,40 @@
     return section;
   }
 
+  function isThinkingTextSegment(segment) {
+    return !!(segment && segment.type === 'text' && (segment.phase === 'thinking' || segment.thinking === true));
+  }
+
+  function isNonEmptyTextSegment(segment) {
+    return !!(segment && segment.type === 'text' && String(segment.text || '').trim());
+  }
+
+  /**
+   * Mark phases for display:
+   * - thinking text is always process
+   * - the last non-thinking text segment is always the conclusion (final),
+   *   even if tools appear after it (do NOT demote the answer to process)
+   * - earlier non-thinking text is process
+   */
   function annotateMessageSegmentPhases(segments) {
     const list = Array.isArray(segments) ? segments.map((segment) => ({ ...segment })) : [];
-    let finalTextIndex = -1;
+    let conclusionTextIndex = -1;
     for (let index = list.length - 1; index >= 0; index -= 1) {
       const segment = list[index];
-      // Explicit thinking segments are never the final answer.
-      if (segment?.type === 'text' && segment.phase === 'thinking') continue;
-      if (segment?.type === 'text' && String(segment.text || '').trim()) {
-        finalTextIndex = index;
-        break;
-      }
+      if (!isNonEmptyTextSegment(segment)) continue;
+      if (isThinkingTextSegment(segment) || segment.phase === 'thinking') continue;
+      conclusionTextIndex = index;
+      break;
     }
-    const conclusionTextIndex = finalTextIndex !== -1
-      && !list.slice(finalTextIndex + 1).some((segment) => segment && segment.type !== 'text')
-      ? finalTextIndex
-      : -1;
     return list.map((segment, index) => {
       if (!segment || segment.type !== 'text') return segment;
-      if (segment.phase === 'thinking') {
+      if (isThinkingTextSegment(segment) || segment.phase === 'thinking') {
         return { ...segment, phase: 'process', thinking: true };
       }
       return {
         ...segment,
         phase: conclusionTextIndex !== -1 && index === conclusionTextIndex ? 'final' : 'process',
+        thinking: false,
       };
     });
   }
@@ -3880,6 +3891,7 @@
           type: 'text',
           text: typeof segment.text === 'string' ? segment.text : '',
           phase: segment.phase || null,
+          thinking: segment.thinking === true || segment.phase === 'thinking',
         };
       })
       .filter((segment) => segment.type === 'tool_call' || segment.text);
@@ -3889,7 +3901,10 @@
   function isProcessDisplaySegment(segment) {
     if (!segment) return false;
     if (segment.type === 'tool_call' || segment.type === 'tool_group') return true;
-    if (segment.type === 'text') return segment.phase === 'process' || segment.thinking === true;
+    if (segment.type === 'text') {
+      // Only explicit process/thinking — never fold final answer text.
+      return segment.phase === 'process' || segment.thinking === true;
+    }
     return false;
   }
 
@@ -3927,9 +3942,50 @@
     };
   }
 
+  function summarizeProcessNodes(nodes) {
+    const list = Array.isArray(nodes) ? nodes : [];
+    let toolCount = 0;
+    let hasThinking = false;
+    list.forEach((node) => {
+      if (!node) return;
+      if (node.classList.contains('codex-reasoning')) {
+        hasThinking = true;
+        return;
+      }
+      if (node.classList.contains('tool-call')) {
+        toolCount += 1;
+        return;
+      }
+      if (node.classList.contains('tool-group')) {
+        node.querySelectorAll('.tool-call').forEach((call) => {
+          if (call.classList.contains('codex-reasoning')) hasThinking = true;
+          else toolCount += 1;
+        });
+        return;
+      }
+      if (
+        node.classList.contains('msg-segment-thinking')
+        || node.classList.contains('msg-segment-process')
+      ) {
+        hasThinking = true;
+      }
+    });
+    const parts = [];
+    if (hasThinking) parts.push('思考');
+    if (toolCount > 0) parts.push(`${toolCount} 个工具`);
+    if (parts.length === 0) parts.push('过程');
+    return { title: parts.join(' · ') };
+  }
+
   function createProcessGroupElement(processNodes, options = {}) {
     const nodes = (processNodes || []).filter(Boolean);
     if (nodes.length === 0) return null;
+
+    // Avoid double-wrapping an existing process group.
+    if (nodes.length === 1 && nodes[0].classList?.contains('msg-process-group')) {
+      nodes[0].open = options.open === true;
+      return nodes[0];
+    }
 
     const details = document.createElement('details');
     details.className = 'msg-process-group msg-segment';
@@ -3958,34 +4014,70 @@
     return details;
   }
 
+  /**
+   * Order-preserving collapse: wrap each contiguous run of process segments
+   * (thinking / process text / tools) and leave final answer text outside.
+   * This avoids:
+   * - folding the conclusion into process
+   * - dropping trailing tools after the answer
+   * - reordering process content relative to the answer
+   */
   function appendSegmentsWithProcessCollapse(bubble, segments, options = {}) {
     if (!bubble) return;
-    const list = Array.isArray(segments) ? segments : [];
-    const processSegments = [];
-    const finalSegments = [];
-    list.forEach((segment) => {
-      if (isProcessDisplaySegment(segment)) processSegments.push(segment);
-      else finalSegments.push(segment);
-    });
+    const list = Array.isArray(segments) ? segments.filter(Boolean) : [];
+    if (list.length === 0) return;
 
-    const processNodes = processSegments
-      .map((segment) => buildMessageSegmentElement(segment))
-      .filter(Boolean);
-    const finalNodes = finalSegments
-      .map((segment) => buildMessageSegmentElement(segment))
-      .filter(Boolean);
+    const hasFinalAnswer = list.some((segment) => (
+      segment.type === 'text'
+      && segment.phase === 'final'
+      && String(segment.text || '').trim()
+    ));
+    const shouldCollapse = options.forceCollapseProcess === true || hasFinalAnswer;
+    const processOpen = options.processOpen === true;
 
-    // Collapse process when there is a final answer, or when process-only turn completed.
-    if (processNodes.length > 0 && (finalNodes.length > 0 || options.forceCollapseProcess)) {
-      const group = createProcessGroupElement(processNodes, {
-        open: options.processOpen === true,
-        stats: summarizeProcessSegments(processSegments),
-      });
-      if (group) bubble.appendChild(group);
-    } else {
-      processNodes.forEach((node) => bubble.appendChild(node));
+    let index = 0;
+    while (index < list.length) {
+      if (isProcessDisplaySegment(list[index])) {
+        const run = [];
+        while (index < list.length && isProcessDisplaySegment(list[index])) {
+          run.push(list[index]);
+          index += 1;
+        }
+        const nodes = run.map((segment) => buildMessageSegmentElement(segment)).filter(Boolean);
+        if (nodes.length === 0) continue;
+        if (shouldCollapse) {
+          const group = createProcessGroupElement(nodes, {
+            open: processOpen,
+            stats: summarizeProcessSegments(run),
+          });
+          if (group) bubble.appendChild(group);
+        } else {
+          nodes.forEach((node) => bubble.appendChild(node));
+        }
+        continue;
+      }
+
+      const finalEl = buildMessageSegmentElement(list[index]);
+      if (finalEl) bubble.appendChild(finalEl);
+      index += 1;
     }
-    finalNodes.forEach((node) => bubble.appendChild(node));
+  }
+
+  function isStreamingProcessNode(node) {
+    if (!(node instanceof Element)) return false;
+    if (node.classList.contains('msg-process-group')) return true;
+    if (node.classList.contains('msg-segment-thinking')) return true;
+    if (node.classList.contains('msg-segment-process')) return true;
+    if (node.classList.contains('tool-call') || node.classList.contains('tool-group')) return true;
+    return false;
+  }
+
+  function isStreamingFinalTextNode(node) {
+    if (!(node instanceof Element)) return false;
+    if (!node.classList.contains('msg-segment-text')) return false;
+    if (node.classList.contains('msg-segment-thinking')) return false;
+    if (node.dataset.phase === 'process') return false;
+    return !!String(node.dataset.rawText || node.textContent || '').trim();
   }
 
   function collapseStreamingProcessForCompletedTurn() {
@@ -3994,89 +4086,75 @@
     removeLiveProcessIndicator(bubble);
     clearStreamingPlaceholder(bubble);
 
-    const nodes = Array.from(bubble.children).filter((node) => (
-      !node.classList.contains('msg-segment-pending')
-      && !node.classList.contains('msg-process-live')
-    ));
-    if (nodes.length === 0) return;
-
-    let lastFinalTextIndex = -1;
-    nodes.forEach((node, index) => {
+    const nodes = Array.from(bubble.children).filter((node) => {
+      if (!(node instanceof Element)) return false;
+      if (node.classList.contains('msg-segment-pending')) return false;
+      if (node.classList.contains('msg-process-live')) return false;
+      // Drop empty text shells created before the next tool/answer chunk.
       if (
         node.classList.contains('msg-segment-text')
-        && !node.classList.contains('msg-segment-thinking')
-        && node.dataset.phase !== 'process'
-        && String(node.dataset.rawText || node.textContent || '').trim()
+        && !String(node.dataset.rawText || '').trim()
       ) {
-        lastFinalTextIndex = index;
+        return false;
       }
+      return true;
     });
+    if (nodes.length === 0) return;
 
-    // Fallback: last text segment is treated as the conclusion.
-    if (lastFinalTextIndex === -1) {
+    // If there is no explicit final text, promote the last non-thinking text
+    // segment to final so the answer is never trapped inside the process group.
+    const hasExplicitFinal = nodes.some((node) => isStreamingFinalTextNode(node));
+    if (!hasExplicitFinal) {
       for (let index = nodes.length - 1; index >= 0; index -= 1) {
         const node = nodes[index];
-        if (node.classList.contains('msg-segment-text') && String(node.dataset.rawText || node.textContent || '').trim()) {
-          lastFinalTextIndex = index;
+        if (
+          node.classList.contains('msg-segment-text')
+          && !node.classList.contains('msg-segment-thinking')
+          && String(node.dataset.rawText || node.textContent || '').trim()
+        ) {
+          node.classList.remove('msg-segment-process');
+          node.classList.add('msg-segment-final');
+          node.dataset.phase = 'final';
           break;
         }
       }
     }
 
-    const processNodes = [];
-    const finalNodes = [];
-    nodes.forEach((node, index) => {
-      const isProcessNode = (
-        node.classList.contains('msg-segment-thinking')
-        || node.classList.contains('msg-segment-process')
-        || node.classList.contains('tool-call')
-        || node.classList.contains('tool-group')
-        || (lastFinalTextIndex !== -1 && index < lastFinalTextIndex)
-      );
-      if (lastFinalTextIndex === -1) {
-        // Tools / thinking only — still collapse for a tidy transcript.
-        processNodes.push(node);
-        return;
+    const fragment = document.createDocumentFragment();
+    let index = 0;
+    let collapsedAny = false;
+
+    while (index < nodes.length) {
+      const node = nodes[index];
+      if (isStreamingProcessNode(node)) {
+        const run = [];
+        while (index < nodes.length && isStreamingProcessNode(nodes[index])) {
+          run.push(nodes[index]);
+          index += 1;
+        }
+        const group = createProcessGroupElement(run, {
+          open: false,
+          stats: summarizeProcessNodes(run),
+        });
+        if (group) {
+          fragment.appendChild(group);
+          collapsedAny = true;
+        }
+        continue;
       }
-      if (isProcessNode && index !== lastFinalTextIndex) processNodes.push(node);
-      else finalNodes.push(node);
-    });
 
-    if (processNodes.length === 0) return;
-
-    // Build lightweight stats from DOM for the collapsed summary.
-    const toolCount = processNodes.reduce((count, node) => {
-      if (node.classList.contains('tool-call')) return count + 1;
-      if (node.classList.contains('tool-group')) {
-        return count + node.querySelectorAll('.tool-call').length;
-      }
-      return count;
-    }, 0);
-    const hasThinking = processNodes.some((node) => (
-      node.classList.contains('msg-segment-thinking')
-      || node.classList.contains('msg-segment-process')
-      || node.classList.contains('codex-reasoning')
-    ));
-    const titleParts = [];
-    if (hasThinking) titleParts.push('思考');
-    if (toolCount > 0) titleParts.push(`${toolCount} 个工具`);
-    if (titleParts.length === 0) titleParts.push('过程');
-
-    finalNodes.forEach((node) => {
       if (node.classList.contains('msg-segment-text')) {
         node.classList.remove('msg-segment-process', 'msg-segment-thinking');
         node.classList.add('msg-segment-final');
         node.dataset.phase = 'final';
       }
-    });
+      fragment.appendChild(node);
+      index += 1;
+    }
 
-    const group = createProcessGroupElement(processNodes, {
-      open: false,
-      stats: { title: titleParts.join(' · ') },
-    });
+    if (!collapsedAny) return;
     bubble.innerHTML = '';
-    if (group) bubble.appendChild(group);
-    finalNodes.forEach((node) => bubble.appendChild(node));
+    bubble.appendChild(fragment);
   }
 
   function normalizeMessageSegments(message) {
