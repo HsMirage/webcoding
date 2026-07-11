@@ -107,6 +107,48 @@ function sleep(ms) {
     })}\n`);
   }
 
+  // Headless interactive protocol fixtures (cannot be answered via file I/O).
+  if (input === 'trigger codex interactive approval') {
+    process.stdout.write(`${JSON.stringify({
+      type: 'exec_approval_request',
+      command: 'rm -rf /tmp/webcoding-mock-unsafe',
+      reason: 'mock approval for regression',
+    })}\n`);
+    process.stdout.write(`${JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'item_msg_after_approval',
+        type: 'agent_message',
+        text: 'Codex mock continued after interactive approval event.',
+      },
+    })}\n`);
+    process.stdout.write(`${JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 4, cached_input_tokens: 0, output_tokens: 3 },
+    })}\n`);
+    return;
+  }
+
+  if (input === 'trigger codex goal update') {
+    process.stdout.write(`${JSON.stringify({
+      type: 'thread_goal_updated',
+      goal: { title: 'Ship headless parity', status: 'active' },
+    })}\n`);
+    process.stdout.write(`${JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'item_msg_goal',
+        type: 'agent_message',
+        text: 'Codex mock after goal update.',
+      },
+    })}\n`);
+    process.stdout.write(`${JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 3, cached_input_tokens: 0, output_tokens: 2 },
+    })}\n`);
+    return;
+  }
+
   const slowStreamMatch = input.match(/^trigger codex slow stream(?:\s+(.+))?$/i);
   if (slowStreamMatch) {
     const label = String(slowStreamMatch[1] || 'default').trim() || 'default';

@@ -793,7 +793,7 @@ function typeMatcher(type, predicate = null) {
   return (msg) => msg.type === type && (!predicate || predicate(msg));
 }
 
-function buildAgentMessagePayload({ text, sessionId, mode, agent, attachments }) {
+function buildAgentMessagePayload({ text, sessionId, mode, agent, attachments, clientMessageId }) {
   return {
     type: 'message',
     text,
@@ -801,6 +801,7 @@ function buildAgentMessagePayload({ text, sessionId, mode, agent, attachments })
     mode,
     agent,
     ...(attachments ? { attachments } : {}),
+    ...(clientMessageId ? { clientMessageId } : {}),
   };
 }
 
@@ -1286,6 +1287,156 @@ async function runAuthRegressionCase({ port, password }) {
   } finally {
     await closeWs(repeatedAuth.ws);
   }
+}
+
+/**
+ * Headless parity: interactive event classification, local slash lifecycle,
+ * TUI-only blocking, capabilities on slash list, run-meta snapshot.
+ */
+async function runHeadlessParityRegressionCase({ port, password, sessionsDir, logsDir }) {
+  await withAuthedClient(port, password, async ({ client }) => {
+    // --- Codex interactive approval → interactive_request (non-respondable) ---
+    const codexInteractiveSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex interactive approval', mode: 'yolo', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex interactive approval',
+    );
+    const interactiveReq = await client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === codexInteractiveSession.sessionId
+        && msg.eventType === 'exec_approval_request'
+        && msg.respondable === false,
+      8000,
+    );
+    assert(interactiveReq.interactiveKind === 'exec_approval', 'Codex exec_approval_request should classify as exec_approval');
+    assert(/不能双向回应|headless/i.test(interactiveReq.message || ''), 'interactive_request should explain headless limitation');
+    await client.waitForType('done', (msg) => msg.sessionId === codexInteractiveSession.sessionId, 8000);
+
+    // --- Codex goal update ---
+    const codexGoalSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex goal update', mode: 'yolo', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex goal update',
+    );
+    const goalUpdate = await client.waitForType(
+      'goal_update',
+      (msg) => msg.sessionId === codexGoalSession.sessionId && /Ship headless parity|Goals/i.test(msg.summary || ''),
+      8000,
+    );
+    assert(goalUpdate, 'Codex thread_goal_updated should surface as goal_update');
+    await client.waitForType('done', (msg) => msg.sessionId === codexGoalSession.sessionId, 8000);
+
+    // --- Claude interactive system subtype ---
+    const claudeInteractiveSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger claude interactive permission', mode: 'yolo', agent: 'claude' }),
+      'session_info',
+      (msg) => msg.agent === 'claude' && msg.title === 'trigger claude interactive permission',
+    );
+    const claudeInteractive = await client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === claudeInteractiveSession.sessionId
+        && /can_use_tool/i.test(msg.eventType || ''),
+      8000,
+    );
+    assert(claudeInteractive.respondable === false, 'Claude interactive_request must not claim respondable');
+    await client.waitForType('done', (msg) => msg.sessionId === claudeInteractiveSession.sessionId, 8000);
+
+    // --- Claude permission_denials on result ---
+    const claudeDenialSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger claude permission denials', mode: 'yolo', agent: 'claude' }),
+      'session_info',
+      (msg) => msg.agent === 'claude' && msg.title === 'trigger claude permission denials',
+    );
+    const denialMsg = await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === claudeDenialSession.sessionId && /permission_denials|权限拒绝/i.test(msg.message || ''),
+      8000,
+    );
+    assert(denialMsg, 'Claude permission_denials should become a system_message');
+    await client.waitForType('done', (msg) => msg.sessionId === claudeDenialSession.sessionId, 8000);
+
+    // --- Local slash: /web-help must ACK as local and not require a CLI turn ---
+    const helpSession = await client.sendAndWaitType(
+      { type: 'new_session', agent: 'claude', mode: 'yolo' },
+      'session_info',
+      (msg) => msg.agent === 'claude',
+    );
+    const helpClientId = `help-${Date.now()}`;
+    const helpAccepted = await client.sendAndWaitType(
+      buildAgentMessagePayload({
+        text: '/web-help',
+        sessionId: helpSession.sessionId,
+        mode: 'yolo',
+        agent: 'claude',
+        clientMessageId: helpClientId,
+      }),
+      'message_accepted',
+      (msg) => msg.clientMessageId === helpClientId && msg.execution === 'local',
+      5000,
+    );
+    assert(helpAccepted.execution === 'local', '/web-help should accept with execution=local');
+    const helpBody = await client.waitForType(
+      'system_message',
+      (msg) => /Webcoding 平台帮助|平台命令/i.test(msg.message || ''),
+      5000,
+    );
+    assert(helpBody, '/web-help should return platform help text');
+
+    // --- TUI-only slash blocked without spawning (must use a Codex session) ---
+    const codexSlashSession = await client.sendAndWaitType(
+      { type: 'new_session', agent: 'codex', mode: 'yolo' },
+      'session_info',
+      (msg) => msg.agent === 'codex',
+    );
+    const forkClientId = `fork-${Date.now()}`;
+    const forkAccepted = await client.sendAndWaitType(
+      buildAgentMessagePayload({
+        text: '/fork',
+        sessionId: codexSlashSession.sessionId,
+        mode: 'yolo',
+        agent: 'codex',
+        clientMessageId: forkClientId,
+      }),
+      'message_accepted',
+      (msg) => msg.clientMessageId === forkClientId && msg.execution === 'local',
+      5000,
+    );
+    assert(forkAccepted, '/fork should be locally accepted (blocked, not CLI turn)');
+    const forkBlocked = await client.waitForType(
+      'system_message',
+      (msg) => /\/fork/i.test(msg.message || '') && /TUI|不支持|headless/i.test(msg.message || ''),
+      5000,
+    );
+    assert(forkBlocked, '/fork should explain TUI-only limitation');
+
+    // --- Slash list carries capabilities ---
+    const slashList = await client.sendAndWaitType(
+      { type: 'get_slash_commands', agent: 'codex' },
+      'slash_commands_list',
+      (msg) => msg.agent === 'codex' && Array.isArray(msg.commands),
+      15000,
+    );
+    assert(slashList.capabilities && slashList.capabilities.headless === true, 'slash_commands_list should include headless capabilities');
+    assert(slashList.capabilities.interactiveApproval === false, 'capabilities must not claim interactive approval in headless');
+    assert(Array.isArray(slashList.capabilities.knownInteractiveEventTypes), 'capabilities should list known interactive event types');
+
+    // --- run-meta written on spawn ---
+    const metaSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'hello run meta', mode: 'plan', agent: 'claude' }),
+      'session_info',
+      (msg) => msg.agent === 'claude' && msg.title === 'hello run meta',
+    );
+    await client.waitForType('done', (msg) => msg.sessionId === metaSession.sessionId, 8000);
+    const runMetaPath = path.join(sessionsDir, `${metaSession.sessionId}-run`, 'run-meta.json');
+    // run dir is cleaned after complete; check process log for mode instead if meta gone.
+    const spawnLine = findProcessLogLine(logsDir, metaSession.sessionId, 'process_spawn');
+    assert(spawnLine && spawnLine.includes('"mode":"plan"'), 'process_spawn should record plan mode from spawn snapshot');
+    // If run dir still exists (race), validate meta content.
+    if (fs.existsSync(runMetaPath)) {
+      const meta = JSON.parse(fs.readFileSync(runMetaPath, 'utf8'));
+      assert(meta.permissionMode === 'plan', 'run-meta should snapshot permissionMode=plan');
+    }
+  });
 }
 
 async function runRuntimeErrorRegressionCase({ port, password, logsDir }) {
@@ -3518,6 +3669,7 @@ async function main() {
       await runner.run('codex metadata warning rendering', () => runCodexMetadataWarningRegressionCase(ctx));
       await runner.run('auth failures and repeated auth', () => runAuthRegressionCase(ctx));
       await runner.run('runtime error mapping', () => runRuntimeErrorRegressionCase(ctx));
+      await runner.run('headless parity interactive and slash', () => runHeadlessParityRegressionCase(ctx));
       await runner.run('attachment boundary handling', () => runAttachmentBoundaryRegressionCase(ctx));
       await runner.run('expired attachment cleanup', () => runExpiredAttachmentCleanupRegressionCase(ctx));
       await runner.run('websocket guard rails', () => runWebSocketGuardRegressionCase(ctx));

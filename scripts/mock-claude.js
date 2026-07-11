@@ -38,6 +38,17 @@ function readStdin() {
     text = `Claude mock handled: ${input}`;
   }
 
+  // Emit interactive system subtype before assistant (headless cannot reply).
+  if (input === 'trigger claude interactive permission') {
+    process.stdout.write(`${JSON.stringify({
+      type: 'system',
+      subtype: 'can_use_tool',
+      session_id: sessionId,
+      tool_name: 'Bash',
+    })}\n`);
+    text = 'Claude mock continued after interactive permission event.';
+  }
+
   process.stdout.write(`${JSON.stringify({
     type: 'assistant',
     session_id: sessionId,
@@ -48,9 +59,16 @@ function readStdin() {
     process.exit(1);
   }
 
-  process.stdout.write(`${JSON.stringify({
+  const result = {
     type: 'result',
     session_id: sessionId,
     total_cost_usd: 0,
-  })}\n`);
+  };
+  if (input === 'trigger claude permission denials') {
+    result.permission_denials = [
+      { tool_name: 'Bash', reason: 'mock denial for regression' },
+    ];
+    // Still return assistant text so the turn completes.
+  }
+  process.stdout.write(`${JSON.stringify(result)}\n`);
 })();
