@@ -3257,6 +3257,7 @@ html[data-theme="localhost"] .localfile-pre {
   color: var(--text-secondary);
   margin: 8px 0;
 }
+/* Wide tables: own horizontal pan surface so mobile swipe does not open the sidebar (issue #4). */
 .msg-bubble table {
   border-collapse: collapse;
   margin: 8px 0;
@@ -3265,12 +3266,16 @@ html[data-theme="localhost"] .localfile-pre {
   display: block;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+  overscroll-behavior-x: contain;
 }
 .msg-bubble th, .msg-bubble td {
   border: 2px solid var(--line);
   padding: 6px 10px;
   text-align: left;
   white-space: nowrap;
+  /* Prefer cell/table pan over parent gesture recognition */
+  touch-action: pan-x pan-y;
 }
 .msg-bubble th { background: var(--bg-secondary); font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; }
 
@@ -3329,6 +3334,8 @@ html[data-theme="localhost"] .localfile-pre {
   overflow-y: hidden;
   max-width: 100%;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+  overscroll-behavior-x: contain;
 }
 .code-block-wrapper pre code {
   font-family: var(--font-mono);

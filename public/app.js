@@ -44,6 +44,9 @@
   const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
   const SIDEBAR_SWIPE_TRIGGER = 72;
   const SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT = 42;
+  // Only start open-swipe from the left screen edge so horizontal table/code pans
+  // do not open the project list (GitHub issue #4).
+  const SIDEBAR_SWIPE_EDGE_PX = 36;
   const SIDEBAR_WIDTH_STORAGE_KEY = 'webcoding-sidebar-width';
   const SIDEBAR_DEFAULT_WIDTH = 320;
   const SIDEBAR_MIN_WIDTH = 280;
@@ -5999,7 +6002,32 @@
     sidebarOverlay.hidden = true;
   }
 
-  function canOpenSidebarBySwipe(target) {
+  function isHorizontallyScrollableElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+    let style;
+    try { style = window.getComputedStyle(el); } catch { return false; }
+    const overflowX = style.overflowX || '';
+    if (overflowX !== 'auto' && overflowX !== 'scroll' && overflowX !== 'overlay') {
+      // Tables are rendered as display:block;overflow-x:auto — still check scroll metrics.
+      if (!el.matches?.('table, pre, .code-block-wrapper, .table-scroll')) return false;
+    }
+    return el.scrollWidth > el.clientWidth + 2;
+  }
+
+  function getHorizontalScrollAncestor(target) {
+    let el = target instanceof Element ? target : target?.parentElement;
+    while (el && el !== document.body && el !== document.documentElement) {
+      if (isHorizontallyScrollableElement(el)) return el;
+      // Known wide content surfaces even before overflow metrics settle.
+      if (el.matches?.('table, pre, .code-block-wrapper pre, .code-block-wrapper, .table-scroll, .msg-bubble table')) {
+        if (el.scrollWidth > el.clientWidth + 2) return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function canOpenSidebarBySwipe(target, touch) {
     if (!window.matchMedia('(max-width: 768px), (pointer: coarse)').matches) return false;
     if (sidebar.classList.contains('open')) return false;
     if (sessionLoadingOverlay && !sessionLoadingOverlay.hidden) return false;
@@ -6007,6 +6035,10 @@
     if (!app.hidden && target && target.closest('input, textarea, select, button, .modal-panel, .settings-panel, .option-picker, .cmd-menu')) {
       return false;
     }
+    // Do not steal horizontal pans on wide tables / code blocks (issue #4).
+    if (getHorizontalScrollAncestor(target)) return false;
+    // Edge-only open: full-width table cells still receive touches in the middle.
+    if (touch && Number(touch.clientX) > SIDEBAR_SWIPE_EDGE_PX) return false;
     return true;
   }
 
@@ -6027,18 +6059,23 @@
         startY: touch.clientY,
         active: true,
         mode: 'close',
+        scrollEl: null,
+        startScrollLeft: 0,
       };
       return;
     }
-    if (!canOpenSidebarBySwipe(e.target)) {
+    if (!canOpenSidebarBySwipe(e.target, touch)) {
       sidebarSwipe = null;
       return;
     }
+    const scrollEl = getHorizontalScrollAncestor(e.target);
     sidebarSwipe = {
       startX: touch.clientX,
       startY: touch.clientY,
       active: true,
       mode: 'open',
+      scrollEl,
+      startScrollLeft: scrollEl ? scrollEl.scrollLeft : 0,
     };
   }
 
@@ -6047,11 +6084,19 @@
     const touch = e.touches[0];
     const deltaX = touch.clientX - sidebarSwipe.startX;
     const deltaY = touch.clientY - sidebarSwipe.startY;
+    // If the user actually scrolled a horizontal surface, abandon sidebar gesture.
+    if (sidebarSwipe.scrollEl && sidebarSwipe.scrollEl.scrollLeft !== sidebarSwipe.startScrollLeft) {
+      sidebarSwipe = null;
+      return;
+    }
     if (Math.abs(deltaY) > SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT && Math.abs(deltaY) > Math.abs(deltaX)) {
       sidebarSwipe = null;
       return;
     }
     const horizontalIntent = sidebarSwipe.mode === 'open' ? deltaX > 12 : deltaX < -12;
+    // Never preventDefault on open-mode gestures that began outside the edge zone
+    // (defensive) or over scrollable content — let the browser pan tables/code.
+    if (sidebarSwipe.mode === 'open' && sidebarSwipe.scrollEl) return;
     if (horizontalIntent && Math.abs(deltaY) < SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT) {
       e.preventDefault();
     }
@@ -6064,9 +6109,15 @@
     const endY = touch ? touch.clientY : sidebarSwipe.startY;
     const deltaX = endX - sidebarSwipe.startX;
     const deltaY = endY - sidebarSwipe.startY;
+    // Content scrolled → this was a table/code pan, not a sidebar gesture.
+    if (sidebarSwipe.scrollEl && sidebarSwipe.scrollEl.scrollLeft !== sidebarSwipe.startScrollLeft) {
+      sidebarSwipe = null;
+      return;
+    }
     const shouldOpen = sidebarSwipe.mode === 'open' &&
       deltaX >= SIDEBAR_SWIPE_TRIGGER &&
-      Math.abs(deltaY) <= SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT;
+      Math.abs(deltaY) <= SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT &&
+      sidebarSwipe.startX <= SIDEBAR_SWIPE_EDGE_PX;
     const shouldClose = sidebarSwipe.mode === 'close' &&
       deltaX <= -SIDEBAR_SWIPE_TRIGGER &&
       Math.abs(deltaY) <= SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT;
