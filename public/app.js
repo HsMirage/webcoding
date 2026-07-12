@@ -2609,6 +2609,8 @@
       short = '~/' + (parts.slice(-2).join('/') || sessionState.currentCwd);
     }
     const hideForOverlay = sessionState.currentSessionRunning && shouldOverlayRuntimeBadge();
+    const cwdBlock = document.getElementById('sidebar-cwd-block');
+    const showCwd = !!(sessionState.currentCwd && !hideForOverlay);
     if (chatCwd) {
       if (sessionState.currentCwd) {
         chatCwd.textContent = short;
@@ -2617,8 +2619,9 @@
         chatCwd.textContent = '';
         chatCwd.title = '';
       }
-      chatCwd.hidden = !sessionState.currentCwd || hideForOverlay;
+      chatCwd.hidden = !showCwd;
     }
+    if (cwdBlock) cwdBlock.hidden = !showCwd;
     if (headerCwd) {
       headerCwd.textContent = short;
       headerCwd.title = sessionState.currentCwd || '';
@@ -7017,12 +7020,19 @@
   document.addEventListener('click', handleGlobalDocumentClick);
 
   // Split new-chat button
-  newChatBtn.addEventListener('click', () => showNewSessionModal());
-  newChatArrow.addEventListener('click', (e) => {
-    e.stopPropagation();
-    newChatDropdown.hidden = !newChatDropdown.hidden;
-  });
-  importSessionBtn.addEventListener('click', () => {
+  if (newChatBtn) {
+    newChatBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      showNewSessionModal();
+    });
+  }
+  if (newChatArrow) {
+    newChatArrow.addEventListener('click', (e) => {
+      e.stopPropagation();
+      newChatDropdown.hidden = !newChatDropdown.hidden;
+    });
+  }
+  if (importSessionBtn) importSessionBtn.addEventListener('click', () => {
     newChatDropdown.hidden = true;
     if (selectedAgent === 'codex') {
       showImportCodexSessionModal();

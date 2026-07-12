@@ -1,5 +1,28 @@
 /* 09-polish.css — Codex design cohesion layer (loads last) */
 
+/* === Critical overlays (fallback if panels CSS breaks) === */
+.settings-overlay,
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  background: var(--color-deep-charcoal);
+  padding: var(--spacing-16);
+}
+
+.settings-panel,
+.modal-panel {
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  box-shadow: none;
+  max-height: 90vh;
+  overflow: auto;
+}
+
 /* === Reading column === */
 .messages {
   max-width: var(--chat-max-width);
@@ -296,10 +319,70 @@ aside.git-panel:not(.visible),
 aside.git-panel.visible,
 #git-panel.visible {
   display: flex !important;
+  flex-direction: column;
   width: var(--git-panel-width) !important;
   min-width: var(--git-panel-width) !important;
   max-width: none !important;
+  height: 100%;
+  min-height: 0;
   pointer-events: auto !important;
+  background: var(--color-pure-white);
+  border-left: 1px solid var(--color-hairline);
+  overflow: hidden;
+}
+
+.git-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-8);
+  padding: var(--spacing-10) var(--spacing-12);
+  flex-wrap: nowrap;
+  min-height: 48px;
+}
+
+.git-panel-title {
+  flex-shrink: 0;
+}
+
+.git-panel-tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  padding: 2px;
+}
+
+.git-panel-tab {
+  flex: 1 0 auto;
+  min-width: 48px;
+  white-space: nowrap;
+  border: none !important;
+  border-radius: 8px !important;
+  padding: 6px 8px !important;
+  font-size: 12px !important;
+}
+
+.git-panel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-6);
+  padding: var(--spacing-8) var(--spacing-12);
+}
+
+.git-panel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacing-12);
+}
+
+.git-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-12);
 }
 
 .git-panel-header,
@@ -375,4 +458,127 @@ aside.git-panel.visible,
 .attach-btn:hover {
   background: var(--color-hover-veil) !important;
   box-shadow: none !important;
+}
+
+/* === Sidebar session list (Codex) === */
+.project-group {
+  margin-bottom: var(--spacing-6);
+  border: none !important;
+  border-radius: var(--radius-nav) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.project-group-header {
+  padding: var(--spacing-8) var(--spacing-10) !important;
+  border: none !important;
+  border-radius: var(--radius-nav) !important;
+  background: transparent !important;
+}
+
+.project-group-header:hover {
+  background: var(--color-hover-veil) !important;
+}
+
+.project-group.active-project > .project-group-header {
+  background: var(--color-hover-veil) !important;
+  box-shadow: none !important;
+}
+
+.project-group-body {
+  padding: 0 0 var(--spacing-6) var(--spacing-8);
+}
+
+.project-group-name {
+  font-size: var(--text-caption) !important;
+  font-weight: var(--font-weight-medium) !important;
+}
+
+.project-group-path {
+  font-size: 12px !important;
+  color: var(--color-hollow) !important;
+}
+
+.project-group-count {
+  border: 1px solid var(--color-hairline) !important;
+  border-radius: var(--radius-nav) !important;
+  background: transparent !important;
+  font-size: 11px !important;
+  font-weight: var(--font-weight-medium) !important;
+  min-width: 24px !important;
+  height: 24px !important;
+}
+
+.project-group-more-btn {
+  border: none !important;
+  background: transparent !important;
+  border-radius: var(--radius-nav) !important;
+  color: var(--color-mid-ash) !important;
+}
+
+.project-group-more-btn:hover,
+.project-group-more-btn.active {
+  background: var(--color-hover-veil) !important;
+  color: var(--color-graphite-ink) !important;
+}
+
+.project-group-menu {
+  border: 1px solid var(--color-hairline) !important;
+  border-radius: var(--radius-nav) !important;
+  box-shadow: none !important;
+  background: var(--color-pure-white) !important;
+}
+
+.project-group-menu-item {
+  border-radius: 8px !important;
+  font-family: var(--font-ui) !important;
+  font-size: var(--text-caption) !important;
+}
+
+.project-group-menu-item:hover {
+  background: var(--color-hover-veil) !important;
+}
+
+.new-chat-dropdown {
+  border: 1px solid var(--color-hairline) !important;
+  border-radius: var(--radius-nav) !important;
+  box-shadow: none !important;
+  background: var(--color-pure-white) !important;
+}
+
+.new-chat-dropdown button {
+  font-family: var(--font-ui) !important;
+  font-size: var(--text-caption) !important;
+  font-weight: var(--font-weight-medium) !important;
+  text-align: left;
+  width: 100%;
+  padding: var(--spacing-8) var(--spacing-10);
+  border: none;
+  background: transparent;
+  color: var(--color-graphite-ink);
+}
+
+.new-chat-dropdown button:hover {
+  background: var(--color-hover-veil);
+}
+
+/* === Working directory indicator === */
+.sidebar-cwd-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-6);
+}
+
+.sidebar-cwd-block[hidden] {
+  display: none !important;
+}
+
+.sidebar-cwd {
+  font-size: 12px;
+  color: var(--color-hollow);
+  padding: 0 var(--spacing-6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
 }

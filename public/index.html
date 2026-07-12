@@ -6,16 +6,16 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <title>Webcoding</title>
-  <link rel="stylesheet" href="css/00-tokens.css?v=1.8.1">
-  <link rel="stylesheet" href="css/01-base.css?v=1.8.1">
-  <link rel="stylesheet" href="css/02-layout.css?v=1.8.1">
-  <link rel="stylesheet" href="css/03-chat.css?v=1.8.1">
-  <link rel="stylesheet" href="css/04-sessions.css?v=1.8.1">
-  <link rel="stylesheet" href="css/05-panels.css?v=1.8.1">
-  <link rel="stylesheet" href="css/06-components.css?v=1.8.1">
-  <link rel="stylesheet" href="css/07-themes.css?v=1.8.1">
-  <link rel="stylesheet" href="css/08-mobile.css?v=1.8.1">
-  <link rel="stylesheet" href="css/09-polish.css?v=1.8.1">
+  <link rel="stylesheet" href="css/00-tokens.css?v=1.8.2">
+  <link rel="stylesheet" href="css/01-base.css?v=1.8.2">
+  <link rel="stylesheet" href="css/02-layout.css?v=1.8.2">
+  <link rel="stylesheet" href="css/03-chat.css?v=1.8.2">
+  <link rel="stylesheet" href="css/04-sessions.css?v=1.8.2">
+  <link rel="stylesheet" href="css/05-panels.css?v=1.8.2">
+  <link rel="stylesheet" href="css/06-components.css?v=1.8.2">
+  <link rel="stylesheet" href="css/07-themes.css?v=1.8.2">
+  <link rel="stylesheet" href="css/08-mobile.css?v=1.8.2">
+  <link rel="stylesheet" href="css/09-polish.css?v=1.8.2">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 </head>
 <body>
@@ -104,7 +104,10 @@
               <button type="button" class="mode-tab" data-mode="plan" title="Plan：规划/只读向">Plan</button>
             </div>
           </div>
-          <span id="topbar-chat-cwd" class="topbar-chat-cwd sidebar-cwd" hidden title=""></span>
+          <div id="sidebar-cwd-block" class="sidebar-cwd-block" hidden>
+            <span class="sidebar-footer-label">工作目录</span>
+            <span id="topbar-chat-cwd" class="topbar-chat-cwd sidebar-cwd" title=""></span>
+          </div>
         </div>
       </aside>
 
@@ -242,6 +245,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="/qrcode.min.js"></script>
-  <script src="app.js?v=1.8.1"></script>
+  <script src="app.js?v=1.8.2"></script>
 </body>
 </html>

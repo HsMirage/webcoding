@@ -154,83 +154,8 @@
   font-weight: 600;
 }
 
-.session-loading-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 900;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  background: var(--loading-overlay-scrim);
-}
+/* session-loading styles live in 02-layout.css */
 
-.session-loading-card {
-  width: min(440px, 100%);
-  padding: 24px 24px 20px;
-  border: 1px solid var(--loading-card-border);
-  border-radius: var(--radius-nav);
-  background: var(--loading-card-bg);
-  box-shadow: none;
-}
-
-.session-loading-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 74px;
-  margin-bottom: 12px;
-  padding: 5px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-nav);
-  background: var(--loading-badge-bg);
-  color: var(--loading-badge-text);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: none;
-}
-
-.session-loading-title {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: none;
-  letter-spacing: 0.04em;
-  color: var(--text-primary);
-}
-
-.session-loading-label {
-  margin-top: 8px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.session-loading-bar {
-  margin-top: 18px;
-  height: 8px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-nav);
-  background: var(--loading-bar-bg);
-}
-
-.session-loading-bar-fill {
-  display: block;
-  width: 44%;
-  height: 100%;
-  background: var(--loading-bar-fill);
-  animation: session-loading-pulse 1.2s ease-in-out infinite;
-  transform-origin: left center;
-}
-
-@keyframes session-loading-pulse {
-  0% {
-    transform: translateX(-55%) scaleX(0.82);
-    opacity: 0.72;
-  }
 /* === Settings Overlay & Panel === */
 .settings-overlay {
   position: fixed; inset: 0;
