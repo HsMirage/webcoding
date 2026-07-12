@@ -1159,8 +1159,8 @@
 .send-btn, .abort-btn {
   width: var(--btn-icon-size);
   height: var(--btn-icon-size);
-  border: 1px solid var(--line);
-  border-radius: var(--button-radius);
+  border: none;
+  border-radius: var(--radius-nav);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1176,12 +1176,13 @@
 }
 
 .send-btn {
-  background: var(--blue);
+  background: transparent;
   color: var(--text-primary);
+  border: none;
 }
 
 .send-btn:hover {
-  background: var(--yellow);
+  background: var(--color-hover-veil);
   box-shadow: none;
 }
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
