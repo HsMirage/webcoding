@@ -1,0 +1,209 @@
+/* 06-components.css — tools, toasts, status, misc */
+/* === Toast Notification === */
+.toast-notification {
+  position: fixed;
+  top: calc(var(--header-height) + 10px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-6px);
+  background: var(--success);
+  color: var(--toast-success-text);
+  padding: 12px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--chat-card-border-radius);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: none;
+  box-shadow: none;
+  z-index: 200;
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  white-space: nowrap;
+}
+.toast-notification.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* === Connection Status Indicator === */
+body.ws-reconnecting::before {
+  content: '⟳ 重连中';
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--yellow);
+  color: var(--text-primary);
+  padding: 6px 16px;
+  border: 1px solid var(--line);
+  border-top: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  z-index: 1000;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* === Session Unread Dot === */
+.session-unread-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--blue);
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-left: 2px;
+  box-shadow: none;
+}
+
+/* === Settings Button (topbar) === */
+.settings-btn {
+  background: none;
+  border: none;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  border-radius: var(--radius-nav);
+  transition: color 120ms, background 120ms;
+  vertical-align: middle;
+}
+.settings-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+
+/* === Chat CWD label === */
+.chat-cwd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-nav);
+  padding: 2px 8px;
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* === Dynamic tool variants === */
+.tool-call.codex-command-execution,
+.tool-call.codex-mcp-tool-call {
+  border-color: var(--color-hairline);
+}
+
+/* === Message text wrapper === */
+.msg-text {
+  min-width: 0;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  color: var(--text-primary);
+}
+
+/* === Form controls === */
+.themed-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--spacing-10) var(--spacing-12);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  background: var(--input-background);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  resize: vertical;
+  outline: none;
+}
+
+.themed-textarea:focus {
+  border-color: var(--color-edge-gray);
+}
+
+/* === Overlays (JS-created) === */
+.settings-subpage-overlay,
+.git-modal-overlay,
+.modal-overlay.settings-subpage-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--settings-overlay-background);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-16);
+}
+
+/* === Workspace actions grid === */
+.workspace-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: var(--spacing-8);
+}
+
+/* === Markdown / code helpers === */
+.table-scroll {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+}
+
+.hljs {
+  background: transparent;
+}
+
+.language-diff,
+.language-javascript,
+.language-plaintext {
+  /* highlight.js language hooks */
+}
+
+/* === Tunnel copy button === */
+.tunnel-copy-btn,
+#tunnel-copy-btn {
+  cursor: pointer;
+}
+
+/* === State modifiers === */
+.busy,
+.sending,
+.offline,
+.failed,
+.is-busy,
+.is-sending,
+.runtime-unavailable,
+.compact,
+.edit,
+.tui-only {
+  /* Applied as composition modifiers; inherit parent styles */
+}
+
+.msg.user.busy,
+.msg.user.is-busy,
+.msg.user.is-sending,
+.msg.user.sending,
+.msg.user.offline {
+  opacity: 0.82;
+}
+
+.msg-attachments.compact {
+  gap: var(--spacing-6);
+}
+
+body.sidebar-resizing,
+body.sidebar-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.session-loading-active {
+  overflow: hidden;
+}
+
+.cmd-item-badge.is-tui-only,
+.cmd-item-badge.runtime-unavailable {
+  opacity: 0.85;
+}

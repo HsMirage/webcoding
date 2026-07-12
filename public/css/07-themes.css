@@ -1,0 +1,42 @@
+/* 07-themes.css — minimal localhost variant */
+html[data-theme="localhost"] {
+  color-scheme: light;
+}
+
+html[data-theme="localhost"] body {
+  background: var(--color-pure-white);
+}
+
+html[data-theme="localhost"] .sidebar-footer-label,
+html[data-theme="localhost"] .chat-agent-context,
+html[data-theme="localhost"] .welcome-stats,
+html[data-theme="localhost"] .welcome-panel {
+  display: none;
+}
+
+html[data-theme="localhost"] .sidebar-top-brand strong {
+  font-weight: var(--font-weight-medium);
+}
+
+html[data-theme="localhost"] .msg-bubble {
+  border-color: transparent;
+}
+
+html[data-theme="localhost"] .msg.user .msg-bubble {
+  background: var(--color-sidebar-mist);
+}
+
+html[data-theme="localhost"] .input-area {
+  background: var(--color-pure-white);
+}
+
+html[data-theme="localhost"] .session-item.active {
+  background: var(--color-hover-veil);
+}
+
+html[data-theme="localhost"] .agent-tab.active,
+html[data-theme="localhost"] .mode-tab.active {
+  background: var(--color-hover-veil);
+  color: var(--color-graphite-ink);
+  font-weight: var(--font-weight-medium);
+}
