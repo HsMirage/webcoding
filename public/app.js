@@ -70,7 +70,7 @@
   const SEND_ON_ENTER_STORAGE_KEY = 'webcoding-send-on-enter';
   const DEFAULT_THEME = 'default';
   const THEME_LABELS = {
-    default: '默认主题',
+    default: '纸面主题',
     localhost: '极简主题',
   };
 
@@ -1444,8 +1444,8 @@
     return `
       <div class="welcome-msg">
         <div class="welcome-header">
-          <div class="welcome-icon">✦</div>
           <h3>${label} 工作区</h3>
+          <p>开始对话，或从侧边栏选择已有会话。</p>
         </div>
         <div class="welcome-stats">
           <div class="welcome-stat">
@@ -7439,7 +7439,7 @@
         <div class="settings-field">
           <label>配色方案</label>
           <select class="settings-select" id="theme-select">
-            <option value="default">默认主题</option>
+            <option value="default">纸面主题</option>
             <option value="localhost">极简主题</option>
           </select>
         </div>

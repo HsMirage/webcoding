@@ -6,20 +6,18 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <title>Webcoding</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="style.css?v=1.6.6">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <link rel="stylesheet" href="style.css?v=1.7.0">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 </head>
 <body>
   <!-- Login -->
   <div id="login-overlay" class="login-overlay" hidden>
     <div class="login-box">
       <div class="login-brand-row">
-        <div class="login-logo">co</div>
+        <div class="login-logo">wc</div>
         <div class="login-brand-copy">
           <strong>Webcoding</strong>
+          <span>远程代理工作台</span>
         </div>
       </div>
       <h2>进入工作台</h2>
@@ -32,7 +30,7 @@
         <label class="remember-label">
           <input type="checkbox" id="remember-pw"> 记住密码
         </label>
-        <button type="submit">进入工作台</button>
+        <button type="submit" class="login-submit-btn">进入工作台</button>
       </form>
       <div id="login-error" class="login-error" hidden>密码错误</div>
     </div>
@@ -40,61 +38,65 @@
 
   <!-- Main App -->
   <div id="app" class="app" hidden>
-    <header class="app-topbar">
-      <div class="app-topbar-brand">
-        <strong>Webcoding</strong>
-      </div>
-      <div class="app-topbar-actions">
-        <div class="agent-tabs" id="topbar-agent-tabs">
-          <button type="button" class="agent-tab active" data-agent="claude">Claude</button>
-          <button type="button" class="agent-tab" data-agent="codex">Codex</button>
-          <button type="button" class="agent-tab" data-agent="pi">Pi</button>
-        </div>
-        <div class="mode-tabs" id="topbar-mode-tabs" title="权限模式（映射真实 CLI 标志，非网页审批）">
-          <button type="button" class="mode-tab active" data-mode="yolo" title="YOLO：跳过审批与沙箱限制（Claude bypassPermissions / Codex dangerously-bypass / Pi --approve）">YOLO</button>
-          <button type="button" class="mode-tab" data-mode="default" title="默认：CLI 默认自动策略（Codex --full-auto / Pi --no-approve；非网页人工审批）">默认</button>
-          <button type="button" class="mode-tab" data-mode="plan" title="Plan：规划/只读向（Claude plan / Codex read-only / Pi 只读工具集；非完整计划确认 UI）">Plan</button>
-        </div>
-        <span id="topbar-chat-cwd" class="topbar-chat-cwd" hidden title=""></span>
-        <span id="topbar-cost-display" class="cost-display" hidden></span>
-        <select id="mobile-agent-select" class="mobile-topbar-select" title="切换 Agent">
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-          <option value="pi">Pi</option>
-        </select>
-        <select id="mobile-mode-select" class="mobile-topbar-select" title="权限模式">
-          <option value="yolo">YOLO</option>
-          <option value="default">默认</option>
-          <option value="plan">Plan</option>
-        </select>
-        <button id="git-panel-btn" class="git-topbar-btn topbar-icon-btn" title="Git 面板" aria-label="Git">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-          <span id="git-badge" class="git-badge" hidden></span>
-        </button>
-        <button id="settings-btn" class="settings-btn topbar-icon-btn" title="设置">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-      </div>
-    </header>
-
     <div class="app-workspace">
       <!-- Sidebar -->
       <aside id="sidebar" class="sidebar">
+        <div class="sidebar-top-strip">
+          <div class="sidebar-top-brand">
+            <strong>Webcoding</strong>
+          </div>
+          <div class="sidebar-top-actions">
+            <span id="topbar-cost-display" class="cost-display sidebar-cost" hidden></span>
+            <button id="git-panel-btn" class="git-topbar-btn topbar-icon-btn" title="Git 面板" aria-label="Git">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+              <span id="git-badge" class="git-badge" hidden></span>
+            </button>
+            <button id="settings-btn" class="settings-btn topbar-icon-btn" title="设置" aria-label="设置">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+          </div>
+        </div>
+
         <div class="sidebar-header">
           <div class="new-chat-split">
-            <button id="new-chat-btn" class="new-chat-btn">新建/打开项目</button>
-            <button id="new-chat-arrow" class="new-chat-arrow" title="更多">▾</button>
+            <button id="new-chat-btn" class="new-chat-btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+              新建会话
+            </button>
+            <button id="new-chat-arrow" class="new-chat-arrow" title="更多" aria-label="更多选项">▾</button>
           </div>
           <div id="new-chat-dropdown" class="new-chat-dropdown" hidden>
             <hr class="dropdown-divider">
             <button id="import-session-btn">导入本地 CLI 会话</button>
           </div>
           <div class="session-search-wrap">
-            <input id="session-search-input" class="session-search-input" type="search" placeholder="搜索会话 / 项目…" autocomplete="off" spellcheck="false">
+            <svg class="session-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input id="session-search-input" class="session-search-input" type="search" placeholder="搜索会话…" autocomplete="off" spellcheck="false">
             <button type="button" id="session-search-clear" class="session-search-clear" hidden title="清除搜索" aria-label="清除搜索">×</button>
           </div>
         </div>
+
         <div id="session-list" class="session-list"></div>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-footer-section">
+            <span class="sidebar-footer-label">Agent</span>
+            <div class="agent-tabs" id="topbar-agent-tabs">
+              <button type="button" class="agent-tab active" data-agent="claude">Claude</button>
+              <button type="button" class="agent-tab" data-agent="codex">Codex</button>
+              <button type="button" class="agent-tab" data-agent="pi">Pi</button>
+            </div>
+          </div>
+          <div class="sidebar-footer-section">
+            <span class="sidebar-footer-label">模式</span>
+            <div class="mode-tabs" id="topbar-mode-tabs" title="权限模式（映射真实 CLI 标志，非网页审批）">
+              <button type="button" class="mode-tab active" data-mode="yolo" title="YOLO：跳过审批与沙箱限制">YOLO</button>
+              <button type="button" class="mode-tab" data-mode="default" title="默认：CLI 默认自动策略">默认</button>
+              <button type="button" class="mode-tab" data-mode="plan" title="Plan：规划/只读向">Plan</button>
+            </div>
+          </div>
+          <span id="topbar-chat-cwd" class="topbar-chat-cwd sidebar-cwd" hidden title=""></span>
+        </div>
       </aside>
 
       <div id="sidebar-resizer" class="sidebar-resizer" aria-hidden="true"></div>
@@ -105,8 +107,8 @@
         <main class="chat-main">
           <div class="chat-stage-shell">
             <header class="chat-header">
-              <button id="menu-btn" class="menu-btn" title="菜单">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+              <button id="menu-btn" class="menu-btn" title="菜单" aria-label="打开侧边栏">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
               </button>
               <div class="chat-header-copy">
                 <span id="chat-title" class="chat-title">新会话</span>
@@ -116,6 +118,16 @@
                 </div>
               </div>
               <div class="chat-toolbar">
+                <select id="mobile-agent-select" class="mobile-topbar-select" title="切换 Agent">
+                  <option value="claude">Claude</option>
+                  <option value="codex">Codex</option>
+                  <option value="pi">Pi</option>
+                </select>
+                <select id="mobile-mode-select" class="mobile-topbar-select" title="权限模式">
+                  <option value="yolo">YOLO</option>
+                  <option value="default">默认</option>
+                  <option value="plan">Plan</option>
+                </select>
                 <span id="chat-runtime-state" class="chat-runtime-state" hidden>运行中</span>
                 <select id="mode-select" class="mode-select" title="权限模式" hidden>
                   <option value="yolo">YOLO</option>
@@ -133,11 +145,8 @@
             <div class="messages-wrap">
               <div id="messages" class="messages">
                 <div class="welcome-msg">
-                  <div class="welcome-icon">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-                  </div>
                   <h3>欢迎使用 Webcoding</h3>
-                  <p>开始与 Claude 对话</p>
+                  <p>开始与 Claude 对话，或从侧边栏选择已有会话。</p>
                 </div>
               </div>
               <button type="button" id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" hidden aria-label="滚动到最新消息">↓ 有新内容</button>
@@ -157,19 +166,19 @@
               <div id="attachment-tray" class="attachment-tray" hidden></div>
               <div class="input-wrapper">
                 <input id="image-upload-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
-                <button id="attach-btn" class="attach-btn" title="上传图片" type="button">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <button id="attach-btn" class="attach-btn" title="上传图片" type="button" aria-label="上传图片">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21.44 11.05l-8.49 8.49a6 6 0 1 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                   </svg>
                 </button>
                 <textarea id="msg-input" rows="1" placeholder="输入消息… 输入 / 查看指令 · ⌘/Ctrl+Enter 发送" autocomplete="off"></textarea>
-                <button id="send-btn" class="send-btn" title="发送（⌘/Ctrl+Enter）">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <button id="send-btn" class="send-btn" title="发送（⌘/Ctrl+Enter）" aria-label="发送">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                   </svg>
                 </button>
-                <button id="abort-btn" class="abort-btn" title="停止生成" hidden>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <button id="abort-btn" class="abort-btn" title="停止生成" hidden aria-label="停止生成">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                     <rect x="6" y="6" width="12" height="12" rx="2"></rect>
                   </svg>
                 </button>
@@ -193,7 +202,7 @@
               <button class="git-panel-tab" data-git-view="log">Log</button>
               <button class="git-panel-tab" data-git-view="commit">提交</button>
             </div>
-            <button class="git-panel-close" id="git-panel-close" title="关闭">✕</button>
+            <button class="git-panel-close" id="git-panel-close" title="关闭" aria-label="关闭">✕</button>
           </div>
           <div class="git-panel-toolbar" id="git-panel-toolbar">
             <button class="git-toolbar-btn primary" data-workspace-action="refresh-git" title="刷新 Git 状态">刷新</button>
@@ -213,7 +222,6 @@
 
   <div id="session-loading-overlay" class="session-loading-overlay" hidden aria-live="polite" aria-hidden="true">
     <div class="session-loading-card" role="status" aria-busy="true">
-      <div class="session-loading-badge">Session</div>
       <div class="session-loading-title">会话加载中</div>
       <div id="session-loading-label" class="session-loading-label">正在整理消息与上下文…</div>
       <div class="session-loading-bar">
@@ -225,6 +233,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="/qrcode.min.js"></script>
-  <script src="app.js?v=1.6.6"></script>
+  <script src="app.js?v=1.7.0"></script>
 </body>
 </html>
