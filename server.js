@@ -9,6 +9,7 @@ const { WebSocketServer } = require('ws');
 const { createAgentRuntime } = require('./lib/agent-runtime');
 const { createCodexRolloutStore } = require('./lib/codex-rollouts');
 const { getStaticHeadlessCapabilities } = require('./lib/runtime-capabilities');
+const { PiRpcClient } = require('./lib/pi-rpc-client');
 
 // Load .env
 const envPath = path.join(__dirname, '.env');
@@ -32,6 +33,18 @@ const requestedWsMaxPayload = Number.parseInt(process.env.CC_WEB_WS_MAX_PAYLOAD 
 const WS_MAX_PAYLOAD_BYTES = Number.isFinite(requestedWsMaxPayload) && requestedWsMaxPayload > 0
   ? Math.min(Math.max(requestedWsMaxPayload, 64 * 1024), 32 * 1024 * 1024)
   : DEFAULT_WS_MAX_PAYLOAD_BYTES;
+const PI_TRANSPORT = String(process.env.CC_WEB_PI_TRANSPORT || 'rpc').trim().toLowerCase() === 'headless'
+  ? 'headless'
+  : 'rpc';
+const requestedPiRpcIdleMinutes = Number.parseInt(process.env.CC_WEB_PI_RPC_IDLE_TIMEOUT_MINUTES || '', 10);
+const PI_RPC_IDLE_TIMEOUT_MINUTES = Number.isFinite(requestedPiRpcIdleMinutes) && requestedPiRpcIdleMinutes > 0
+  ? Math.min(Math.max(requestedPiRpcIdleMinutes, 1), 24 * 60)
+  : 30;
+const PI_RPC_IDLE_TIMEOUT_MS = PI_RPC_IDLE_TIMEOUT_MINUTES * 60 * 1000;
+const requestedMaxPiRpcRuntimes = Number.parseInt(process.env.CC_WEB_PI_RPC_MAX_RUNTIMES || '', 10);
+const MAX_PI_RPC_RUNTIMES = Number.isFinite(requestedMaxPiRpcRuntimes) && requestedMaxPiRpcRuntimes > 0
+  ? Math.min(Math.max(requestedMaxPiRpcRuntimes, 1), 64)
+  : 8;
 
 /**
  * Resolve a CLI binary path robustly.
@@ -1228,6 +1241,7 @@ const pendingCompactRetries = new Map();
 
 // Active processes: sessionId -> { pid, ws, fullText, toolCalls, segments, lastCost, tailer }
 const activeProcesses = new Map();
+const piRpcRuntimes = new Map();
 
 // Track which session each ws is viewing: ws -> sessionId
 const wsSessionMap = new Map();
@@ -2123,6 +2137,20 @@ function getRuntimeCapabilities(agent) {
       ...(getStaticHeadlessCapabilities(normalizedAgent).notes || []),
       'Codex custom/unified 模式依赖 managed runtime 对 skills/prompts/plugins 的 overlay。',
     ];
+  }
+  if (normalizedAgent === 'pi' && PI_TRANSPORT === 'rpc') {
+    Object.assign(extras, {
+      headless: false,
+      protocol: 'pi-rpc',
+      interactiveApproval: false,
+      askUser: true,
+      planConfirmUi: false,
+      respondableInteractiveKinds: ['select', 'confirm', 'input', 'editor'],
+      notes: [
+        'Pi 使用持久 RPC 通道，支持扩展交互、模型发现、命令发现和原生中断。',
+        'Pi 本身没有 Claude/Codex 式权限审批；Plan 模式仍映射为只读工具集。',
+      ],
+    });
   }
   return getStaticHeadlessCapabilities(normalizedAgent, extras);
 }
@@ -4937,7 +4965,9 @@ function compactDoneMessage(agent) {
     return '上下文压缩完成。已执行 Codex /compact，下次继续在同一会话发送即可。';
   }
   if (agent === 'pi') {
-    return '上下文压缩完成。已向 Pi 会话发送 /compact（若 CLI 支持），下次继续在同一会话发送即可。';
+    return PI_TRANSPORT === 'rpc'
+      ? '上下文压缩完成。已通过 Pi RPC 压缩当前会话，下次继续发送即可。'
+      : '上下文压缩完成。已向 Pi 会话发送 /compact（若 CLI 支持），下次继续在同一会话发送即可。';
   }
   return '上下文压缩完成。已按 Claude Code 原生策略执行 /compact，下次继续在同一会话发送即可。';
 }
@@ -5232,6 +5262,7 @@ function handleProcessComplete(sessionId, exitCode, signal) {
 // Global PID monitor: detect process completion (especially after server restart)
 setInterval(() => {
   for (const [sessionId, entry] of activeProcesses) {
+    if (entry.transport === 'pi-rpc') continue;
     if (entry.pendingProcessComplete) continue;
     if (entry.pid && !isProcessRunning(entry.pid)) {
       plog('INFO', 'pid_monitor_detected_exit', {
@@ -5243,6 +5274,15 @@ setInterval(() => {
     }
   }
 }, 2000);
+
+setInterval(() => {
+  const cutoff = Date.now() - PI_RPC_IDLE_TIMEOUT_MS;
+  for (const runtime of piRpcRuntimes.values()) {
+    if (!activeProcesses.has(runtime.sessionId) && runtime.lastUsedAt < cutoff) {
+      disposePiRpcRuntime(runtime.sessionId, 'idle_timeout');
+    }
+  }
+}, 60_000).unref?.();
 
 cleanupExpiredAttachments();
 setInterval(cleanupExpiredAttachments, 6 * 60 * 60 * 1000);
@@ -5620,6 +5660,9 @@ wss.on('connection', (ws, req) => {
       case 'abort':
         handleAbort(ws);
         break;
+      case 'interactive_response':
+        handlePiRpcInteractiveResponse(ws, msg);
+        break;
       case 'new_session':
         handleNewSession(ws, msg);
         break;
@@ -5697,6 +5740,17 @@ wss.on('connection', (ws, req) => {
         if (slashAgent === 'claude') {
           // Claude: spawn CLI to capture init event (real-time discovery)
           discoverClaudeSlashCommands().then(sendSlashList).catch(sendSlashList);
+        } else if (slashAgent === 'pi') {
+          const viewedSession = loadSession(wsSessionMap.get(ws));
+          if (PI_TRANSPORT === 'rpc' && viewedSession && getSessionAgent(viewedSession) === 'pi') {
+            const spawnSpec = buildPiSpawnSpec(viewedSession, { transport: 'rpc' });
+            ensurePiRpcRuntime(viewedSession, spawnSpec)
+              .then((runtime) => refreshPiRpcDiscovery(runtime))
+              .then(sendSlashList)
+              .catch(sendSlashList);
+          } else {
+            sendSlashList();
+          }
         } else {
           // Codex: scan filesystem for skills/plugins (real-time discovery)
           discoverCodexSlashCommands();
@@ -6257,24 +6311,18 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent, clientMessageIdR
     }
     if (agent === 'pi') {
       if (!modelInput) {
-        wsSend(ws, {
-          type: 'model_list',
-          agent: 'pi',
-          entries: [
-            {
-              value: 'default',
-              label: '默认模型（Pi）',
-              desc: '使用 ~/.pi/agent 中配置的默认模型',
-            },
-            {
-              value: 'custom',
-              label: '自定义模型 ID',
-              desc: '例如 deepseek/deepseek-v4-pro、openai/gpt-4o、sonnet:high',
-            },
-          ],
-          current: session?.model || 'default',
-          currentFull: session?.model || '',
-          source: 'pi-cli',
+        getPiModelMenuPayload(session).then((payload) => {
+          wsSend(ws, payload);
+        }).catch((error) => {
+          plog('WARN', 'pi_model_menu_failed', { error: error.message });
+          wsSend(ws, {
+            type: 'model_list',
+            agent: 'pi',
+            entries: piModelMenuEntries([]),
+            current: session?.model || 'default',
+            currentFull: session?.model || '',
+            source: PI_TRANSPORT === 'rpc' ? null : 'pi-headless',
+          });
         });
       } else {
         const normalizedInput = modelInput.toLowerCase();
@@ -6641,6 +6689,7 @@ function handleLoadSession(ws, sessionId) {
       segments: entry.segments || [],
       permissionMode: entry.permissionMode || session?.permissionMode || 'yolo',
     });
+    if (entry.transport === 'pi-rpc') resendPiRpcInteractiveRequests(entry);
   }
 }
 
@@ -6712,11 +6761,13 @@ function handleDeleteSession(ws, sessionId) {
   pendingCompactRetries.delete(sessionId);
   if (activeProcesses.has(sessionId)) {
     const entry = activeProcesses.get(sessionId);
-    try { killProcess(entry.pid); } catch {}
     if (entry.tailer) entry.tailer.stop();
     removeActiveProcess(sessionId);
+    if (entry.transport === 'pi-rpc') disposePiRpcRuntime(sessionId, 'session_deleted');
+    else try { killProcess(entry.pid); } catch {}
     if (entry.ws) wsSend(entry.ws, { type: 'done', sessionId });
   }
+  disposePiRpcRuntime(sessionId, 'session_deleted');
   cleanRunDir(sessionId);
   try {
     const p = sessionPath(sessionId);
@@ -6847,6 +6898,25 @@ function handleAbort(ws) {
     sessionId,
     message: '正在停止当前任务…',
   });
+  if (entry.transport === 'pi-rpc') {
+    const runtime = entry.rpcRuntime || piRpcRuntimes.get(sessionId);
+    if (!runtime?.client?.isAlive) return;
+    runtime.client.request({ type: 'abort' }, { timeoutMs: 10_000 }).then(async () => {
+      if (activeProcesses.get(sessionId) !== entry) return;
+      try {
+        const state = await runtime.client.request({ type: 'get_state' }, { timeoutMs: 5000 });
+        persistPiRpcState(runtime, state.data);
+        if (!state.data?.isStreaming && activeProcesses.get(sessionId) === entry) {
+          handleProcessComplete(sessionId, 0, null);
+        }
+      } catch {}
+    }).catch(() => {
+      if (activeProcesses.get(sessionId) === entry) {
+        disposePiRpcRuntime(sessionId, 'abort_failed');
+      }
+    });
+    return;
+  }
   killProcess(entry.pid);
   setTimeout(() => {
     const activeEntry = activeProcesses.get(sessionId);
@@ -6856,6 +6926,439 @@ function handleAbort(ws) {
     }
   }, 3000);
   // handleProcessComplete will be triggered by the PID monitor / process close
+}
+
+function createRuntimeEntry(session, ws, spawnSpec, resolvedAttachments, pid, transport = 'headless') {
+  const entryAgent = getSessionAgent(session);
+  const sharedRuntimeIdOpts = {
+    agent: entryAgent,
+    channelKey: spawnSpec.channelKey || null,
+    channelDescriptor: spawnSpec.channelDescriptor || null,
+  };
+  const existingRuntimeId = getRuntimeSessionId(session, sharedRuntimeIdOpts) || null;
+  return {
+    pid: pid || null,
+    ws,
+    agent: entryAgent,
+    transport,
+    cwd: spawnSpec.cwd,
+    // Snapshot mode for this turn — session.permissionMode may change mid-run for next turn.
+    permissionMode: spawnSpec.mode || session.permissionMode || 'yolo',
+    // Concrete model used for this turn (for message avatar label).
+    effectiveModel: spawnSpec.effectiveModel || resolveEffectiveModelId(session) || null,
+    resolvedModel: null,
+    abortRequested: false,
+    claudeRuntimeFingerprint: entryAgent === 'claude' ? (spawnSpec.runtimeFingerprint || null) : null,
+    codexRuntimeFingerprint: entryAgent === 'codex' ? (spawnSpec.runtimeFingerprint || null) : null,
+    piRuntimeFingerprint: entryAgent === 'pi' ? (spawnSpec.runtimeFingerprint || null) : null,
+    runtimeChannelKey: spawnSpec.channelKey || null,
+    runtimeChannelDescriptor: spawnSpec.channelDescriptor || null,
+    claudeRuntimeSessionId: entryAgent === 'claude' ? existingRuntimeId : null,
+    persistedClaudeSessionId: entryAgent === 'claude' ? existingRuntimeId : null,
+    piRuntimeSessionId: entryAgent === 'pi' ? existingRuntimeId : null,
+    persistedPiSessionId: entryAgent === 'pi' ? existingRuntimeId : null,
+    claudePendingCostDelta: 0,
+    claudeSessionTotalCost: session.totalCost || 0,
+    piPendingCostDelta: 0,
+    piSessionTotalCost: session.totalCost || 0,
+    fullText: '',
+    attachments: resolvedAttachments,
+    toolCalls: [],
+    segments: [],
+    lastCost: null,
+    lastUsage: null,
+    lastError: null,
+    errorSent: false,
+    pendingProcessComplete: false,
+    pendingExitCode: null,
+    pendingSignal: null,
+    tailer: null,
+  };
+}
+
+function piRpcRuntimeKey(spawnSpec) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    command: spawnSpec.command,
+    args: spawnSpec.args,
+    cwd: spawnSpec.cwd,
+    runtimeFingerprint: spawnSpec.runtimeFingerprint || null,
+  })).digest('hex');
+}
+
+function disposePiRpcRuntime(sessionId, reason = 'dispose') {
+  const runtime = piRpcRuntimes.get(sessionId);
+  if (!runtime) return false;
+  piRpcRuntimes.delete(sessionId);
+  runtime.disposeReason = reason;
+  runtime.client?.dispose();
+  plog('INFO', 'pi_rpc_dispose', {
+    sessionId: sessionId.slice(0, 8),
+    pid: runtime.client?.pid || null,
+    reason,
+  });
+  return true;
+}
+
+function evictIdlePiRpcRuntime() {
+  if (piRpcRuntimes.size < MAX_PI_RPC_RUNTIMES) return true;
+  const candidate = [...piRpcRuntimes.values()]
+    .filter((runtime) => !activeProcesses.has(runtime.sessionId))
+    .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
+  if (!candidate) return false;
+  disposePiRpcRuntime(candidate.sessionId, 'capacity');
+  return true;
+}
+
+function persistPiRpcState(runtime, state) {
+  if (!runtime || !state) return;
+  runtime.state = state;
+  runtime.lastUsedAt = Date.now();
+  const session = loadSession(runtime.sessionId);
+  if (!session || !state.sessionId) return;
+  setRuntimeSessionState(session, {
+    runtimeId: state.sessionId,
+    runtimeFingerprint: runtime.spawnSpec.runtimeFingerprint || null,
+    channelDescriptor: runtime.spawnSpec.channelDescriptor || null,
+  }, {
+    agent: 'pi',
+    channelKey: runtime.spawnSpec.channelKey || null,
+    channelDescriptor: runtime.spawnSpec.channelDescriptor || null,
+  });
+  saveSession(session);
+}
+
+function piModelMenuEntries(models) {
+  const entries = [{
+    value: 'default',
+    label: '默认模型（Pi）',
+    desc: '使用当前 Pi 配置中的默认模型',
+  }];
+  for (const model of Array.isArray(models) ? models : []) {
+    const provider = String(model?.provider || '').trim();
+    const id = String(model?.id || '').trim();
+    if (!id) continue;
+    const value = provider ? `${provider}/${id}` : id;
+    const details = [];
+    if (Number.isFinite(model?.contextWindow)) details.push(`${Math.round(model.contextWindow / 1000)}K 上下文`);
+    if (model?.reasoning) details.push('支持 thinking');
+    if (Array.isArray(model?.input) && model.input.includes('image')) details.push('支持图片');
+    entries.push({
+      value,
+      label: String(model?.name || id),
+      desc: details.join(' · ') || value,
+    });
+  }
+  return entries;
+}
+
+async function refreshPiRpcDiscovery(runtime) {
+  if (!runtime?.client?.isAlive) return;
+  const [modelsResult, commandsResult] = await Promise.allSettled([
+    runtime.client.request({ type: 'get_available_models' }, { timeoutMs: 30_000 }),
+    runtime.client.request({ type: 'get_commands' }, { timeoutMs: 15_000 }),
+  ]);
+  if (modelsResult.status === 'fulfilled') {
+    runtime.models = modelsResult.value.data?.models || [];
+  }
+  if (commandsResult.status === 'fulfilled') {
+    runtime.commands = commandsResult.value.data?.commands || [];
+    onSlashCommandsDiscovered('pi', runtime.commands.map((command) => ({
+      name: command.name,
+      desc: command.description || command.name,
+      source: `pi-${command.source || 'cli'}`,
+    })));
+  }
+}
+
+function handlePiRpcExit(runtime, info) {
+  if (!runtime) return;
+  if (piRpcRuntimes.get(runtime.sessionId) === runtime) {
+    piRpcRuntimes.delete(runtime.sessionId);
+  }
+  plog(info.expected ? 'INFO' : 'WARN', 'pi_rpc_exit', {
+    sessionId: runtime.sessionId.slice(0, 8),
+    pid: runtime.client?.pid || null,
+    exitCode: info.code,
+    signal: info.signal,
+    expected: info.expected,
+    error: info.expected ? null : info.error?.message || null,
+  });
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'pi-rpc' || entry.rpcRuntime !== runtime) return;
+  if (!info.expected) entry.lastError = info.error?.message || 'Pi RPC 进程意外退出';
+  handleProcessComplete(runtime.sessionId, info.expected ? 0 : (info.code ?? 1), info.signal || null);
+}
+
+function sendPiRpcInteractiveRequest(runtime, event) {
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'pi-rpc') return;
+  const method = String(event.method || 'interactive');
+  const dialogMethods = new Set(['select', 'confirm', 'input', 'editor']);
+  if (!dialogMethods.has(method)) {
+    if (method === 'notify' && entry.ws) {
+      wsSend(entry.ws, {
+        type: event.notifyType === 'error' ? 'error' : 'system_message',
+        sessionId: runtime.sessionId,
+        message: String(event.message || ''),
+      });
+    }
+    return;
+  }
+  runtime.pendingUi.set(event.id, event);
+  if (!entry.ws) return;
+  wsSend(entry.ws, {
+    type: 'interactive_request',
+    sessionId: runtime.sessionId,
+    agent: 'pi',
+    protocol: 'pi-rpc',
+    requestId: event.id,
+    interactiveKind: method,
+    respondable: true,
+    title: event.title || 'Pi 需要输入',
+    message: event.message || event.placeholder || event.prefill || '',
+    options: Array.isArray(event.options) ? event.options : [],
+    placeholder: event.placeholder || '',
+    prefill: event.prefill || '',
+    timeout: event.timeout || null,
+  });
+}
+
+function resendPiRpcInteractiveRequests(entry) {
+  const runtime = entry?.rpcRuntime;
+  if (!runtime || !entry.ws) return;
+  for (const event of runtime.pendingUi.values()) {
+    sendPiRpcInteractiveRequest(runtime, event);
+  }
+}
+
+function handlePiRpcEvent(runtime, event) {
+  if (!runtime || !event) return;
+  runtime.lastUsedAt = Date.now();
+  if (event.type === 'extension_ui_request') {
+    sendPiRpcInteractiveRequest(runtime, event);
+    return;
+  }
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'pi-rpc' || entry.rpcRuntime !== runtime) return;
+  if (event.type === 'agent_start') entry.rpcAgentStarted = true;
+  processRuntimeEvent(entry, event, runtime.sessionId);
+  if (event.type === 'agent_end' && !entry.rpcCompleted) {
+    entry.rpcCompleted = true;
+    runtime.pendingUi.clear();
+    handleProcessComplete(runtime.sessionId, 0, null);
+  }
+}
+
+async function ensurePiRpcRuntime(session, spawnSpec) {
+  const sessionId = session.id;
+  const key = piRpcRuntimeKey(spawnSpec);
+  const existing = piRpcRuntimes.get(sessionId);
+  if (existing && existing.key === key) {
+    await existing.startPromise;
+    if (existing.client?.isAlive) {
+      existing.lastUsedAt = Date.now();
+      return existing;
+    }
+  }
+  if (existing) disposePiRpcRuntime(sessionId, 'configuration_changed');
+  if (!evictIdlePiRpcRuntime()) {
+    throw new Error(`Pi RPC 同时运行的会话已达到上限（${MAX_PI_RPC_RUNTIMES}）`);
+  }
+
+  const runtime = {
+    sessionId,
+    key,
+    spawnSpec,
+    client: null,
+    state: null,
+    models: [],
+    commands: [],
+    pendingUi: new Map(),
+    lastUsedAt: Date.now(),
+    startPromise: null,
+    disposeReason: null,
+  };
+  piRpcRuntimes.set(sessionId, runtime);
+  const client = new PiRpcClient({
+    command: spawnSpec.command,
+    args: spawnSpec.args,
+    env: spawnSpec.env,
+    cwd: spawnSpec.cwd,
+    useShell: spawnSpec.useShell,
+    onEvent: (event) => handlePiRpcEvent(runtime, event),
+    onProtocolError: (error) => {
+      plog('WARN', 'pi_rpc_protocol_error', {
+        sessionId: sessionId.slice(0, 8),
+        error: error.message,
+      });
+    },
+    onExit: (info) => handlePiRpcExit(runtime, info),
+  });
+  // Register before the handshake so delete/reconfigure can release a starting process.
+  runtime.client = client;
+  runtime.startPromise = client.start().then(() => {
+    if (piRpcRuntimes.get(sessionId) !== runtime || runtime.disposeReason) {
+      client.dispose();
+      throw new Error(`Pi RPC runtime was disposed during startup (${runtime.disposeReason || 'replaced'})`);
+    }
+    persistPiRpcState(runtime, client.state);
+    plog('INFO', 'pi_rpc_ready', {
+      sessionId: sessionId.slice(0, 8),
+      pid: client.pid,
+      runtimeId: client.state?.sessionId || null,
+      model: client.state?.model?.id || null,
+    });
+    refreshPiRpcDiscovery(runtime).catch((error) => {
+      plog('WARN', 'pi_rpc_discovery_failed', { sessionId: sessionId.slice(0, 8), error: error.message });
+    });
+    return runtime;
+  }).catch((error) => {
+    if (piRpcRuntimes.get(sessionId) === runtime) piRpcRuntimes.delete(sessionId);
+    throw error;
+  });
+  return runtime.startPromise;
+}
+
+function piRpcPromptImages(attachments) {
+  const images = [];
+  for (const attachment of Array.isArray(attachments) ? attachments : []) {
+    try {
+      images.push({
+        type: 'image',
+        data: fs.readFileSync(attachment.path).toString('base64'),
+        mimeType: attachment.mime,
+      });
+    } catch {}
+  }
+  return images;
+}
+
+async function startPiRpcTurn(ws, session, spawnSpec, resolvedAttachments, inputText) {
+  const sessionId = session.id;
+  const entry = createRuntimeEntry(session, ws, spawnSpec, resolvedAttachments, null, 'pi-rpc');
+  entry.rpcAgentStarted = false;
+  entry.rpcCompleted = false;
+  setActiveProcess(sessionId, entry);
+  sendSessionList(ws);
+  try {
+    const runtime = await ensurePiRpcRuntime(session, spawnSpec);
+    if (activeProcesses.get(sessionId) !== entry) return;
+    entry.pid = runtime.client.pid;
+    entry.rpcRuntime = runtime;
+    entry.resolvedModel = runtime.state?.model?.id || entry.resolvedModel;
+    if (entry.abortRequested) {
+      await runtime.client.request({ type: 'abort' }, { timeoutMs: 10_000 });
+      if (activeProcesses.get(sessionId) === entry) handleProcessComplete(sessionId, 0, null);
+      return;
+    }
+
+    plog('INFO', 'process_spawn', {
+      sessionId: sessionId.slice(0, 8),
+      pid: runtime.client.pid,
+      agent: 'pi',
+      transport: 'rpc',
+      mode: spawnSpec.mode,
+      model: session.model || runtime.state?.model?.id || 'default',
+      resume: spawnSpec.resume,
+      args: spawnSpec.args.join(' '),
+    });
+
+    const pendingSlash = pendingSlashCommands.get(sessionId) || null;
+    if (pendingSlash?.kind === 'compact') {
+      await runtime.client.request({ type: 'compact' }, { timeoutMs: 5 * 60_000 });
+      if (activeProcesses.get(sessionId) === entry) handleProcessComplete(sessionId, 0, null);
+      return;
+    }
+
+    const images = piRpcPromptImages(resolvedAttachments);
+    await runtime.client.request({
+      type: 'prompt',
+      message: String(inputText || ''),
+      ...(images.length > 0 ? { images } : {}),
+    }, { timeoutMs: 60_000 });
+
+    if (activeProcesses.get(sessionId) !== entry || entry.rpcAgentStarted) return;
+    const stateResponse = await runtime.client.request({ type: 'get_state' }, { timeoutMs: 15_000 });
+    persistPiRpcState(runtime, stateResponse.data);
+    if (!stateResponse.data?.isStreaming && activeProcesses.get(sessionId) === entry) {
+      entry.rpcCompleted = true;
+      handleProcessComplete(sessionId, 0, null);
+    }
+  } catch (error) {
+    if (activeProcesses.get(sessionId) !== entry) return;
+    entry.lastError = error.message || String(error);
+    handleProcessComplete(sessionId, 1, null);
+  }
+}
+
+async function getPiModelMenuPayload(session) {
+  if (PI_TRANSPORT !== 'rpc' || !session) {
+    throw new Error('Pi RPC model discovery is unavailable');
+  }
+  const spawnSpec = buildPiSpawnSpec(session, { transport: 'rpc' });
+  if (spawnSpec?.error) throw new Error(spawnSpec.error);
+  const runtime = await ensurePiRpcRuntime(session, spawnSpec);
+  if (!runtime.models.length) await refreshPiRpcDiscovery(runtime);
+  const state = runtime.state || {};
+  const stateModel = state.model?.provider && state.model?.id
+    ? `${state.model.provider}/${state.model.id}`
+    : state.model?.id || '';
+  return {
+    type: 'model_list',
+    agent: 'pi',
+    entries: piModelMenuEntries(runtime.models),
+    current: session.model || stateModel || 'default',
+    currentFull: session.model || stateModel || '',
+    source: 'pi-rpc',
+    thinkingLevel: state.thinkingLevel || null,
+  };
+}
+
+function handlePiRpcInteractiveResponse(ws, msg) {
+  const sessionId = sanitizeId(msg?.sessionId || '');
+  const requestId = String(msg?.requestId || '').trim();
+  const rejectResponse = (message, retryable = false) => {
+    wsSend(ws, {
+      type: 'interactive_response_result',
+      sessionId,
+      requestId,
+      success: false,
+      retryable,
+      error: message,
+    });
+    wsSend(ws, { type: 'error', sessionId, message });
+  };
+  if (!sessionId || wsSessionMap.get(ws) !== sessionId) {
+    return rejectResponse('当前页面不属于该 Pi 交互请求。');
+  }
+  const runtime = piRpcRuntimes.get(sessionId);
+  const request = runtime?.pendingUi.get(requestId);
+  if (!runtime?.client?.isAlive || !request) {
+    return rejectResponse('该 Pi 交互请求已失效。');
+  }
+  const response = { id: requestId };
+  if (msg.cancelled === true) {
+    response.cancelled = true;
+  } else if (request.method === 'confirm') {
+    response.confirmed = msg.confirmed === true;
+  } else {
+    response.value = String(msg.value ?? '');
+  }
+  runtime.pendingUi.delete(requestId);
+  runtime.client.sendExtensionResponse(response).then(() => {
+    wsSend(ws, { type: 'interactive_response_result', sessionId, requestId, success: true });
+  }).catch((error) => {
+    runtime.pendingUi.set(requestId, request);
+    wsSend(ws, {
+      type: 'interactive_response_result',
+      sessionId,
+      requestId,
+      success: false,
+      retryable: true,
+      error: error.message,
+    });
+    wsSend(ws, { type: 'error', sessionId, message: `Pi 交互响应失败：${error.message}` });
+  });
 }
 
 // === Runtime Message Handler ===
@@ -7038,7 +7541,10 @@ function handleMessage(ws, msg, options = {}) {
         review: codexReviewMatch ? { instructions: codexReviewMatch[1] || '' } : null,
       })
     : sessionAgent === 'pi'
-      ? buildPiSpawnSpec(session, { attachments: resolvedAttachments })
+      ? buildPiSpawnSpec(session, {
+          attachments: resolvedAttachments,
+          transport: PI_TRANSPORT,
+        })
       : buildClaudeSpawnSpec(session, { attachments: resolvedAttachments });
   if (spawnSpec?.error) {
     // New-chat session_info may have advertised isRunning=true; clear client state.
@@ -7060,6 +7566,11 @@ function handleMessage(ws, msg, options = {}) {
   }
   const runtimeInputText = threadCarryover?.prompt
     || (Object.prototype.hasOwnProperty.call(spawnSpec, 'inputText') ? spawnSpec.inputText : textValue);
+
+  if (sessionAgent === 'pi' && spawnSpec.transport === 'rpc') {
+    startPiRpcTurn(ws, session, spawnSpec, resolvedAttachments, runtimeInputText);
+    return;
+  }
 
   // === Detached process with file-based I/O ===
   const dir = runDir(currentSessionId);
@@ -7190,50 +7701,7 @@ function handleMessage(ws, msg, options = {}) {
     setTimeout(() => handleProcessComplete(currentSessionId, code, signal), 300);
   });
 
-  const entryAgent = getSessionAgent(session);
-  const sharedRuntimeIdOpts = {
-    agent: entryAgent,
-    channelKey: spawnSpec.channelKey || null,
-    channelDescriptor: spawnSpec.channelDescriptor || null,
-  };
-  const existingRuntimeId = getRuntimeSessionId(session, sharedRuntimeIdOpts) || null;
-  entry = {
-    pid: proc.pid,
-    ws,
-    agent: entryAgent,
-    cwd: spawnSpec.cwd,
-    // Snapshot mode for this turn — session.permissionMode may change mid-run for next turn.
-    permissionMode: spawnSpec.mode || session.permissionMode || 'yolo',
-    // Concrete model used for this turn (for message avatar label).
-    effectiveModel: spawnSpec.effectiveModel || resolveEffectiveModelId(session) || null,
-    resolvedModel: null,
-    abortRequested: false,
-    claudeRuntimeFingerprint: entryAgent === 'claude' ? (spawnSpec.runtimeFingerprint || null) : null,
-    codexRuntimeFingerprint: entryAgent === 'codex' ? (spawnSpec.runtimeFingerprint || null) : null,
-    piRuntimeFingerprint: entryAgent === 'pi' ? (spawnSpec.runtimeFingerprint || null) : null,
-    runtimeChannelKey: spawnSpec.channelKey || null,
-    runtimeChannelDescriptor: spawnSpec.channelDescriptor || null,
-    claudeRuntimeSessionId: entryAgent === 'claude' ? existingRuntimeId : null,
-    persistedClaudeSessionId: entryAgent === 'claude' ? existingRuntimeId : null,
-    piRuntimeSessionId: entryAgent === 'pi' ? existingRuntimeId : null,
-    persistedPiSessionId: entryAgent === 'pi' ? existingRuntimeId : null,
-    claudePendingCostDelta: 0,
-    claudeSessionTotalCost: session.totalCost || 0,
-    piPendingCostDelta: 0,
-    piSessionTotalCost: session.totalCost || 0,
-    fullText: '',
-    attachments: resolvedAttachments,
-    toolCalls: [],
-    segments: [],
-    lastCost: null,
-    lastUsage: null,
-    lastError: null,
-    errorSent: false,
-    pendingProcessComplete: false,
-    pendingExitCode: null,
-    pendingSignal: null,
-    tailer: null,
-  };
+  entry = createRuntimeEntry(session, ws, spawnSpec, resolvedAttachments, proc.pid);
   setActiveProcess(currentSessionId, entry);
   sendSessionList(ws);
 
@@ -8383,7 +8851,14 @@ try {
   }
 } catch {}
 
-plog('INFO', 'server_start', { port: PORT, host: HOST, wsMaxPayloadBytes: WS_MAX_PAYLOAD_BYTES });
+plog('INFO', 'server_start', {
+  port: PORT,
+  host: HOST,
+  wsMaxPayloadBytes: WS_MAX_PAYLOAD_BYTES,
+  piTransport: PI_TRANSPORT,
+  piRpcIdleTimeoutMinutes: PI_RPC_IDLE_TIMEOUT_MINUTES,
+  maxPiRpcRuntimes: MAX_PI_RPC_RUNTIMES,
+});
 
 server.listen(PORT, HOST, () => {
   console.log(`webcoding server listening on ${HOST}:${PORT}`);

@@ -3917,6 +3917,7 @@
       appendSystemMessage(msg.message);
     },
     interactive_request: handleInteractiveRequestMessage,
+    interactive_response_result: handleInteractiveResponseResultMessage,
     goal_update: handleGoalUpdateMessage,
     mode_changed: handleModeChangedMessage,
     model_changed: handleModelChangedMessage,
@@ -5288,35 +5289,145 @@
 
   function handleInteractiveRequestMessage(msg) {
     if (!isEventForCurrentSession(msg)) return;
-    // Structured card for headless-unsupported interactive protocols.
     const host = document.createElement('div');
     host.className = 'msg system interactive-request-msg';
+    if (msg.requestId) host.dataset.requestId = msg.requestId;
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble interactive-request-card';
     const kind = msg.interactiveKind || 'interactive';
+    const respondable = msg.respondable === true && msg.requestId;
     const title = document.createElement('div');
     title.className = 'interactive-request-title';
-    title.textContent = `需要交互（${kind}）· 网页暂无法回应`;
+    title.textContent = respondable
+      ? (msg.title || `Pi 需要交互（${kind}）`)
+      : `需要交互（${kind}）· 网页暂无法回应`;
     const body = document.createElement('div');
     body.className = 'interactive-request-body';
-    body.textContent = msg.message || msg.summary || 'CLI 发出了交互请求，headless 模式无法双向回应。';
+    body.textContent = msg.message || msg.summary || (respondable
+      ? '请选择或输入回复。'
+      : 'CLI 发出了交互请求，headless 模式无法双向回应。');
     const actions = document.createElement('div');
     actions.className = 'interactive-request-actions';
-    const stopBtn = document.createElement('button');
-    stopBtn.type = 'button';
-    stopBtn.className = 'interactive-request-stop';
-    stopBtn.textContent = '停止本轮';
-    stopBtn.addEventListener('click', () => {
-      if (typeof abortBtn?.click === 'function') abortBtn.click();
-    });
-    actions.appendChild(stopBtn);
+
+    let resolved = false;
+    let submitting = false;
+    let submittedLabel = '';
+    let status = null;
+    const setStatus = (text, state = '') => {
+      if (!status) {
+        status = document.createElement('div');
+        status.className = 'interactive-request-status';
+        bubble.appendChild(status);
+      }
+      status.className = `interactive-request-status${state ? ` ${state}` : ''}`;
+      status.textContent = text;
+    };
+    host._settleInteractiveResponse = (success, error = '', retryable = true) => {
+      if (resolved) return;
+      submitting = false;
+      if (success) {
+        resolved = true;
+        bubble.classList.add('is-resolved');
+        setStatus(submittedLabel || '已发送', 'success');
+        return;
+      }
+      if (!retryable) {
+        resolved = true;
+        bubble.classList.add('is-resolved');
+        setStatus(error || '请求已失效', 'error');
+        return;
+      }
+      bubble.querySelectorAll('button, input, textarea').forEach((control) => { control.disabled = false; });
+      setStatus(error || '发送失败，请重试', 'error');
+    };
+    const finish = (payload, label) => {
+      if (resolved || submitting) return;
+      const sent = send({
+        type: 'interactive_response',
+        sessionId: msg.sessionId || sessionState.currentSessionId,
+        requestId: msg.requestId,
+        ...payload,
+      });
+      if (!sent) return;
+      submitting = true;
+      submittedLabel = label;
+      bubble.querySelectorAll('button, input, textarea').forEach((control) => { control.disabled = true; });
+      setStatus(`${label}，正在发送…`);
+    };
+
+    const addAction = (label, className, onClick) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.textContent = label;
+      button.addEventListener('click', onClick);
+      actions.appendChild(button);
+      return button;
+    };
+
     bubble.appendChild(title);
     bubble.appendChild(body);
+
+    if (respondable && kind === 'select') {
+      actions.classList.add('interactive-request-options');
+      for (const option of Array.isArray(msg.options) ? msg.options : []) {
+        const value = typeof option === 'string' ? option : String(option?.value ?? option?.label ?? '');
+        if (!value) continue;
+        addAction(value, 'interactive-request-action', () => finish({ value }, `已选择：${value}`));
+      }
+      addAction('取消', 'interactive-request-action secondary', () => finish({ cancelled: true }, '已取消'));
+    } else if (respondable && kind === 'confirm') {
+      addAction('确认', 'interactive-request-action primary', () => finish({ confirmed: true }, '已确认'));
+      addAction('拒绝', 'interactive-request-action secondary', () => finish({ confirmed: false }, '已拒绝'));
+    } else if (respondable && (kind === 'input' || kind === 'editor')) {
+      const input = document.createElement(kind === 'editor' ? 'textarea' : 'input');
+      input.className = 'interactive-request-input';
+      if (kind === 'input') input.type = 'text';
+      if (kind === 'editor') input.rows = 5;
+      input.placeholder = msg.placeholder || '';
+      input.value = msg.prefill || '';
+      bubble.appendChild(input);
+      addAction('提交', 'interactive-request-action primary', () => finish({ value: input.value }, '已提交'));
+      addAction('取消', 'interactive-request-action secondary', () => finish({ cancelled: true }, '已取消'));
+      input.addEventListener('keydown', (event) => {
+        if (kind === 'input' && event.key === 'Enter' && !event.isComposing) {
+          event.preventDefault();
+          finish({ value: input.value }, '已提交');
+        }
+      });
+      requestAnimationFrame(() => input.focus());
+    }
+
+    if (!respondable) {
+      addAction('停止本轮', 'interactive-request-stop', () => {
+        if (typeof abortBtn?.click === 'function') abortBtn.click();
+      });
+    }
+
+    if (respondable && Number(msg.timeout) > 0) {
+      setTimeout(() => {
+        if (resolved || !host.isConnected) return;
+        resolved = true;
+        submitting = false;
+        bubble.classList.add('is-resolved');
+        bubble.querySelectorAll('button, input, textarea').forEach((control) => { control.disabled = true; });
+        setStatus('请求已超时', 'error');
+      }, Number(msg.timeout));
+    }
+
     bubble.appendChild(actions);
     host.appendChild(bubble);
     messagesDiv.appendChild(host);
     setCurrentSessionRunningState(true, { phase: 'waiting' });
     forceScrollToBottom();
+  }
+
+  function handleInteractiveResponseResultMessage(msg) {
+    if (!isEventForCurrentSession(msg) || !msg.requestId) return;
+    const card = Array.from(messagesDiv.querySelectorAll('.interactive-request-msg'))
+      .find((item) => item.dataset.requestId === String(msg.requestId));
+    if (!card || typeof card._settleInteractiveResponse !== 'function') return;
+    card._settleInteractiveResponse(msg.success === true, msg.error || '', msg.retryable !== false);
   }
 
   function handleGoalUpdateMessage(msg) {

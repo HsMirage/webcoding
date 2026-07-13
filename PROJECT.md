@@ -2,13 +2,13 @@
 
 ## 项目概述
 
-Webcoding 是一个用 Node.js 实现的轻量级浏览器工作台，用来远程控制本机 `Claude Code` / `Codex` / `Pi` CLI。后端通过 detached 子进程加文件 I/O 维持任务运行，前端通过 WebSocket 实时收发消息、工具调用状态、运行态摘要和会话列表。
+Webcoding 是一个用 Node.js 实现的轻量级浏览器工作台，用来远程控制本机 `Claude Code` / `Codex` / `Pi` CLI。Claude/Codex 通过 detached 子进程和文件 I/O 运行，Pi 默认通过持久 JSONL RPC 运行；前端通过 WebSocket 收发消息、交互请求、工具状态和会话列表。
 
 **创建日期**：2026-03-19
 **最后更新**：2026-07-13
 **当前版本**：v1.6.0
-**当前状态**：进行中（三 Agent、统一 API bridge、线程续接补偿、运行态可视化、隔离回归已接通）
-**当前规模**：`server.js` 8415 行，`public/app.js` 9466 行，`public/style.css` 6877 行，`scripts/regression.js` 4010 行
+**当前状态**：进行中（三 Agent、Pi 双向 RPC、统一 API bridge、线程续接补偿、隔离回归已接通）
+**当前规模**：`server.js` 8890 行，`public/app.js` 9577 行，`public/style.css` 6930 行，`scripts/regression.js` 4355 行
 
 ---
 
@@ -30,6 +30,7 @@ webcoding/
 ├── server.js                      # 后端主入口（HTTP / WebSocket / 进程管理 / 配置 / 存储）
 ├── lib/
 │   ├── agent-runtime.js           # Claude / Codex 启动参数与事件解析适配层
+│   ├── pi-rpc-client.js           # Pi RPC JSONL 帧、请求关联与子进程生命周期
 │   ├── codex-rollouts.js          # Codex rollout 历史导入解析
 │   └── local-api-bridge.js        # 本地统一 API bridge 服务
 ├── public/
@@ -41,7 +42,8 @@ webcoding/
 ├── scripts/
 │   ├── regression.js              # 端到端回归脚本
 │   ├── mock-claude.js             # Claude mock CLI
-│   └── mock-codex.js              # Codex mock CLI
+│   ├── mock-codex.js              # Codex mock CLI
+│   └── mock-pi.js                 # Pi JSON / RPC mock CLI
 ├── Project/                       # 工作区级规则、模板与说明文档
 ├── config/                        # 运行期配置目录与 Codex runtime home
 ├── sessions/                      # 会话、run 目录、附件

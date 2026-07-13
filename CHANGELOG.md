@@ -2,6 +2,15 @@
 
 ## 未发布
 
+### Pi 双向 RPC
+
+- Pi 默认切换为持久 `--mode rpc` 通道，同一 Web 会话跨轮复用进程和原生 session
+- 支持 Pi 扩展的 `select`、`confirm`、`input`、`editor` 请求在网页中真实回答
+- 支持 RPC 原生中断、动态模型列表、thinking 状态和扩展/skill/prompt 命令发现
+- RPC 断线后可重新挂载正在生成的页面状态，并重发尚未回答的交互请求
+- `CC_WEB_PI_TRANSPORT=headless` 保留原 `pi -p --mode json` 兼容路径
+- 空闲释放时间与最大运行时数量可配置，达到上限时不会误杀正在生成的会话
+
 ### 安全与兼容性
 
 - `ws` 升级至 `8.21.0`，并为 WebSocket 增加可配置的单消息大小限制
@@ -10,6 +19,7 @@
 - Claude 历史和设置尊重 `CLAUDE_CONFIG_DIR`，Codex 历史、状态和模型缓存尊重 `CODEX_HOME`
 - 本地历史导入和删除使用目录边界校验，避免相似路径前缀被误判为合法路径
 - Codex `/review` 映射为原生 `codex exec review --uncommitted`，命令后的文字作为审查要求传入
+- 回归结束会清理测试环境创建的本地 API bridge，避免反复测试后残留后台进程
 
 ## v1.6.0
 

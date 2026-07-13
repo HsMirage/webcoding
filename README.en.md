@@ -19,6 +19,7 @@ Webcoding is a lightweight browser workspace for Claude Code, Codex, and Pi, des
 - **Multi-agent sessions**: create Claude, Codex, or Pi sessions on the same backend core.
 - **Agent-isolated views**: switching Claude / Codex / Pi only shows that agent's sessions, recent state, settings, and import entry points.
 - **Agent-specific settings**: Claude keeps template-based model config; Codex has its own path, default model, mode, and search settings.
+- **Bidirectional Pi RPC**: persistent Pi sessions with real extension dialogs, native abort, model discovery, and command discovery.
 - **Multi-session management**: create, switch, rename, and delete sessions; deleting a session also removes the local Claude history record.
 - **Local history import**: import Claude history from its configuration directory and Codex rollout history from `CODEX_HOME/sessions/`.
 - **Session resume**: context continuity via `--resume`; you can also reattach via SSH + `tmux attach -t claude` when needed.
@@ -96,6 +97,9 @@ After startup, open `http://localhost:8001` and sign in with your password.
 | `CLAUDE_PATH` | No | `claude` | Executable path to Claude CLI |
 | `CODEX_PATH` | No | `codex` | Executable path to Codex CLI |
 | `PI_PATH` | No | `pi` | Executable path to Pi CLI |
+| `CC_WEB_PI_TRANSPORT` | No | `rpc` | Pi transport; set `headless` to use the previous one-shot JSON mode |
+| `CC_WEB_PI_RPC_IDLE_TIMEOUT_MINUTES` | No | `30` | Idle Pi RPC process lifetime, clamped to 1–1440 minutes |
+| `CC_WEB_PI_RPC_MAX_RUNTIMES` | No | `8` | Maximum concurrent Pi RPC runtimes, clamped to 1–64 |
 | `CLAUDE_CONFIG_DIR` | No | `~/.claude` | Claude configuration, authentication, and history directory |
 | `CODEX_HOME` | No | `~/.codex` | Codex configuration, authentication, and history directory |
 | `CC_WEB_CLI_ENV_PASSTHROUGH` | No | - | Additional environment variable names passed to agents, separated by commas |
@@ -162,12 +166,15 @@ webcoding/
 ### Process Model
 
 ```text
-Browser ←WebSocket→ Node.js (server.js) ←file I/O→ Claude / Codex CLI (detached)
+Browser ←WebSocket→ Node.js (server.js) ─┬─file I/O→ Claude / Codex CLI (detached)
+                                        └─JSONL RPC→ Pi CLI (persistent)
 ```
 
-- Each user message spawns either a Claude or Codex subprocess depending on the session agent.
-- Subprocesses use `detached: true` + `proc.unref()` and run independently from Node.js lifecycle.
-- stdin/stdout/stderr are bridged via files in `sessions/{id}-run/`.
+- Claude and Codex use detached per-turn subprocesses with file I/O in `sessions/{id}-run/` and restart recovery.
+- Pi uses one persistent `--mode rpc` process per active Web session, with correlated JSONL requests and events.
+- Pi RPC supports extension dialogs and native abort. By default, idle runtimes expire after 30 minutes with at most 8 concurrent runtimes; both limits are configurable.
+- A server restart interrupts an active Pi RPC turn, but the persisted Pi session resumes on the next message.
+- Set `CC_WEB_PI_TRANSPORT=headless` to restore the one-shot `pi -p --mode json` path.
 - PID is persisted to disk and recovered after service restart (`recoverProcesses()`).
 - `FileTailer` streams file updates to frontend in real time.
 

@@ -9,6 +9,7 @@ const { isDeepStrictEqual } = require('util');
 const { spawn, spawnSync } = require('child_process');
 const WebSocket = require('ws');
 const { createAgentRuntime } = require('../lib/agent-runtime');
+const { PiRpcClient } = require('../lib/pi-rpc-client');
 
 const REPO_DIR = path.resolve(__dirname, '..');
 const SERVER_PATH = path.join(REPO_DIR, 'server.js');
@@ -394,6 +395,48 @@ async function startLegacyBridgeProcess(runtimePath, statePath) {
 async function stopBridgeProcess(handle) {
   if (!handle?.child) return;
   await stopServer(handle.child);
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+async function cleanupRegressionBridgeProcesses(tempRoot) {
+  const statePaths = [];
+  const pendingDirs = [tempRoot];
+  while (pendingDirs.length > 0) {
+    const currentDir = pendingDirs.pop();
+    let entries = [];
+    try { entries = fs.readdirSync(currentDir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) pendingDirs.push(entryPath);
+      else if (entry.isFile() && entry.name === 'bridge-state.json') statePaths.push(entryPath);
+    }
+  }
+
+  const pids = new Set();
+  for (const statePath of statePaths) {
+    try {
+      const pid = Number.parseInt(JSON.parse(fs.readFileSync(statePath, 'utf8'))?.pid, 10);
+      if (isPidAlive(pid)) pids.add(pid);
+    } catch {}
+  }
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  }
+  const deadline = Date.now() + 1500;
+  while ([...pids].some(isPidAlive) && Date.now() < deadline) await sleep(30);
+  for (const pid of pids) {
+    if (!isPidAlive(pid)) continue;
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
 }
 
 async function startResponsesFallbackUpstream(port, options = {}) {
@@ -944,6 +987,11 @@ async function runAgentRuntimeEnvironmentRegressionCase({ tempRoot }) {
   assert(piEnv.OPENAI_API_KEY === 'codex-local-key', 'Pi should keep supported OpenAI credentials');
   assert(piEnv.CUSTOM_PROVIDER_TOKEN === 'explicit-provider-key', 'Pi should inherit explicitly allowed provider env');
   assert(!piEnv.CC_WEB_PASSWORD && !piEnv.UNRELATED_SECRET, 'Pi must not inherit Web or unrelated secrets');
+  const piRpcSpec = runtime.buildPiSpawnSpec(session, { transport: 'rpc' });
+  assert(piRpcSpec.args.includes('rpc') && !piRpcSpec.args.includes('-p'), 'Pi RPC transport should keep stdin open without print mode');
+  assert(piRpcSpec.transport === 'rpc' && piRpcSpec.parser === 'pi-rpc', 'Pi RPC spawn metadata should identify the persistent transport');
+  const piHeadlessSpec = runtime.buildPiSpawnSpec(session, { transport: 'headless' });
+  assert(piHeadlessSpec.args.includes('json') && piHeadlessSpec.args.includes('-p'), 'Pi headless fallback should remain available');
 
   const managedRuntime = createRuntimeEnvFixture(processEnv, {
     codexRuntimeConfig: {
@@ -959,6 +1007,37 @@ async function runAgentRuntimeEnvironmentRegressionCase({ tempRoot }) {
   assert(managedCodexEnv.CODEX_HOME.endsWith('managed-codex'), 'Managed Codex should use its isolated CODEX_HOME');
   assert(managedCodexEnv.OPENAI_API_KEY === 'managed-codex-key', 'Managed Codex credentials should override local credentials');
   assert(!managedCodexEnv.OPENAI_BASE_URL, 'Managed Codex should not inherit a conflicting OPENAI_BASE_URL');
+}
+
+async function runPiRpcClientLifecycleRegressionCase({ tempRoot }) {
+  const sessionDir = path.join(tempRoot, 'pi-rpc-client-lifecycle');
+  mkdirp(sessionDir);
+  let exitInfo = null;
+  const client = new PiRpcClient({
+    command: process.execPath,
+    args: [MOCK_PI, '--mode', 'rpc', '--session-dir', sessionDir, '--session-id', 'lifecycle-test'],
+    env: {
+      ...process.env,
+      MOCK_PI_RPC_GET_STATE_DELAY_MS: '2000',
+    },
+    cwd: REPO_DIR,
+    startupTimeoutMs: 60,
+    onExit: (info) => { exitInfo = info; },
+  });
+
+  let startupError = null;
+  try {
+    await client.start();
+  } catch (error) {
+    startupError = error;
+  }
+  assert(/timed out/i.test(startupError?.message || ''), 'Pi RPC handshake timeout should reject startup');
+  await waitForCondition(() => client.closed, {
+    timeoutMs: 3500,
+    label: 'Pi RPC child exit after failed handshake',
+  });
+  assert(exitInfo?.expected === true, 'Pi RPC failed startup should dispose the child as an expected exit');
+  assert(client.isAlive === false, 'Pi RPC failed startup must not leave a live child process');
 }
 
 async function runCustomCliDirectoriesRegressionCase({ tempRoot }) {
@@ -1723,7 +1802,25 @@ async function runPiAgentRegressionCase({ port, password, sessionsDir, logsDir }
 
     const processSpawnLine = findProcessLogLine(logsDir, session.sessionId, 'process_spawn');
     assert(processSpawnLine && processSpawnLine.includes('"agent":"pi"'), 'Pi spawn should be logged with agent=pi');
-    assert(processSpawnLine.includes('--mode') && processSpawnLine.includes('json'), 'Pi spawn should use --mode json');
+    assert(processSpawnLine.includes('--mode') && processSpawnLine.includes('rpc'), 'Pi spawn should use persistent --mode rpc');
+    assert(processSpawnLine.includes('"transport":"rpc"'), 'Pi spawn log should identify RPC transport');
+
+    const modelList = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: '/model', sessionId: session.sessionId, mode: 'yolo', agent: 'pi' }),
+      'model_list',
+      (msg) => msg.agent === 'pi' && msg.source === 'pi-rpc',
+      8000,
+    );
+    assert(modelList.entries.some((entry) => entry.value === 'mock/mock-pi-fast'), 'Pi RPC should discover real model metadata');
+
+    const slashList = await client.sendAndWaitType(
+      { type: 'get_slash_commands', agent: 'pi' },
+      'slash_commands_list',
+      (msg) => msg.agent === 'pi' && msg.commands?.some((command) => command.cmd === '/rpc-demo'),
+      8000,
+    );
+    assert(slashList.capabilities?.protocol === 'pi-rpc', 'Pi capabilities should advertise the RPC protocol');
+    assert(slashList.capabilities?.askUser === true, 'Pi RPC capabilities should advertise respondable interaction');
 
     // Multi-turn resume via --session-id
     client.send(buildAgentMessagePayload({
@@ -1740,6 +1837,58 @@ async function runPiAgentRegressionCase({ port, password, sessionsDir, logsDir }
     await client.waitForType('done', (msg) => msg.sessionId === session.sessionId, 8000);
     const secondText = getLastStoredAssistantText(sessionsDir, session.sessionId);
     assert(/turn 2/.test(secondText || ''), 'Pi second turn should resume the same mock session state');
+
+    client.send(buildAgentMessagePayload({
+      text: 'trigger pi rpc select',
+      mode: 'yolo',
+      agent: 'pi',
+      sessionId: session.sessionId,
+    }));
+    const selectRequest = await client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === session.sessionId && msg.requestId === 'mock-pi-select',
+      8000,
+    );
+    assert(selectRequest.respondable === true, 'Pi RPC extension UI should be respondable from the Web client');
+    assert(selectRequest.options?.includes('生产环境'), 'Pi RPC select options should reach the browser');
+    client.send({
+      type: 'interactive_response',
+      sessionId: session.sessionId,
+      requestId: selectRequest.requestId,
+      value: '生产环境',
+    });
+    await client.waitForType(
+      'interactive_response_result',
+      (msg) => msg.sessionId === session.sessionId && msg.requestId === selectRequest.requestId && msg.success === true,
+      8000,
+    );
+    await client.waitForType(
+      'text_delta',
+      (msg) => msg.sessionId === session.sessionId && /Pi RPC interaction/.test(msg.text || ''),
+      8000,
+    );
+    await client.waitForType('done', (msg) => msg.sessionId === session.sessionId, 8000);
+    const interactionText = getLastStoredAssistantText(sessionsDir, session.sessionId);
+    assert(/interaction result: 生产环境/.test(interactionText), 'Pi RPC should persist the selected interaction value');
+
+    client.send(buildAgentMessagePayload({
+      text: 'trigger pi rpc slow',
+      mode: 'yolo',
+      agent: 'pi',
+      sessionId: session.sessionId,
+    }));
+    await client.waitForType(
+      'text_delta',
+      (msg) => msg.sessionId === session.sessionId && /still running/.test(msg.text || ''),
+      8000,
+    );
+    client.send({ type: 'abort' });
+    const aborted = await client.waitForType(
+      'done',
+      (msg) => msg.sessionId === session.sessionId && msg.interrupted === true,
+      8000,
+    );
+    assert(aborted.interrupted === true, 'Pi RPC abort should stop the turn without killing the persistent session');
 
     // Plan mode maps to read-only tools (assert full stored text — deltas are chunked)
     const planSession = await client.sendAndWaitType(
@@ -1785,6 +1934,196 @@ async function runPiAgentRegressionCase({ port, password, sessionsDir, logsDir }
     // Session dir should exist under sessions/_pi-sessions
     const piRoot = path.join(sessionsDir, '_pi-sessions');
     assert(fs.existsSync(piRoot), 'Pi session storage root should be created under sessions/_pi-sessions');
+  });
+}
+
+async function runPiRpcReconnectRegressionCase({ port, password }) {
+  let originalConnection = null;
+  let resumedConnection = null;
+  let sessionId = null;
+  let completed = false;
+  try {
+    originalConnection = await connectAuthedClient(port, password);
+    const session = await originalConnection.client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger pi rpc select', mode: 'yolo', agent: 'pi' }),
+      'session_info',
+      (msg) => msg.agent === 'pi' && msg.title === 'trigger pi rpc select',
+    );
+    sessionId = session.sessionId;
+    const initialRequest = await originalConnection.client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === sessionId && msg.requestId === 'mock-pi-select',
+      8000,
+    );
+    assert(initialRequest.respondable === true, 'Pi RPC interaction should initially be respondable');
+
+    await closeWs(originalConnection.ws);
+    resumedConnection = await connectAuthedClient(port, password);
+    resumedConnection.client.send({ type: 'load_session', sessionId });
+    await resumedConnection.client.waitForType(
+      'session_info',
+      (msg) => msg.sessionId === sessionId && msg.isRunning === true,
+      5000,
+    );
+    await resumedConnection.client.waitForType(
+      'resume_generating',
+      (msg) => msg.sessionId === sessionId,
+      5000,
+    );
+    const replayedRequest = await resumedConnection.client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === sessionId && msg.requestId === initialRequest.requestId,
+      5000,
+    );
+    assert(replayedRequest.options?.includes('生产环境'), 'Pi RPC should replay pending interaction details after reconnect');
+
+    resumedConnection.client.send({
+      type: 'interactive_response',
+      sessionId,
+      requestId: replayedRequest.requestId,
+      value: '测试环境',
+    });
+    await resumedConnection.client.waitForType(
+      'interactive_response_result',
+      (msg) => msg.sessionId === sessionId && msg.requestId === replayedRequest.requestId && msg.success === true,
+      5000,
+    );
+    await resumedConnection.client.waitForType(
+      'text_delta',
+      (msg) => msg.sessionId === sessionId && /Pi RPC interaction/.test(msg.text || ''),
+      8000,
+    );
+    await resumedConnection.client.waitForType('done', (msg) => msg.sessionId === sessionId, 8000);
+    completed = true;
+  } finally {
+    if (!completed && resumedConnection?.ws?.readyState === WebSocket.OPEN && sessionId) {
+      resumedConnection.client.send({ type: 'abort' });
+      await sleep(100);
+    }
+    if (originalConnection) await closeWs(originalConnection.ws);
+    if (resumedConnection) await closeWs(resumedConnection.ws);
+  }
+}
+
+async function runPiHeadlessFallbackRegressionCase({ tempRoot, password }) {
+  const fallbackRoot = path.join(tempRoot, 'pi-headless-fallback');
+  const configDir = path.join(fallbackRoot, 'config');
+  const sessionsDir = path.join(fallbackRoot, 'sessions');
+  const logsDir = path.join(fallbackRoot, 'logs');
+  const homeDir = path.join(fallbackRoot, 'home');
+  for (const dir of [configDir, sessionsDir, logsDir, homeDir]) mkdirp(dir);
+  const port = await getFreePort();
+  const serverEnv = {
+    PORT: String(port),
+    HOST: '127.0.0.1',
+    CC_WEB_PASSWORD: password,
+    CC_WEB_CONFIG_DIR: configDir,
+    CC_WEB_SESSIONS_DIR: sessionsDir,
+    CC_WEB_LOGS_DIR: logsDir,
+    CC_WEB_PI_TRANSPORT: 'headless',
+    HOME: homeDir,
+    CLAUDE_PATH: MOCK_CLAUDE,
+    CODEX_PATH: MOCK_CODEX,
+    PI_PATH: MOCK_PI,
+  };
+
+  await withServer(serverEnv, async () => {
+    await withAuthedClient(port, password, async ({ client }) => {
+      const session = await client.sendAndWaitType(
+        buildAgentMessagePayload({ text: 'pi headless fallback', mode: 'yolo', agent: 'pi' }),
+        'session_info',
+        (msg) => msg.agent === 'pi' && msg.title === 'pi headless fallback',
+      );
+      await client.waitForType(
+        'text_delta',
+        (msg) => msg.sessionId === session.sessionId && /Pi mock handled/.test(msg.text || ''),
+        8000,
+      );
+      await client.waitForType('done', (msg) => msg.sessionId === session.sessionId, 8000);
+      assert(/turn 1/.test(getLastStoredAssistantText(sessionsDir, session.sessionId) || ''), 'Pi headless fallback should persist the assistant response');
+
+      const spawnLine = findProcessLogLine(logsDir, session.sessionId, 'process_spawn');
+      assert(spawnLine.includes('--mode json') && spawnLine.includes('-p'), 'Pi headless fallback should spawn the legacy JSON print mode');
+      assert(!spawnLine.includes('"transport":"rpc"'), 'Pi headless fallback must not use the RPC transport');
+
+      const modelList = await client.sendAndWaitType(
+        buildAgentMessagePayload({ text: '/model', sessionId: session.sessionId, mode: 'yolo', agent: 'pi' }),
+        'model_list',
+        (msg) => msg.agent === 'pi',
+        5000,
+      );
+      assert(modelList.source === 'pi-headless', 'Pi headless model menu should identify the compatibility source');
+    });
+  });
+}
+
+async function runPiRpcCapacityRegressionCase({ tempRoot, password }) {
+  const caseRoot = path.join(tempRoot, 'pi-rpc-capacity');
+  const configDir = path.join(caseRoot, 'config');
+  const sessionsDir = path.join(caseRoot, 'sessions');
+  const logsDir = path.join(caseRoot, 'logs');
+  const homeDir = path.join(caseRoot, 'home');
+  for (const dir of [configDir, sessionsDir, logsDir, homeDir]) mkdirp(dir);
+  const port = await getFreePort();
+
+  await withServer({
+    PORT: String(port),
+    HOST: '127.0.0.1',
+    CC_WEB_PASSWORD: password,
+    CC_WEB_CONFIG_DIR: configDir,
+    CC_WEB_SESSIONS_DIR: sessionsDir,
+    CC_WEB_LOGS_DIR: logsDir,
+    CC_WEB_PI_TRANSPORT: 'rpc',
+    CC_WEB_PI_RPC_MAX_RUNTIMES: '1',
+    HOME: homeDir,
+    CLAUDE_PATH: MOCK_CLAUDE,
+    CODEX_PATH: MOCK_CODEX,
+    PI_PATH: MOCK_PI,
+  }, async () => {
+    const first = await connectAuthedClient(port, password);
+    const second = await connectAuthedClient(port, password);
+    let firstSessionId = null;
+    try {
+      const firstSession = await first.client.sendAndWaitType(
+        buildAgentMessagePayload({ text: 'trigger pi rpc slow', mode: 'yolo', agent: 'pi' }),
+        'session_info',
+        (msg) => msg.agent === 'pi' && msg.title === 'trigger pi rpc slow',
+      );
+      firstSessionId = firstSession.sessionId;
+      await first.client.waitForType(
+        'text_delta',
+        (msg) => msg.sessionId === firstSessionId && /still running/.test(msg.text || ''),
+        8000,
+      );
+
+      const blockedSession = await second.client.sendAndWaitType(
+        buildAgentMessagePayload({ text: 'second pi runtime', mode: 'yolo', agent: 'pi' }),
+        'session_info',
+        (msg) => msg.agent === 'pi' && msg.title === 'second pi runtime',
+      );
+      const capacityError = await second.client.waitForType(
+        'error',
+        (msg) => msg.sessionId === blockedSession.sessionId && /达到上限/.test(msg.message || ''),
+        8000,
+      );
+      assert(/1/.test(capacityError.message || ''), 'Pi RPC capacity error should report the configured limit');
+      await second.client.waitForType('done', (msg) => msg.sessionId === blockedSession.sessionId, 8000);
+
+      first.client.send({ type: 'abort' });
+      await first.client.waitForType(
+        'done',
+        (msg) => msg.sessionId === firstSessionId && msg.interrupted === true,
+        8000,
+      );
+      firstSessionId = null;
+    } finally {
+      if (firstSessionId && first.ws.readyState === WebSocket.OPEN) {
+        first.client.send({ type: 'abort' });
+        await sleep(100);
+      }
+      await closeWs(first.ws);
+      await closeWs(second.ws);
+    }
   });
 }
 
@@ -3946,6 +4285,7 @@ async function main() {
       CLAUDE_PATH: MOCK_CLAUDE,
       CODEX_PATH: MOCK_CODEX,
       PI_PATH: MOCK_PI,
+      CC_WEB_PI_TRANSPORT: 'rpc',
     };
 
     await withServer(serverEnv, async (serverHandle) => {
@@ -3965,6 +4305,7 @@ async function main() {
       };
       const runner = createTestRunner();
       await runner.run('agent runtime environment passthrough', () => runAgentRuntimeEnvironmentRegressionCase(ctx));
+      await runner.run('pi rpc client lifecycle cleanup', () => runPiRpcClientLifecycleRegressionCase(ctx));
       await runner.run('custom CLI directories and server limits', () => runCustomCliDirectoriesRegressionCase(ctx));
       await runner.run('fetch_models apiBase version compatibility', () => runFetchModelsApiBaseCompatibilityRegressionCase(ctx));
       await runner.run('bridge ignores legacy reasoning effort config', () => runBridgeReasoningEffortRegressionCase(ctx));
@@ -3987,6 +4328,9 @@ async function main() {
       await runner.run('auth failures and repeated auth', () => runAuthRegressionCase(ctx));
       await runner.run('runtime error mapping', () => runRuntimeErrorRegressionCase(ctx));
       await runner.run('pi agent adapter', () => runPiAgentRegressionCase(ctx));
+      await runner.run('pi rpc interaction reconnect', () => runPiRpcReconnectRegressionCase(ctx));
+      await runner.run('pi headless transport fallback', () => runPiHeadlessFallbackRegressionCase(ctx));
+      await runner.run('pi rpc configurable capacity', () => runPiRpcCapacityRegressionCase(ctx));
       await runner.run('headless parity interactive and slash', () => runHeadlessParityRegressionCase(ctx));
       await runner.run('attachment boundary handling', () => runAttachmentBoundaryRegressionCase(ctx));
       await runner.run('expired attachment cleanup', () => runExpiredAttachmentCleanupRegressionCase(ctx));
@@ -4000,6 +4344,7 @@ async function main() {
       runner.finish();
     });
   } finally {
+    await cleanupRegressionBridgeProcesses(tempRoot);
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }

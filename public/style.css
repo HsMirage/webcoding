@@ -2656,20 +2656,73 @@ html[data-theme="localhost"] .localfile-pre {
 .interactive-request-actions {
   margin-top: 10px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
+.interactive-request-options {
+  align-items: stretch;
+}
+.interactive-request-action,
 .interactive-request-stop {
   font-size: 12px;
   font-weight: 600;
-  padding: 4px 10px;
-  border: 2px solid var(--line);
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
   border-radius: 4px;
   background: var(--background);
   color: var(--text-primary);
   cursor: pointer;
 }
-.interactive-request-stop:hover {
+.interactive-request-action.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.interactive-request-action.secondary {
+  color: var(--text-secondary);
+}
+.interactive-request-action:disabled,
+.interactive-request-stop:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.interactive-request-action:hover:not(:disabled),
+.interactive-request-stop:hover:not(:disabled) {
   border-color: var(--text-secondary);
+}
+.interactive-request-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--background);
+  color: var(--text-primary);
+  font: inherit;
+  line-height: 1.5;
+  resize: vertical;
+}
+.interactive-request-input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.interactive-request-card.is-resolved {
+  border-left-color: var(--green, #2f855a);
+}
+.interactive-request-status {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.interactive-request-status.success {
+  color: var(--green, #2f855a);
+}
+.interactive-request-status.error {
+  color: var(--danger, #c53030);
 }
 .cmd-item-badge {
   flex-shrink: 0;
