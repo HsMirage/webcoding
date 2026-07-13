@@ -18,17 +18,22 @@ Webcoding is a lightweight browser workspace for Claude Code, Codex, and Pi, des
 - **Lightweight runtime**: low backend overhead, browser-based control panel.
 - **Multi-agent sessions**: create Claude, Codex, or Pi sessions on the same backend core.
 - **Agent-isolated views**: switching Claude / Codex / Pi only shows that agent's sessions, recent state, settings, and import entry points.
-- **Agent-specific settings**: Claude keeps template-based model config; Codex has its own path, default model, mode, and search settings.
-- **Bidirectional Pi RPC**: persistent Pi sessions with real extension dialogs, native steer/follow-up queues during generation, native abort, model discovery, and command discovery.
-- **Multi-session management**: create, switch, rename, and delete sessions; deleting a session also removes the local Claude history record.
-- **Local history import**: import Claude history from its configuration directory and Codex rollout history from `CODEX_HOME/sessions/`.
-- **Session resume**: context continuity via `--resume`; you can also reattach via SSH + `tmux attach -t claude` when needed.
-- **Background task support**: Claude processes continue after browser disconnect and notify you on completion.
+- **Agent-specific settings**: each agent keeps its own model, provider, permission mode, and runtime adapter.
+- **Native reasoning controls**: `/effort` controls Claude/Codex effort and Pi thinking level using current CLI/model capabilities; Pi also keeps the familiar `/thinking` alias.
+- **Persistent Claude stream**: reuses one bidirectional `stream-json` process per Web session with partial thinking, hook events, images, native resume, browser approvals, user questions, and MCP elicitation.
+- **Codex App Server**: native thread start/resume/fork, same-turn steering, interrupt, browser approvals, user questions, and MCP elicitation.
+- **Bidirectional Pi RPC**: persistent Pi sessions with extension dialogs, status/widgets, composer prefills, native steer/follow-up queues, abort, model and thinking-level discovery, and command discovery.
+- **Multi-session management**: create, switch, rename, and delete sessions, including cleanup of the matching native thread or Web-managed session storage.
+- **Local history import**: import Claude projects, Codex rollouts, and the active branch of Pi JSONL sessions with tools, thinking, usage, and cost.
+- **Native forks**: Codex `/fork` duplicates the current thread; Pi `/fork` lets you search user-message history and restores the selected prompt as an editable draft.
+- **Native session resume**: Claude, Codex, and Pi persist their own native session IDs and restore context on later turns.
+- **Background task support**: the selected agent keeps running after browser disconnect; reconnect restores streaming state and pending interactions.
 - **Multi-channel notifications**: PushPlus / Telegram / ServerChan / Feishu bot / QQ (Qmsg), configurable in Web UI.
-- **Process persistence**: detached subprocess + PID files; running tasks survive service restarts.
+- **Persistent runtimes**: each CLI uses its native bidirectional protocol with idle and capacity-based cleanup.
 - **Multi-API switching**: configure multiple API profiles and switch between them instantly from the UI.
 - **Password-based auth**: initial password generation, forced first-login reset, and password change in Web UI.
-- **Native Codex review**: `/review` invokes `codex exec review --uncommitted`; trailing text becomes review instructions.
+- **Native Codex review**: `/review` uses App Server `review/start` inside the current thread.
+- **CLI contract checks**: `npm run contract:cli` validates real Claude flags, Codex App Server schemas, and Pi RPC without sending model requests.
 
 ## Requirements
 
@@ -97,11 +102,19 @@ After startup, open `http://localhost:8001` and sign in with your password.
 | `CLAUDE_PATH` | No | `claude` | Executable path to Claude CLI |
 | `CODEX_PATH` | No | `codex` | Executable path to Codex CLI |
 | `PI_PATH` | No | `pi` | Executable path to Pi CLI |
+| `CC_WEB_CLAUDE_TRANSPORT` | No | `stream-json` | Claude transport; use `headless` for legacy one-shot mode |
+| `CC_WEB_CLAUDE_STREAM_IDLE_TIMEOUT_MINUTES` | No | `30` | Idle lifetime for persistent Claude runtimes |
+| `CC_WEB_CLAUDE_STREAM_MAX_RUNTIMES` | No | `8` | Maximum persistent Claude runtimes |
+| `CC_WEB_CODEX_TRANSPORT` | No | `app-server` | Codex transport; use `exec` for legacy one-shot mode |
+| `CC_WEB_CODEX_APP_IDLE_TIMEOUT_MINUTES` | No | `30` | Idle lifetime for Codex App Server runtimes |
+| `CC_WEB_CODEX_APP_MAX_RUNTIMES` | No | `8` | Maximum Codex App Server runtimes |
 | `CC_WEB_PI_TRANSPORT` | No | `rpc` | Pi transport; set `headless` to use the previous one-shot JSON mode |
 | `CC_WEB_PI_RPC_IDLE_TIMEOUT_MINUTES` | No | `30` | Idle Pi RPC process lifetime, clamped to 1–1440 minutes |
 | `CC_WEB_PI_RPC_MAX_RUNTIMES` | No | `8` | Maximum concurrent Pi RPC runtimes, clamped to 1–64 |
 | `CLAUDE_CONFIG_DIR` | No | `~/.claude` | Claude configuration, authentication, and history directory |
 | `CODEX_HOME` | No | `~/.codex` | Codex configuration, authentication, and history directory |
+| `PI_CODING_AGENT_DIR` | No | `~/.pi/agent` | Pi configuration, resources, and native history directory |
+| `PI_CODING_AGENT_SESSION_DIR` | No | `PI_CODING_AGENT_DIR/sessions` | Pi native session directory; takes precedence over `PI_CODING_AGENT_DIR` |
 | `CC_WEB_CLI_ENV_PASSTHROUGH` | No | - | Additional environment variable names passed to agents, separated by commas |
 | `CC_WEB_WS_MAX_PAYLOAD` | No | `4194304` | Maximum WebSocket message size in bytes (64 KB–32 MB) |
 | `PUSHPLUS_TOKEN` | No | - | PushPlus token (migrated into notification config on first start) |
@@ -166,24 +179,25 @@ webcoding/
 ### Process Model
 
 ```text
-Browser ←WebSocket→ Node.js (server.js) ─┬─file I/O→ Claude / Codex CLI (detached)
+Browser ←WebSocket→ Node.js (server.js) ─┬─stream-json→ Claude CLI (persistent)
+                                        ├─JSON-RPC→ Codex App Server (persistent)
                                         └─JSONL RPC→ Pi CLI (persistent)
 ```
 
-- Claude and Codex use detached per-turn subprocesses with file I/O in `sessions/{id}-run/` and restart recovery.
+- Claude uses a persistent bidirectional `stream-json` process, while Codex uses its official App Server. Environment variables can restore the legacy one-shot transports.
+- Claude and Codex approvals, user questions, and MCP elicitation are rendered as browser forms and returned through their native bidirectional protocols.
 - Pi uses one persistent `--mode rpc` process per active Web session, with correlated JSONL requests and events.
 - While Pi is generating, new messages can use its native `steer` or `followUp` queue. Web history follows Pi's actual execution order, and duplicate client message IDs are coalesced.
 - Pi RPC restores pending queue state after reconnect. Aborting discards messages that have not started. By default, idle runtimes expire after 30 minutes with at most 8 concurrent runtimes; both limits are configurable.
-- A server restart interrupts an active Pi RPC turn, but the persisted Pi session resumes on the next message.
+- A server restart interrupts an active persistent turn, but all three native session IDs remain available and resume on the next message.
 - Set `CC_WEB_PI_TRANSPORT=headless` to restore the one-shot `pi -p --mode json` path.
-- PID is persisted to disk and recovered after service restart (`recoverProcesses()`).
-- `FileTailer` streams file updates to frontend in real time.
+- Legacy one-shot transports persist PIDs and stream file updates for restart recovery.
 
 ### Background Task Flow
 
-1. User sends a message → spawn Claude subprocess.
-2. User closes browser → subprocess keeps running.
-3. Process completes → PID monitor detects exit.
+1. User sends a message → reuse or start the selected agent's persistent runtime.
+2. User closes browser → the active runtime keeps running.
+3. The agent emits its native completion event → the server persists the result.
 4. Completion notification is sent.
 5. User reconnects → completed response is synced.
 
@@ -197,7 +211,7 @@ Browser ←WebSocket→ Node.js (server.js) ─┬─file I/O→ Claude / Codex 
 | `process_complete` | Process finished (exit code, duration, cost) |
 | `ws_connect` / `ws_disconnect` | Client connected/disconnected |
 | `ws_resume_attach` | Client reconnected to running process |
-| `recovery_alive` / `recovery_dead` | Process recovery during service restart |
+| `recovery_alive` / `recovery_dead` | Process recovery during service restart in legacy one-shot mode |
 | `heartbeat` | Active process snapshot every 60 seconds |
 
 View logs:
@@ -347,4 +361,4 @@ node server.js
 
 ## Notes
 
-- Claude support is still the more mature path, while Codex now supports isolated sessions, resume, import, background execution, and local cleanup.
+- Claude, Codex, and Pi all use persistent native protocols by default. Commands that only exist as interactive TUI screens are explicitly marked unavailable instead of being advertised as runnable.

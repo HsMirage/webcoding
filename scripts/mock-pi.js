@@ -42,13 +42,67 @@ function mockModel(model) {
 
 async function runRpcMode(args) {
   const sessionDir = getArgValue(args, '--session-dir');
-  const sessionId = getArgValue(args, '--session-id') || crypto.randomUUID();
+  let sessionId = getArgValue(args, '--session-id') || crypto.randomUUID();
   const model = getArgValue(args, '--model') || 'mock-pi-model';
   const toolsIdx = args.indexOf('--tools');
   const tools = toolsIdx >= 0 ? String(args[toolsIdx + 1] || '') : '';
-  const statePath = sessionDir ? path.join(sessionDir, `${sessionId}.mock-state.json`) : null;
+  function findSessionFileById(id) {
+    if (!sessionDir) return null;
+    let entries = [];
+    try { entries = fs.readdirSync(sessionDir, { withFileTypes: true }); } catch { return null; }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      const candidate = path.join(sessionDir, entry.name);
+      try {
+        const header = JSON.parse(fs.readFileSync(candidate, 'utf8').split('\n')[0]);
+        if (String(header?.id || '') === String(id)) return candidate;
+      } catch {}
+    }
+    return null;
+  }
+
+  function readSessionEntries(filePath = sessionFile) {
+    try {
+      return fs.readFileSync(filePath, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    } catch {
+      return [];
+    }
+  }
+
+  function messageText(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    return content
+      .filter((part) => part?.type === 'text')
+      .map((part) => String(part.text || ''))
+      .join('');
+  }
+
+  function branchThrough(entries, leafId = undefined) {
+    const body = entries.filter((entry) => entry?.id && entry.type !== 'session');
+    const byId = new Map(body.map((entry) => [String(entry.id), entry]));
+    const branch = [];
+    const seen = new Set();
+    let current = leafId === undefined
+      ? body[body.length - 1]
+      : (leafId ? byId.get(String(leafId)) : null);
+    while (current?.id && !seen.has(String(current.id))) {
+      seen.add(String(current.id));
+      branch.push(current);
+      current = current.parentId ? byId.get(String(current.parentId)) : null;
+    }
+    return branch.reverse();
+  }
+
+  let statePath = sessionDir ? path.join(sessionDir, `${sessionId}.mock-state.json`) : null;
+  let sessionFile = findSessionFileById(sessionId)
+    || (sessionDir ? path.join(sessionDir, `${sessionId}.jsonl`) : null);
   let state = { turns: 0, lastInput: '' };
   try { state = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch {}
+  let thinkingLevel = getArgValue(args, '--thinking') || 'medium';
   let isStreaming = false;
   let pendingUi = null;
   let activeInput = '';
@@ -57,6 +111,34 @@ async function runRpcMode(args) {
   let queueDrainTimer = null;
   let lastAssistantText = '';
   let lastStopReason = 'stop';
+
+  function ensureSessionFile(parentSession = null) {
+    if (!sessionFile) return;
+    try {
+      fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+      if (!fs.existsSync(sessionFile)) {
+        fs.writeFileSync(sessionFile, `${JSON.stringify({
+          type: 'session',
+          version: 3,
+          id: sessionId,
+          timestamp: new Date().toISOString(),
+          cwd: process.cwd(),
+          ...(parentSession ? { parentSession } : {}),
+        })}\n`);
+      }
+    } catch {}
+  }
+
+  function switchMockSession(nextSessionId, nextSessionFile) {
+    sessionId = String(nextSessionId);
+    sessionFile = nextSessionFile;
+    statePath = sessionDir ? path.join(sessionDir, `${sessionId}.mock-state.json`) : null;
+    state = { turns: 0, lastInput: '' };
+    try { state = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch {}
+    ensureSessionFile();
+  }
+
+  ensureSessionFile();
 
   function persistState() {
     if (!statePath) return;
@@ -257,6 +339,21 @@ async function runRpcMode(args) {
       });
       return;
     }
+    if (input === 'trigger pi rpc passive ui') {
+      emit({ type: 'extension_ui_request', id: 'mock-pi-title', method: 'setTitle', title: 'Pi Mock Workspace' });
+      emit({ type: 'extension_ui_request', id: 'mock-pi-status', method: 'setStatus', statusKey: 'build', statusText: 'Build ready' });
+      emit({
+        type: 'extension_ui_request',
+        id: 'mock-pi-widget',
+        method: 'setWidget',
+        widgetKey: 'checks',
+        widgetLines: ['Tests: passed', 'Lint: passed'],
+        widgetPlacement: 'aboveEditor',
+      });
+      emit({ type: 'extension_ui_request', id: 'mock-pi-editor', method: 'set_editor_text', text: 'follow up from Pi extension' });
+      finishTurn('Pi RPC passive UI updated.');
+      return;
+    }
     if (input === 'trigger pi rpc slow') {
       emit({
         type: 'message_update',
@@ -299,12 +396,12 @@ async function runRpcMode(args) {
       case 'get_state': {
         const sendState = () => response('get_state', true, {
           model: mockModel(model),
-          thinkingLevel: getArgValue(args, '--thinking') || 'medium',
+          thinkingLevel,
           isStreaming,
           isCompacting: false,
           steeringMode: 'one-at-a-time',
           followUpMode: 'one-at-a-time',
-          sessionFile: statePath,
+          sessionFile,
           sessionId,
           autoCompactionEnabled: true,
           messageCount: state.turns * 2,
@@ -313,6 +410,67 @@ async function runRpcMode(args) {
         const delayMs = Number.parseInt(process.env.MOCK_PI_RPC_GET_STATE_DELAY_MS || '', 10);
         if (Number.isFinite(delayMs) && delayMs > 0) setTimeout(sendState, delayMs);
         else sendState();
+        break;
+      }
+      case 'set_thinking_level':
+        thinkingLevel = String(command.level || 'medium');
+        response('set_thinking_level', true, undefined, null, command.id);
+        break;
+      case 'clone':
+      case 'fork': {
+        const sourceFile = sessionFile;
+        const entries = readSessionEntries(sourceFile);
+        let selectedText = '';
+        let branch;
+        if (command.type === 'fork') {
+          const selected = entries.find((entry) => String(entry?.id || '') === String(command.entryId || ''));
+          if (selected?.type !== 'message' || selected.message?.role !== 'user') {
+            response('fork', false, undefined, 'Invalid entry ID for forking', command.id);
+            break;
+          }
+          selectedText = messageText(selected.message.content);
+          branch = branchThrough(entries, selected.parentId);
+        } else {
+          branch = branchThrough(entries);
+        }
+        const nextId = crypto.randomUUID();
+        const nextFile = sessionDir ? path.join(sessionDir, `${nextId}.jsonl`) : null;
+        if (nextFile) {
+          const body = branch.map((entry) => JSON.stringify(entry)).join('\n');
+          fs.writeFileSync(nextFile, `${JSON.stringify({
+            type: 'session',
+            version: 3,
+            id: nextId,
+            timestamp: new Date().toISOString(),
+            cwd: process.cwd(),
+            parentSession: sourceFile,
+          })}\n${body ? `${body}\n` : ''}`);
+        }
+        switchMockSession(nextId, nextFile);
+        persistState();
+        response(command.type, true, { cancelled: false, ...(command.type === 'fork' ? { text: selectedText } : {}) }, null, command.id);
+        break;
+      }
+      case 'get_fork_messages': {
+        const messages = readSessionEntries()
+          .filter((entry) => entry?.type === 'message' && entry.message?.role === 'user')
+          .map((entry) => ({ entryId: String(entry.id), text: messageText(entry.message.content) }))
+          .filter((entry) => entry.text);
+        response('get_fork_messages', true, { messages }, null, command.id);
+        break;
+      }
+      case 'switch_session': {
+        const requestedPath = path.resolve(String(command.sessionPath || ''));
+        let header = null;
+        try {
+          header = JSON.parse(fs.readFileSync(requestedPath, 'utf8').split('\n')[0]);
+        } catch {}
+        if (!header?.id) {
+          response('switch_session', false, undefined, 'Invalid mock session path', command.id);
+          break;
+        }
+        switchMockSession(header.id, requestedPath);
+        response('switch_session', true, { cancelled: false }, null, command.id);
         break;
       }
       case 'get_available_models':

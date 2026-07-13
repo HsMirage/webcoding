@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="style.css?v=1.6.6">
+  <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
 </head>
 <body>
@@ -50,10 +50,10 @@
           <button type="button" class="agent-tab" data-agent="codex">Codex</button>
           <button type="button" class="agent-tab" data-agent="pi">Pi</button>
         </div>
-        <div class="mode-tabs" id="topbar-mode-tabs" title="权限模式（映射真实 CLI 标志，非网页审批）">
+        <div class="mode-tabs" id="topbar-mode-tabs" title="权限模式（按当前 Agent 映射原生 CLI 能力）">
           <button type="button" class="mode-tab active" data-mode="yolo" title="YOLO：跳过审批与沙箱限制（Claude bypassPermissions / Codex dangerously-bypass / Pi --approve）">YOLO</button>
-          <button type="button" class="mode-tab" data-mode="default" title="默认：CLI 默认自动策略（Codex --full-auto / Pi --no-approve；非网页人工审批）">默认</button>
-          <button type="button" class="mode-tab" data-mode="plan" title="Plan：规划/只读向（Claude plan / Codex read-only / Pi 只读工具集；非完整计划确认 UI）">Plan</button>
+          <button type="button" class="mode-tab" data-mode="default" title="默认：受限自动策略；Claude 与 Codex 支持网页审批">默认</button>
+          <button type="button" class="mode-tab" data-mode="plan" title="Plan：Claude 原生 plan / Codex Plan + read-only / Pi 只读工具集">Plan</button>
         </div>
         <span id="topbar-chat-cwd" class="topbar-chat-cwd" hidden title=""></span>
         <span id="topbar-cost-display" class="cost-display" hidden></span>
@@ -153,7 +153,7 @@
               <div id="send-queue-bar" class="send-queue-bar" hidden>
                 <span id="send-queue-label" class="send-queue-label">队列中 0 条</span>
                 <div class="send-queue-actions">
-                  <div id="pi-queue-mode" class="pi-queue-mode" role="group" aria-label="Pi 运行中消息模式" hidden>
+                  <div id="pi-queue-mode" class="pi-queue-mode" role="group" aria-label="运行中消息模式" hidden>
                     <button type="button" class="pi-queue-mode-btn active" data-streaming-behavior="followUp" aria-pressed="true" title="当前任务完成后继续处理">接着做</button>
                     <button type="button" class="pi-queue-mode-btn" data-streaming-behavior="steer" aria-pressed="false" title="当前步骤结束后立即调整方向">转向</button>
                   </div>
@@ -231,6 +231,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="/qrcode.min.js"></script>
-  <script src="app.js?v=1.6.6"></script>
+  <script src="app.js"></script>
 </body>
 </html>

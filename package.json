@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "regression": "node scripts/regression.js"
+    "regression": "node scripts/regression.js",
+    "contract:cli": "node scripts/cli-contract.js",
+    "test": "npm run regression && npm run contract:cli"
   },
   "dependencies": {
     "ws": "^8.21.0"

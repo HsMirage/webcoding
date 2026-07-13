@@ -5,11 +5,12 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
-const { isDeepStrictEqual } = require('util');
 const { spawn, spawnSync } = require('child_process');
 const WebSocket = require('ws');
 const { createAgentRuntime } = require('../lib/agent-runtime');
 const { PiRpcClient } = require('../lib/pi-rpc-client');
+const { CodexAppServerClient } = require('../lib/codex-app-server-client');
+const { ClaudeStreamClient } = require('../lib/claude-stream-client');
 
 const REPO_DIR = path.resolve(__dirname, '..');
 const SERVER_PATH = path.join(REPO_DIR, 'server.js');
@@ -838,7 +839,7 @@ function typeMatcher(type, predicate = null) {
   return (msg) => msg.type === type && (!predicate || predicate(msg));
 }
 
-function buildAgentMessagePayload({ text, sessionId, mode, agent, attachments, clientMessageId }) {
+function buildAgentMessagePayload({ text, sessionId, mode, agent, attachments, clientMessageId, streamingBehavior }) {
   return {
     type: 'message',
     text,
@@ -847,6 +848,7 @@ function buildAgentMessagePayload({ text, sessionId, mode, agent, attachments, c
     agent,
     ...(attachments ? { attachments } : {}),
     ...(clientMessageId ? { clientMessageId } : {}),
+    ...(streamingBehavior ? { streamingBehavior } : {}),
   };
 }
 
@@ -928,8 +930,8 @@ function createRuntimeEnvFixture(processEnv, options = {}) {
     wsSend: noop,
     truncateObj: (value) => value,
     sanitizeToolInput: (_name, value) => value,
-    loadSession: () => null,
-    saveSession: noop,
+    loadSession: options.loadSession || (() => null),
+    saveSession: options.saveSession || noop,
     getRuntimeSessionState: () => null,
     getFallbackRuntimeSessionState: () => null,
     setRuntimeSessionState: noop,
@@ -938,6 +940,70 @@ function createRuntimeEnvFixture(processEnv, options = {}) {
     runtimeFingerprintsCompatible: (agent, left, right) => left === right,
     onSlashCommandsDiscovered: noop,
   });
+}
+
+async function runClaudeCostLedgerRegressionCase({ tempRoot }) {
+  let storedSession = {
+    id: 'claude-cost-session',
+    totalCost: 0,
+  };
+  const runtime = createRuntimeEnvFixture({
+    PATH: process.env.PATH || '/usr/bin',
+    HOME: path.join(tempRoot, 'claude-cost-home'),
+  }, {
+    loadSession: (sessionId) => (sessionId === storedSession.id ? storedSession : null),
+    saveSession: (session) => { storedSession = JSON.parse(JSON.stringify(session)); },
+  });
+
+  const applyResult = (runId, totalCostUsd) => {
+    const entry = { runId, fullText: '', toolCalls: [], outputSegments: [] };
+    runtime.processClaudeEvent(entry, {
+      type: 'result',
+      total_cost_usd: totalCostUsd,
+    }, storedSession.id);
+  };
+
+  applyResult('run-a', 1.25);
+  applyResult('run-a', 1.25);
+  assert(storedSession.totalCost === 1.25, 'Replaying one Claude run must not double-count its cost');
+
+  applyResult('run-a', 1.5);
+  assert(storedSession.totalCost === 1.5, 'A later cumulative cost for one Claude run should add only the delta');
+
+  applyResult('run-b', 0.5);
+  assert(storedSession.totalCost === 2, 'A distinct Claude run should add its own cost');
+  assert(storedSession.runtimeCostLedger?.['run-a'] === 1.5, 'Claude cost ledger should persist the latest run total');
+  assert(storedSession.runtimeCostLedger?.['run-b'] === 0.5, 'Claude cost ledger should track separate runs');
+}
+
+async function runClaudeSlashProbeEnvironmentRegressionCase({ port, password, claudeEnvCapturePath }) {
+  await withAuthedClient(port, password, async ({ client }) => {
+    await client.sendAndWaitType(
+      { type: 'get_slash_commands', agent: 'claude' },
+      'slash_commands_list',
+      (msg) => msg.agent === 'claude' && msg.commands?.some((command) => command.cmd === '/compact'),
+    );
+    const discoveredList = await client.waitForType(
+      'slash_commands_list',
+      (msg) => msg.agent === 'claude' && msg.commands?.some((command) => command.cmd === '/review'),
+      5000,
+    );
+    assert(discoveredList.commands.some((command) => command.cmd === '/review'), 'Claude slash discovery should return init metadata without a user prompt');
+  });
+
+  await waitForCondition(() => fs.existsSync(claudeEnvCapturePath), {
+    timeoutMs: 3000,
+    label: 'Claude slash discovery environment capture',
+  });
+  const captures = fs.readFileSync(claudeEnvCapturePath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  const probe = captures.find((capture) => capture.args?.includes('--no-session-persistence'));
+  assert(probe, 'Claude slash discovery should use an ephemeral no-persistence process');
+  assert(!probe.args.includes('say hi'), 'Claude slash discovery must not send a hidden user prompt');
+  assert(probe.hasWebPassword === false, 'Claude slash discovery must not inherit CC_WEB_PASSWORD');
+  assert(probe.hasClaudeNestingMarker === false, 'Claude slash discovery must not inherit Claude nesting markers');
 }
 
 async function runAgentRuntimeEnvironmentRegressionCase({ tempRoot }) {
@@ -972,6 +1038,11 @@ async function runAgentRuntimeEnvironmentRegressionCase({ tempRoot }) {
   assert(!claudeEnv.OPENAI_API_KEY, 'Claude should not inherit Codex credentials by default');
   assert(!claudeEnv.CC_WEB_PASSWORD && !claudeEnv.CLAUDECODE, 'Claude must not inherit Web server credentials or nesting markers');
   assert(!claudeEnv.UNRELATED_SECRET, 'Claude should not inherit unrelated secrets');
+  const claudeSpec = runtime.buildClaudeSpawnSpec(session);
+  assert(claudeSpec.args.includes('--input-format') && claudeSpec.args.includes('stream-json'), 'Claude text turns should always use structured stream-json input');
+  assert(claudeSpec.args.includes('--include-partial-messages') && claudeSpec.args.includes('--include-hook-events'), 'Claude stream transport should request partial messages and hook events');
+  const claudeEffortSpec = runtime.buildClaudeSpawnSpec({ ...session, effort: 'high' });
+  assert(claudeEffortSpec.args.includes('--effort') && claudeEffortSpec.args.includes('high'), 'Claude effort should use the native --effort flag');
 
   const codexEnv = runtime.buildCodexSpawnSpec(session).env;
   assert(codexEnv.CODEX_HOME === processEnv.CODEX_HOME, 'Codex should inherit CODEX_HOME');
@@ -981,6 +1052,12 @@ async function runAgentRuntimeEnvironmentRegressionCase({ tempRoot }) {
   assert(codexEnv.CUSTOM_PROVIDER_TOKEN === 'explicit-provider-key', 'Codex should inherit explicitly allowed provider env');
   assert(!codexEnv.ANTHROPIC_API_KEY, 'Codex should not inherit Claude credentials by default');
   assert(!codexEnv.CC_WEB_PASSWORD && !codexEnv.UNRELATED_SECRET, 'Codex must not inherit Web or unrelated secrets');
+  const codexAppSpec = runtime.buildCodexSpawnSpec(session, { transport: 'app-server' });
+  assert(codexAppSpec.args[0] === 'app-server', 'Codex rich-client transport should launch app-server');
+  assert(codexAppSpec.transport === 'app-server' && codexAppSpec.parser === 'codex-app-server', 'Codex App Server spawn metadata should identify the bidirectional transport');
+  assert(codexAppSpec.approvalPolicy === 'never' && codexAppSpec.threadSandbox === 'danger-full-access', 'Codex YOLO mode should map to native App Server permissions');
+  const codexEffortSpec = runtime.buildCodexSpawnSpec({ ...session, effort: 'xhigh' }, { transport: 'app-server' });
+  assert(codexEffortSpec.effort === 'xhigh', 'Codex App Server spawn metadata should preserve reasoning effort');
 
   const piEnv = runtime.buildPiSpawnSpec(session).env;
   assert(piEnv.ANTHROPIC_API_KEY === 'claude-local-key', 'Pi should keep supported provider credentials');
@@ -990,6 +1067,8 @@ async function runAgentRuntimeEnvironmentRegressionCase({ tempRoot }) {
   const piRpcSpec = runtime.buildPiSpawnSpec(session, { transport: 'rpc' });
   assert(piRpcSpec.args.includes('rpc') && !piRpcSpec.args.includes('-p'), 'Pi RPC transport should keep stdin open without print mode');
   assert(piRpcSpec.transport === 'rpc' && piRpcSpec.parser === 'pi-rpc', 'Pi RPC spawn metadata should identify the persistent transport');
+  const piThinkingSpec = runtime.buildPiSpawnSpec({ ...session, thinking: 'xhigh' }, { transport: 'rpc' });
+  assert(piThinkingSpec.args.includes('--thinking') && piThinkingSpec.args.includes('xhigh'), 'Pi thinking level should use the native --thinking flag');
   const piHeadlessSpec = runtime.buildPiSpawnSpec(session, { transport: 'headless' });
   assert(piHeadlessSpec.args.includes('json') && piHeadlessSpec.args.includes('-p'), 'Pi headless fallback should remain available');
 
@@ -1038,6 +1117,73 @@ async function runPiRpcClientLifecycleRegressionCase({ tempRoot }) {
   });
   assert(exitInfo?.expected === true, 'Pi RPC failed startup should dispose the child as an expected exit');
   assert(client.isAlive === false, 'Pi RPC failed startup must not leave a live child process');
+}
+
+async function runCodexAppServerClientLifecycleRegressionCase() {
+  let approvalMethod = null;
+  let completed = false;
+  let exitInfo = null;
+  const client = await CodexAppServerClient.start({
+    command: process.execPath,
+    args: [MOCK_CODEX, 'app-server', '--listen', 'stdio://'],
+    env: process.env,
+    cwd: REPO_DIR,
+    onRequest: (method) => {
+      approvalMethod = method;
+      return { decision: 'accept' };
+    },
+    onNotification: (method) => {
+      if (method === 'turn/completed') completed = true;
+    },
+    onExit: (info) => { exitInfo = info; },
+  });
+  const models = await client.request('model/list', { limit: 20 });
+  assert(models.data?.some((model) => model.id === 'mock-codex-model'), 'Codex App Server client should correlate JSON-RPC responses');
+  const thread = await client.request('thread/start', { cwd: REPO_DIR });
+  await client.request('turn/start', {
+    threadId: thread.thread.id,
+    input: [{ type: 'text', text: 'trigger codex interactive approval' }],
+  });
+  await waitForCondition(() => completed, { timeoutMs: 3000, label: 'Codex App Server turn completion' });
+  assert(approvalMethod === 'item/commandExecution/requestApproval', 'Codex App Server client should handle server-initiated approval requests');
+  client.dispose();
+  await waitForCondition(() => client.closed, { timeoutMs: 3500, label: 'Codex App Server client disposal' });
+  assert(exitInfo?.expected === true, 'Codex App Server disposal should be reported as an expected exit');
+}
+
+async function runClaudeStreamClientLifecycleRegressionCase() {
+  const events = [];
+  let exitInfo = null;
+  const client = await ClaudeStreamClient.start({
+    command: process.execPath,
+    args: [
+      MOCK_CLAUDE,
+      '-p',
+      '--input-format', 'stream-json',
+      '--output-format', 'stream-json',
+      '--verbose',
+    ],
+    env: process.env,
+    cwd: REPO_DIR,
+    onEvent: (event) => events.push(event),
+    onExit: (info) => { exitInfo = info; },
+  });
+  const pid = client.pid;
+  await client.sendUserMessage([{ type: 'text', text: 'first persistent claude turn' }]);
+  await waitForCondition(() => events.filter((event) => event.type === 'result').length === 1, {
+    timeoutMs: 3000,
+    label: 'first Claude stream result',
+  });
+  await client.sendUserMessage([{ type: 'text', text: 'second persistent claude turn' }]);
+  await waitForCondition(() => events.filter((event) => event.type === 'result').length === 2, {
+    timeoutMs: 3000,
+    label: 'second Claude stream result',
+  });
+  assert(client.pid === pid && client.isAlive, 'Claude stream client should reuse one process across turns');
+  assert(events.some((event) => event.type === 'assistant' && /second persistent claude turn/.test(event.message?.content?.[0]?.text || '')), 'Claude stream client should parse later turn events');
+  client.dispose();
+  await waitForCondition(() => client.closed, { timeoutMs: 3500, label: 'Claude stream client disposal' });
+  assert(exitInfo?.expected === true, 'Claude stream disposal should be reported as expected');
 }
 
 async function runCustomCliDirectoriesRegressionCase({ tempRoot }) {
@@ -1263,6 +1409,9 @@ function getActiveStoredRuntimeId(session, agent) {
   if (normalizedAgent === 'codex') {
     return String(session.codexThreadId || '').trim();
   }
+  if (normalizedAgent === 'pi') {
+    return String(session.piSessionId || '').trim();
+  }
   return '';
 }
 
@@ -1379,6 +1528,84 @@ function createFakeClaudeHistory(homeDir) {
   return createFakeClaudeHistoryInConfigDir(path.join(homeDir, '.claude'));
 }
 
+function createFakePiHistory(homeDir) {
+  const agentDir = path.join(homeDir, '.pi', 'agent');
+  const cwd = path.join(homeDir, 'pi-import-project');
+  const nativeSessionsDir = path.join(homeDir, 'pi-native-sessions');
+  const sessionDir = path.join(nativeSessionsDir, '--pi-import-project--');
+  const sessionId = 'pi-import-session';
+  const filePath = path.join(sessionDir, `2026-03-12T00-00-00-000Z_${sessionId}.jsonl`);
+  mkdirp(cwd);
+  mkdirp(sessionDir);
+  for (const resourceDir of ['extensions', 'skills', 'prompts', 'themes', 'npm', 'git']) {
+    mkdirp(path.join(agentDir, resourceDir));
+  }
+  fs.writeFileSync(path.join(agentDir, 'custom-extension.ts'), 'export default function () {}\n');
+  fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({
+    defaultProvider: 'local-provider',
+    defaultModel: 'local-model',
+    defaultThinkingLevel: 'high',
+    enabledModels: ['local/*'],
+    sessionDir: './custom-sessions',
+    theme: 'light',
+    packages: ['mock-pi-package'],
+    extensions: ['./custom-extension.ts'],
+    skills: ['./skills'],
+    prompts: ['./prompts'],
+    themes: ['./themes'],
+  }, null, 2));
+
+  const lines = [
+    { type: 'session', version: 3, id: sessionId, timestamp: '2026-03-12T00:00:00.000Z', cwd },
+    { type: 'model_change', id: 'model-1', parentId: null, timestamp: '2026-03-12T00:00:00.010Z', provider: 'mock', modelId: 'mock-pi-model' },
+    { type: 'thinking_level_change', id: 'thinking-1', parentId: 'model-1', timestamp: '2026-03-12T00:00:00.020Z', thinkingLevel: 'high' },
+    { type: 'session_info', id: 'info-1', parentId: 'thinking-1', timestamp: '2026-03-12T00:00:00.030Z', name: 'Pi import fixture' },
+    {
+      type: 'message', id: 'user-1', parentId: 'info-1', timestamp: '2026-03-12T00:00:01.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'Pi import prompt' }], timestamp: 1773273601000 },
+    },
+    {
+      type: 'message', id: 'assistant-1', parentId: 'user-1', timestamp: '2026-03-12T00:00:02.000Z',
+      message: {
+        role: 'assistant', provider: 'mock', model: 'mock-pi-model',
+        content: [
+          { type: 'thinking', thinking: 'Pi import reasoning' },
+          { type: 'text', text: 'Pi import answer' },
+          { type: 'toolCall', id: 'pi-tool-1', name: 'read', arguments: { path: 'README.md' } },
+        ],
+        usage: { input: 5, cacheRead: 2, output: 7, cost: { total: 0.01 } },
+      },
+    },
+    {
+      type: 'message', id: 'tool-1', parentId: 'assistant-1', timestamp: '2026-03-12T00:00:03.000Z',
+      message: { role: 'toolResult', toolCallId: 'pi-tool-1', toolName: 'read', content: [{ type: 'text', text: 'fixture tool result' }], isError: false },
+    },
+    {
+      type: 'bashExecution', id: 'bash-1', parentId: 'tool-1', timestamp: '2026-03-12T00:00:03.500Z',
+      command: 'printf fixture-bash && exit 7', output: 'fixture-bash', exitCode: 7, cancelled: false, truncated: true,
+      fullOutputPath: '/tmp/pi-fixture-full-output.log',
+    },
+    {
+      type: 'message', id: 'discarded-user', parentId: 'bash-1', timestamp: '2026-03-12T00:00:04.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'discarded Pi branch' }] },
+    },
+    {
+      type: 'message', id: 'discarded-assistant', parentId: 'discarded-user', timestamp: '2026-03-12T00:00:05.000Z',
+      message: { role: 'assistant', provider: 'mock', model: 'mock-pi-model', content: [{ type: 'text', text: 'discarded answer' }], usage: { input: 99, output: 99, cost: { total: 9 } } },
+    },
+    {
+      type: 'message', id: 'active-user', parentId: 'bash-1', timestamp: '2026-03-12T00:00:06.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'active Pi branch' }] },
+    },
+    {
+      type: 'message', id: 'active-assistant', parentId: 'active-user', timestamp: '2026-03-12T00:00:07.000Z',
+      message: { role: 'assistant', provider: 'mock', model: 'mock-pi-model', content: [{ type: 'text', text: 'active branch answer' }], usage: { input: 3, cacheRead: 1, output: 4, cost: { total: 0.02 } } },
+    },
+  ];
+  fs.writeFileSync(filePath, `${lines.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
+  return { agentDir, cwd, nativeSessionsDir, sessionDir, sessionId, filePath };
+}
+
 function writeFakeCodexModelsCache(homeDir) {
   const modelsCachePath = path.join(homeDir, '.codex', 'models_cache.json');
   mkdirp(path.dirname(modelsCachePath));
@@ -1409,7 +1636,8 @@ function writeFakeCodexModelsCache(homeDir) {
 function writeFakeCodexRolloutInHome(codexHome, threadId) {
   const sessionsDir = path.join(codexHome, 'sessions', '2026', '03', '12');
   mkdirp(sessionsDir);
-  const rolloutPath = path.join(sessionsDir, 'rollout-2026-03-12T00-00-00-codex-import-thread.jsonl');
+  const safeThreadId = String(threadId).replace(/[^a-zA-Z0-9-]/g, '-');
+  const rolloutPath = path.join(sessionsDir, `rollout-2026-03-12T00-00-00-${safeThreadId}.jsonl`);
   const rolloutLines = [
     JSON.stringify({
       timestamp: '2026-03-12T00:00:00.000Z',
@@ -1457,7 +1685,11 @@ function writeFakeCodexRollout(homeDir, threadId) {
 }
 
 function writeFakeCodexStateDb(homeDir, threadId, rolloutPath) {
-  const stateDb = path.join(homeDir, '.codex', 'state_5.sqlite');
+  return writeFakeCodexStateDbInHome(path.join(homeDir, '.codex'), threadId, rolloutPath);
+}
+
+function writeFakeCodexStateDbInHome(codexHome, threadId, rolloutPath) {
+  const stateDb = path.join(codexHome, 'state_5.sqlite');
   mkdirp(path.dirname(stateDb));
   runSqliteStatements(stateDb, [
     'PRAGMA journal_mode = WAL;',
@@ -1514,7 +1746,11 @@ function writeFakeCodexStateDb(homeDir, threadId, rolloutPath) {
 }
 
 function writeFakeCodexLogsDb(homeDir, threadId) {
-  const logsDb = path.join(homeDir, '.codex', 'logs_1.sqlite');
+  return writeFakeCodexLogsDbInHome(path.join(homeDir, '.codex'), threadId);
+}
+
+function writeFakeCodexLogsDbInHome(codexHome, threadId) {
+  const logsDb = path.join(codexHome, 'logs_1.sqlite');
   mkdirp(path.dirname(logsDb));
   runSqliteStatements(logsDb, [
     SQL_CREATE_LOGS_TABLE,
@@ -1570,13 +1806,42 @@ async function runAuthRegressionCase({ port, password }) {
   }
 }
 
+async function runHttpSecurityRegressionCase({ port, password, tempRoot }) {
+  await withAuthedClient(port, password, async ({ token }) => {
+    const index = await requestHttpJson({ port, path: '/' });
+    assert(index.statusCode === 200, 'Index should be served successfully');
+    const csp = String(index.headers['content-security-policy'] || '');
+    assert(csp.includes("script-src 'self' https://cdnjs.cloudflare.com"), 'CSP should allow only the application and pinned script CDN');
+    assert(!/script-src[^;]*unsafe-inline/.test(csp), 'CSP must block inline script execution');
+    assert(/style\.css\?v=[a-z0-9]+/.test(index.text) && /app\.js\?v=[a-z0-9]+/.test(index.text), 'Index should receive automatic asset cache versions');
+
+    const markdownPath = path.join(tempRoot, 'unsafe-preview.md');
+    fs.writeFileSync(markdownPath, '# Preview\n\n<img src=x onerror="window.__xss=1">\n\n[bad](javascript:alert(1))\n');
+    const preview = await requestHttpJson({
+      port,
+      path: `/api/localfile?path=${encodeURIComponent(markdownPath)}`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert(preview.statusCode === 200, 'Authenticated Markdown preview should load');
+    assert(preview.text.includes('/markdown-viewer.js?v='), 'Markdown preview should use the isolated viewer script');
+    assert(!preview.text.includes("innerHTML=marked.parse"), 'Markdown preview must not execute inline rendering code');
+    assert(preview.text.includes('\\u003cimg'), 'Markdown source should be escaped before embedding in HTML');
+
+    const unauthenticated = await requestHttpJson({
+      port,
+      path: `/api/localfile?path=${encodeURIComponent(markdownPath)}`,
+    });
+    assert(unauthenticated.statusCode === 401, 'Local file preview must require authentication');
+  });
+}
+
 /**
  * Headless parity: interactive event classification, local slash lifecycle,
  * TUI-only blocking, capabilities on slash list, run-meta snapshot.
  */
-async function runHeadlessParityRegressionCase({ port, password, sessionsDir, logsDir }) {
+async function runHeadlessParityRegressionCase({ port, password, configDir, sessionsDir, logsDir, codexFixture }) {
   await withAuthedClient(port, password, async ({ client }) => {
-    // --- Codex interactive approval → interactive_request (non-respondable) ---
+    // --- Codex App Server approval → respondable browser request ---
     const codexInteractiveSession = await client.sendAndWaitType(
       buildAgentMessagePayload({ text: 'trigger codex interactive approval', mode: 'yolo', agent: 'codex' }),
       'session_info',
@@ -1585,13 +1850,136 @@ async function runHeadlessParityRegressionCase({ port, password, sessionsDir, lo
     const interactiveReq = await client.waitForType(
       'interactive_request',
       (msg) => msg.sessionId === codexInteractiveSession.sessionId
-        && msg.eventType === 'exec_approval_request'
-        && msg.respondable === false,
+        && msg.protocol === 'codex-app-server'
+        && msg.respondable === true,
       8000,
     );
-    assert(interactiveReq.interactiveKind === 'exec_approval', 'Codex exec_approval_request should classify as exec_approval');
-    assert(/不能双向回应|headless/i.test(interactiveReq.message || ''), 'interactive_request should explain headless limitation');
+    assert(interactiveReq.interactiveKind === 'select', 'Codex command approval should render as a selectable browser request');
+    const approvalResult = await client.sendAndWaitType(
+      {
+        type: 'interactive_response',
+        sessionId: codexInteractiveSession.sessionId,
+        requestId: interactiveReq.requestId,
+        value: 'accept',
+      },
+      'interactive_response_result',
+      (msg) => msg.requestId === interactiveReq.requestId && msg.success === true,
+      8000,
+    );
+    assert(approvalResult.success === true, 'Codex command approval response should reach App Server');
+    await client.waitForType('text_delta', (msg) => /approval decision: accept/.test(msg.text || ''), 8000);
     await client.waitForType('done', (msg) => msg.sessionId === codexInteractiveSession.sessionId, 8000);
+
+    const codexStructuredApprovalSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex structured approval', mode: 'default', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex structured approval',
+    );
+    const structuredApprovalRequest = await client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === codexStructuredApprovalSession.sessionId
+        && msg.options?.some((option) => /记住类似命令/.test(option.label || '')),
+      8000,
+    );
+    const structuredApprovalOption = structuredApprovalRequest.options.find((option) => /记住类似命令/.test(option.label || ''));
+    await client.sendAndWaitType(
+      {
+        type: 'interactive_response',
+        sessionId: codexStructuredApprovalSession.sessionId,
+        requestId: structuredApprovalRequest.requestId,
+        value: structuredApprovalOption.value,
+      },
+      'interactive_response_result',
+      (msg) => msg.requestId === structuredApprovalRequest.requestId && msg.success === true,
+      8000,
+    );
+    const structuredApprovalDelta = await client.waitForType('text_delta', (msg) => /approval decision:/.test(msg.text || ''), 8000);
+    assert(/acceptWithExecpolicyAmendment/.test(structuredApprovalDelta.text || ''), 'Codex structured approval decisions should round-trip without hard-coded loss');
+    await client.waitForType('done', (msg) => msg.sessionId === codexStructuredApprovalSession.sessionId, 8000);
+
+    const codexQuestionSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex user input', mode: 'default', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex user input',
+    );
+    const questionRequest = await client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === codexQuestionSession.sessionId
+        && msg.interactiveKind === 'questions'
+        && msg.questions?.[0]?.id === 'environment',
+      8000,
+    );
+    await client.sendAndWaitType(
+      {
+        type: 'interactive_response',
+        sessionId: codexQuestionSession.sessionId,
+        requestId: questionRequest.requestId,
+        answers: { environment: ['生产环境'] },
+      },
+      'interactive_response_result',
+      (msg) => msg.requestId === questionRequest.requestId && msg.success === true,
+      8000,
+    );
+    await client.waitForType('text_delta', (msg) => /user input: 生产环境/.test(msg.text || ''), 8000);
+    await client.waitForType('done', (msg) => msg.sessionId === codexQuestionSession.sessionId, 8000);
+
+    const codexMcpFormSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex mcp form', mode: 'default', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex mcp form',
+    );
+    const mcpFormRequest = await client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === codexMcpFormSession.sessionId
+        && msg.interactiveKind === 'questions'
+        && msg.questions?.some((question) => question.id === 'scopes'),
+      8000,
+    );
+    const scopesQuestion = mcpFormRequest.questions.find((question) => question.id === 'scopes');
+    const retriesQuestion = mcpFormRequest.questions.find((question) => question.id === 'retries');
+    assert(scopesQuestion?.multiple === true && scopesQuestion?.minItems === 1 && scopesQuestion?.maxItems === 2, 'MCP elicitation should preserve multi-select limits');
+    assert(retriesQuestion?.inputType === 'number' && retriesQuestion?.min === 1 && retriesQuestion?.max === 5 && retriesQuestion?.step === 1, 'MCP elicitation should preserve integer input constraints');
+    await client.sendAndWaitType(
+      {
+        type: 'interactive_response',
+        sessionId: codexMcpFormSession.sessionId,
+        requestId: mcpFormRequest.requestId,
+        answers: { scopes: ['read', 'write'], retries: ['3'], note: [''] },
+      },
+      'interactive_response_result',
+      (msg) => msg.requestId === mcpFormRequest.requestId && msg.success === true,
+      8000,
+    );
+    const mcpFormDelta = await client.waitForType('text_delta', (msg) => /Codex mock MCP form:/.test(msg.text || ''), 8000);
+    assert(/"scopes":\["read","write"\]/.test(mcpFormDelta.text || ''), 'MCP elicitation should return all selected values');
+    assert(/"retries":3/.test(mcpFormDelta.text || '') && !/"note"/.test(mcpFormDelta.text || ''), 'MCP elicitation should coerce numbers and omit blank optional fields');
+    await client.waitForType('done', (msg) => msg.sessionId === codexMcpFormSession.sessionId, 8000);
+
+    const codexMcpUrlSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex mcp unsafe url', mode: 'default', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex mcp unsafe url',
+    );
+    const mcpUrlRequest = await client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === codexMcpUrlSession.sessionId && msg.interactiveKind === 'confirm',
+      8000,
+    );
+    assert(mcpUrlRequest.url === '', 'MCP elicitation must remove non-HTTP authorization URLs');
+    await client.sendAndWaitType(
+      {
+        type: 'interactive_response',
+        sessionId: codexMcpUrlSession.sessionId,
+        requestId: mcpUrlRequest.requestId,
+        confirmed: false,
+      },
+      'interactive_response_result',
+      (msg) => msg.requestId === mcpUrlRequest.requestId && msg.success === true,
+      8000,
+    );
+    const mcpUrlDelta = await client.waitForType('text_delta', (msg) => /Codex mock MCP URL:/.test(msg.text || ''), 8000);
+    assert(/"action":"decline","content":null/.test(mcpUrlDelta.text || ''), 'Rejected MCP URL elicitation should return the native decline response');
+    await client.waitForType('done', (msg) => msg.sessionId === codexMcpUrlSession.sessionId, 8000);
 
     // --- Codex goal update ---
     const codexGoalSession = await client.sendAndWaitType(
@@ -1601,15 +1989,75 @@ async function runHeadlessParityRegressionCase({ port, password, sessionsDir, lo
     );
     const goalUpdate = await client.waitForType(
       'goal_update',
-      (msg) => msg.sessionId === codexGoalSession.sessionId && /Ship headless parity|Goals/i.test(msg.summary || ''),
+      (msg) => msg.sessionId === codexGoalSession.sessionId && /Ship App Server parity|Goals/i.test(msg.summary || ''),
       8000,
     );
     assert(goalUpdate, 'Codex thread_goal_updated should surface as goal_update');
     await client.waitForType('done', (msg) => msg.sessionId === codexGoalSession.sessionId, 8000);
 
-    // --- Claude interactive system subtype ---
+    // --- Codex current App Server plan notifications ---
+    const codexPlanSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex plan updates', mode: 'plan', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex plan updates',
+    );
+    const planDelta = await client.waitForType(
+      'thinking_delta',
+      (msg) => msg.sessionId === codexPlanSession.sessionId && /Inspect the authentication boundary/.test(msg.text || ''),
+      8000,
+    );
+    assert(planDelta, 'Codex item/plan/delta should stream into the browser process view');
+    const planUpdate = await client.waitForType(
+      'goal_update',
+      (msg) => msg.sessionId === codexPlanSession.sessionId && /Verify authorization tests/.test(msg.summary || ''),
+      8000,
+    );
+    assert(/\[x\] Inspect the authentication boundary/.test(planUpdate.summary || ''), 'Codex turn/plan/updated should preserve completed plan steps');
+    assert(/\[>\] Verify authorization tests/.test(planUpdate.summary || ''), 'Codex turn/plan/updated should preserve in-progress plan steps');
+    await client.waitForType('done', (msg) => msg.sessionId === codexPlanSession.sessionId, 8000);
+
+    // --- Codex client-side utility requests from the official schema ---
+    const codexUtilitySession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex client utilities', mode: 'yolo', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex client utilities',
+    );
+    const utilityDelta = await client.waitForType(
+      'text_delta',
+      (msg) => msg.sessionId === codexUtilitySession.sessionId && /Codex mock client utilities:/.test(msg.text || ''),
+      8000,
+    );
+    assert(/"currentTimeAt":\d+/.test(utilityDelta.text || ''), 'Codex currentTime/read should return whole Unix seconds');
+    assert(/"success":false/.test(utilityDelta.text || '') && /mock_unregistered_tool/.test(utilityDelta.text || ''), 'Unknown item/tool/call requests should receive a schema-valid failure');
+    await client.waitForType('done', (msg) => msg.sessionId === codexUtilitySession.sessionId, 8000);
+
+    const codexSteerSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger codex slow stream steer', mode: 'yolo', agent: 'codex' }),
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.title === 'trigger codex slow stream steer',
+    );
+    await client.waitForType('text_delta', (msg) => /slow-start:steer/.test(msg.text || ''), 5000);
+    const steerClientId = `codex-steer-${Date.now()}`;
+    const steerAck = await client.sendAndWaitType(
+      buildAgentMessagePayload({
+        text: 'focus on the auth boundary',
+        sessionId: codexSteerSession.sessionId,
+        mode: 'yolo',
+        agent: 'codex',
+        clientMessageId: steerClientId,
+        streamingBehavior: 'steer',
+      }),
+      'message_accepted',
+      (msg) => msg.clientMessageId === steerClientId && msg.execution === 'codex-steer',
+      5000,
+    );
+    assert(steerAck.streamingBehavior === 'steer', 'Codex App Server should accept native turn/steer input');
+    await client.waitForType('text_delta', (msg) => /steer:focus on the auth boundary/.test(msg.text || ''), 5000);
+    await client.waitForType('done', (msg) => msg.sessionId === codexSteerSession.sessionId, 8000);
+
+    // --- Claude bidirectional permission approval ---
     const claudeInteractiveSession = await client.sendAndWaitType(
-      buildAgentMessagePayload({ text: 'trigger claude interactive permission', mode: 'yolo', agent: 'claude' }),
+      buildAgentMessagePayload({ text: 'trigger claude interactive permission', mode: 'default', agent: 'claude' }),
       'session_info',
       (msg) => msg.agent === 'claude' && msg.title === 'trigger claude interactive permission',
     );
@@ -1619,8 +2067,98 @@ async function runHeadlessParityRegressionCase({ port, password, sessionsDir, lo
         && /can_use_tool/i.test(msg.eventType || ''),
       8000,
     );
-    assert(claudeInteractive.respondable === false, 'Claude interactive_request must not claim respondable');
+    assert(claudeInteractive.protocol === 'claude-stream-json' && claudeInteractive.respondable === true, 'Claude stream-json approval should be respondable in the browser');
+    assert(claudeInteractive.interactiveKind === 'select', 'Claude tool approval should render as a selectable browser request');
+    await client.sendAndWaitType(
+      {
+        type: 'interactive_response',
+        sessionId: claudeInteractiveSession.sessionId,
+        requestId: claudeInteractive.requestId,
+        value: 'allow-once',
+      },
+      'interactive_response_result',
+      (msg) => msg.requestId === claudeInteractive.requestId && msg.success === true,
+      8000,
+    );
+    const claudeApprovalDelta = await client.waitForType(
+      'text_delta',
+      (msg) => msg.sessionId === claudeInteractiveSession.sessionId && /Claude mock permission response:/.test(msg.text || ''),
+      8000,
+    );
+    assert(/"behavior":"allow"/.test(claudeApprovalDelta.text || ''), 'Claude allow-once decision should reach the stream-json control request');
     await client.waitForType('done', (msg) => msg.sessionId === claudeInteractiveSession.sessionId, 8000);
+
+    // --- Claude AskUserQuestion browser answers ---
+    const claudeQuestionSession = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: 'trigger claude ask user', mode: 'default', agent: 'claude' }),
+      'session_info',
+      (msg) => msg.agent === 'claude' && msg.title === 'trigger claude ask user',
+    );
+    const claudeQuestionRequest = await client.waitForType(
+      'interactive_request',
+      (msg) => msg.sessionId === claudeQuestionSession.sessionId
+        && msg.protocol === 'claude-stream-json'
+        && msg.interactiveKind === 'questions',
+      8000,
+    );
+    assert(claudeQuestionRequest.questions?.[0]?.id === 'question-1', 'Claude questions should receive stable browser field IDs');
+    assert(claudeQuestionRequest.questions?.[1]?.multiple === true, 'Claude multiSelect questions should remain multi-select in the browser');
+    await client.sendAndWaitType(
+      {
+        type: 'interactive_response',
+        sessionId: claudeQuestionSession.sessionId,
+        requestId: claudeQuestionRequest.requestId,
+        answers: {
+          'question-1': ['Production'],
+          'question-2': ['Tests', 'Lint'],
+        },
+      },
+      'interactive_response_result',
+      (msg) => msg.requestId === claudeQuestionRequest.requestId && msg.success === true,
+      8000,
+    );
+    const claudeQuestionDelta = await client.waitForType(
+      'text_delta',
+      (msg) => msg.sessionId === claudeQuestionSession.sessionId && /Claude mock AskUser response:/.test(msg.text || ''),
+      8000,
+    );
+    assert(/"Which environment should Claude target\?":"Production"/.test(claudeQuestionDelta.text || ''), 'Claude AskUser single-select answer should use the original question text');
+    assert(/"Which checks should run\?":"Tests, Lint"/.test(claudeQuestionDelta.text || ''), 'Claude AskUser multi-select answers should round-trip as one native answer');
+    assert(/"questions":\[/.test(claudeQuestionDelta.text || ''), 'Claude AskUser response should preserve the original tool input');
+    await client.waitForType('done', (msg) => msg.sessionId === claudeQuestionSession.sessionId, 8000);
+
+    const claudeEffortList = await client.sendAndWaitType(
+      buildAgentMessagePayload({
+        text: '/effort',
+        sessionId: claudeQuestionSession.sessionId,
+        mode: 'default',
+        agent: 'claude',
+      }),
+      'effort_list',
+      (msg) => msg.sessionId === claudeQuestionSession.sessionId && msg.agent === 'claude',
+      8000,
+    );
+    assert(claudeEffortList.entries.some((entry) => entry.value === 'max'), 'Claude /effort should expose current CLI effort levels');
+    client.send(buildAgentMessagePayload({
+      text: '/effort high',
+      sessionId: claudeQuestionSession.sessionId,
+      mode: 'default',
+      agent: 'claude',
+    }));
+    await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === claudeQuestionSession.sessionId && /Claude 推理强度已切换为：high/.test(msg.message || ''),
+      8000,
+    );
+    client.send(buildAgentMessagePayload({
+      text: 'verify claude native effort',
+      sessionId: claudeQuestionSession.sessionId,
+      mode: 'default',
+      agent: 'claude',
+    }));
+    await client.waitForType('done', (msg) => msg.sessionId === claudeQuestionSession.sessionId, 8000);
+    const claudeEffortSpawn = findProcessLogLines(logsDir, claudeQuestionSession.sessionId, 'process_spawn').at(-1) || '';
+    assert(claudeEffortSpawn.includes('--effort high'), 'Claude turns should receive the selected native --effort flag');
 
     // --- Claude permission_denials on result ---
     const claudeDenialSession = await client.sendAndWaitType(
@@ -1663,32 +2201,33 @@ async function runHeadlessParityRegressionCase({ port, password, sessionsDir, lo
     );
     assert(helpBody, '/web-help should return platform help text');
 
-    // --- TUI-only slash blocked without spawning (must use a Codex session) ---
+    // --- App Server slash capabilities and native review/fork ---
     const codexSlashSession = await client.sendAndWaitType(
       { type: 'new_session', agent: 'codex', mode: 'yolo' },
       'session_info',
       (msg) => msg.agent === 'codex',
     );
-    const forkClientId = `fork-${Date.now()}`;
-    const forkAccepted = await client.sendAndWaitType(
-      buildAgentMessagePayload({
-        text: '/fork',
-        sessionId: codexSlashSession.sessionId,
-        mode: 'yolo',
-        agent: 'codex',
-        clientMessageId: forkClientId,
-      }),
-      'message_accepted',
-      (msg) => msg.clientMessageId === forkClientId && msg.execution === 'local',
-      5000,
-    );
-    assert(forkAccepted, '/fork should be locally accepted (blocked, not CLI turn)');
-    const forkBlocked = await client.waitForType(
+    client.send(buildAgentMessagePayload({
+      text: 'warm up codex app thread',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    await client.waitForType('done', (msg) => msg.sessionId === codexSlashSession.sessionId, 8000);
+    const reviewThreadId = getActiveStoredRuntimeId(readStoredSessionFile(sessionsDir, codexSlashSession.sessionId), 'codex');
+    assert(reviewThreadId, 'Codex App Server warmup should persist a native thread id');
+    client.send(buildAgentMessagePayload({
+      text: '/status',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    const codexStatus = await client.waitForType(
       'system_message',
-      (msg) => /\/fork/i.test(msg.message || '') && /TUI|不支持|headless/i.test(msg.message || ''),
-      5000,
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /Codex App Server 状态/.test(msg.message || ''),
+      8000,
     );
-    assert(forkBlocked, '/fork should explain TUI-only limitation');
+    assert(/累计 Token: 输入 10 · 缓存 2 · 输出 5/.test(codexStatus.message || ''), 'Codex /status should expose persisted App Server token usage');
 
     // --- Slash list carries capabilities ---
     const slashList = await client.sendAndWaitType(
@@ -1697,11 +2236,177 @@ async function runHeadlessParityRegressionCase({ port, password, sessionsDir, lo
       (msg) => msg.agent === 'codex' && Array.isArray(msg.commands),
       15000,
     );
-    assert(slashList.capabilities && slashList.capabilities.headless === true, 'slash_commands_list should include headless capabilities');
-    assert(slashList.capabilities.interactiveApproval === false, 'capabilities must not claim interactive approval in headless');
+    assert(slashList.capabilities && slashList.capabilities.headless === false, 'slash_commands_list should report the bidirectional App Server transport');
+    assert(slashList.capabilities.protocol === 'codex-app-server', 'Codex capability protocol should identify App Server');
+    assert(slashList.capabilities.interactiveApproval === true, 'Codex App Server capabilities should expose browser approvals');
+    assert(slashList.capabilities.goalsWritable === true, 'Codex App Server capabilities should expose writable native goals');
+    assert(slashList.capabilities.reasoningEffort === true, 'Codex App Server capabilities should expose reasoning-effort controls');
     assert(Array.isArray(slashList.capabilities.knownInteractiveEventTypes), 'capabilities should list known interactive event types');
+    for (const command of ['/effort', '/status', '/usage', '/ps', '/stop', '/fork', '/rename', '/personality', '/mcp', '/skills', '/goal']) {
+      const entry = slashList.commands.find((item) => item.cmd === command);
+      assert(entry?.availability === 'platform', `${command} should use its native Codex App Server platform handler`);
+      assert(!/TUI/.test(entry.desc || ''), `${command} should not be mislabeled as TUI-only when a Web handler exists`);
+    }
+    assert(
+      slashList.commands.find((item) => item.cmd === '/init')?.availability === 'tui-only',
+      'Codex /init should not be advertised as working when App Server has no native equivalent',
+    );
+    for (const command of ['/plugins', '/plan', '/diff']) {
+      assert(
+        slashList.commands.find((item) => item.cmd === command)?.availability === 'tui-only',
+        `${command} should be discoverable but honestly marked as TUI-only`,
+      );
+    }
 
-    // --- Codex /review maps to the native exec review subcommand ---
+    const codexEffortList = await client.sendAndWaitType(
+      buildAgentMessagePayload({
+        text: '/effort',
+        sessionId: codexSlashSession.sessionId,
+        mode: 'yolo',
+        agent: 'codex',
+      }),
+      'effort_list',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && msg.agent === 'codex',
+      8000,
+    );
+    assert(codexEffortList.entries.some((entry) => entry.value === 'xhigh'), 'Codex /effort should use model/list reasoning metadata');
+    client.send(buildAgentMessagePayload({
+      text: '/effort xhigh',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /Codex 推理强度已切换为：xhigh/.test(msg.message || ''),
+      8000,
+    );
+    assert(readStoredSessionFile(sessionsDir, codexSlashSession.sessionId).effort === 'xhigh', 'Codex effort should persist with the Web session');
+    client.send(buildAgentMessagePayload({
+      text: 'verify codex native effort',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    await client.waitForType('done', (msg) => msg.sessionId === codexSlashSession.sessionId, 8000);
+    const effortTurnLines = findProcessLogLines(logsDir, codexSlashSession.sessionId, 'codex_app_turn_start');
+    assert(effortTurnLines.some((line) => line.includes('"effort":"xhigh"')), 'Codex turns should receive the selected native effort');
+
+    client.send(buildAgentMessagePayload({
+      text: '/personality pragmatic',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    const personalityMessage = await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /沟通风格已切换为：pragmatic/.test(msg.message || ''),
+      8000,
+    );
+    assert(personalityMessage, 'Codex /personality should use thread/settings/update');
+    assert(readStoredSessionFile(sessionsDir, codexSlashSession.sessionId).codexPersonality === 'pragmatic', 'Codex personality should persist for later App Server resumes');
+
+    client.send(buildAgentMessagePayload({
+      text: '/usage',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    const usageMessage = await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /Codex 账户用量/.test(msg.message || ''),
+      8000,
+    );
+    assert(/累计 Token: 123456/.test(usageMessage.message || '') && /主要限额: 已用 40%/.test(usageMessage.message || ''), 'Codex /usage should use native account usage and rate-limit endpoints');
+
+    client.send(buildAgentMessagePayload({
+      text: '/ps',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    const backgroundTerminals = await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /Codex 后台终端/.test(msg.message || ''),
+      8000,
+    );
+    assert(/npm run mock:watch/.test(backgroundTerminals.message || ''), 'Codex /ps should list native background terminals');
+
+    client.send(buildAgentMessagePayload({
+      text: '/stop',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    const stopTerminals = await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /已停止 1 个 Codex 后台终端/.test(msg.message || ''),
+      8000,
+    );
+    assert(stopTerminals, 'Codex /stop should terminate every native background terminal');
+
+    client.send(buildAgentMessagePayload({
+      text: '/skills',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    const skillsMessage = await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /\$mock-skill/.test(msg.message || ''),
+      8000,
+    );
+    assert(/Mock native Codex skill/.test(skillsMessage.message || ''), 'Codex /skills should use native skills/list metadata');
+
+    client.send(buildAgentMessagePayload({
+      text: '/mcp',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    const mcpMessage = await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /mock-mcp/.test(msg.message || ''),
+      8000,
+    );
+    assert(/mock_tool/.test(mcpMessage.message || ''), 'Codex /mcp should use native MCP status and tool metadata');
+
+    client.send(buildAgentMessagePayload({
+      text: '/goal Ship native slash parity',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /目标已更新/.test(msg.message || ''),
+      8000,
+    );
+    client.send(buildAgentMessagePayload({
+      text: '/goal',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    const goalMessage = await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /Ship native slash parity/.test(msg.message || ''),
+      8000,
+    );
+    assert(/状态：active/.test(goalMessage.message || ''), 'Codex /goal should read native goal state');
+    client.send(buildAgentMessagePayload({
+      text: '/goal clear',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && /目标已清除/.test(msg.message || ''),
+      8000,
+    );
+
+    // --- Codex /review maps to inline review/start and preserves the thread ---
     client.send(buildAgentMessagePayload({
       text: '/review focus on authentication boundaries',
       sessionId: codexSlashSession.sessionId,
@@ -1715,9 +2420,115 @@ async function runHeadlessParityRegressionCase({ port, password, sessionsDir, lo
     );
     assert(!/\/review/.test(reviewDelta.text || ''), 'Codex review instructions should not include the Web slash command wrapper');
     await client.waitForType('done', (msg) => msg.sessionId === codexSlashSession.sessionId, 8000);
-    const reviewSpawnLine = findProcessLogLine(logsDir, codexSlashSession.sessionId, 'process_spawn');
-    assert(reviewSpawnLine.includes('exec review'), 'Codex /review should invoke the native exec review subcommand');
-    assert(reviewSpawnLine.includes('--uncommitted'), 'Codex /review should review current uncommitted changes by default');
+    const reviewSpawnLines = findProcessLogLines(logsDir, codexSlashSession.sessionId, 'codex_app_turn_start');
+    const reviewSpawnLine = reviewSpawnLines[reviewSpawnLines.length - 1] || '';
+    assert(reviewSpawnLine.includes('"review":true'), 'Codex /review should invoke App Server review/start');
+    const threadAfterReview = getActiveStoredRuntimeId(readStoredSessionFile(sessionsDir, codexSlashSession.sessionId), 'codex');
+    assert(threadAfterReview === reviewThreadId, 'Inline Codex review must not replace the active conversation thread');
+
+    client.send(buildAgentMessagePayload({
+      text: 'verify codex plan collaboration mode',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'plan',
+      agent: 'codex',
+    }));
+    await client.waitForType('done', (msg) => msg.sessionId === codexSlashSession.sessionId, 8000);
+    let collaborationSpawnLines = findProcessLogLines(logsDir, codexSlashSession.sessionId, 'codex_app_turn_start');
+    assert(
+      collaborationSpawnLines[collaborationSpawnLines.length - 1]?.includes('"collaborationMode":"plan"'),
+      'Codex Plan should use the native plan collaboration mode',
+    );
+
+    client.send(buildAgentMessagePayload({
+      text: 'verify codex default collaboration mode',
+      sessionId: codexSlashSession.sessionId,
+      mode: 'default',
+      agent: 'codex',
+    }));
+    await client.waitForType('done', (msg) => msg.sessionId === codexSlashSession.sessionId, 8000);
+    collaborationSpawnLines = findProcessLogLines(logsDir, codexSlashSession.sessionId, 'codex_app_turn_start');
+    assert(
+      collaborationSpawnLines[collaborationSpawnLines.length - 1]?.includes('"collaborationMode":"default"'),
+      'Codex should explicitly leave Plan by sending the native default collaboration mode',
+    );
+
+    const nativeRenameTitle = 'Codex native rename parity';
+    client.send(buildAgentMessagePayload({
+      text: `/rename ${nativeRenameTitle}`,
+      sessionId: codexSlashSession.sessionId,
+      mode: 'default',
+      agent: 'codex',
+    }));
+    const renamed = await client.waitForType(
+      'session_renamed',
+      (msg) => msg.sessionId === codexSlashSession.sessionId && msg.title === nativeRenameTitle,
+      8000,
+    );
+    assert(renamed.title === nativeRenameTitle, 'Codex /rename should update the Web session title');
+    await waitForCondition(
+      () => !!findProcessLogLine(logsDir, codexSlashSession.sessionId, 'codex_thread_renamed'),
+      { label: 'Codex native thread rename' },
+    );
+
+    const codexSlashSessionPath = path.join(sessionsDir, `${codexSlashSession.sessionId}.json`);
+    const codexSlashStoredSession = readStoredSessionFile(sessionsDir, codexSlashSession.sessionId);
+    codexSlashStoredSession.importedRolloutPath = codexFixture.rolloutPath;
+    fs.writeFileSync(codexSlashSessionPath, JSON.stringify(codexSlashStoredSession, null, 2));
+
+    const forkClientId = `fork-${Date.now()}`;
+    const forkAccepted = await client.sendAndWaitType(
+      buildAgentMessagePayload({
+        text: '/fork',
+        sessionId: codexSlashSession.sessionId,
+        mode: 'yolo',
+        agent: 'codex',
+        clientMessageId: forkClientId,
+      }),
+      'message_accepted',
+      (msg) => msg.clientMessageId === forkClientId && msg.execution === 'local',
+      5000,
+    );
+    assert(forkAccepted, 'Codex /fork should be handled locally through App Server');
+    const forkedSession = await client.waitForType(
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.sessionId !== codexSlashSession.sessionId && /分支/.test(msg.title || ''),
+      8000,
+    );
+    const forkedStoredSession = readStoredSessionFile(sessionsDir, forkedSession.sessionId);
+    const forkedThreadId = getActiveStoredRuntimeId(forkedStoredSession, 'codex');
+    assert(
+      forkedThreadId && forkedThreadId !== reviewThreadId,
+      `Codex /fork should persist a distinct native thread id (forked=${forkedThreadId || 'empty'}, original=${reviewThreadId}, mirror=${forkedStoredSession.codexThreadId || 'empty'})`,
+    );
+    const forkedRuntimeIds = listAgentRuntimeContexts(forkedStoredSession, 'codex')
+      .map((entry) => readRuntimeIdFromContextLike(entry.context))
+      .filter(Boolean);
+    assert(
+      forkedRuntimeIds.length === 1 && forkedRuntimeIds[0] === forkedThreadId,
+      'Codex /fork must not copy source thread ids into the forked Web session',
+    );
+    assert(!forkedStoredSession.importedRolloutPath, 'Codex /fork must not inherit the source rollout deletion path');
+
+    const managedCodexHome = path.join(configDir, 'codex-runtime-home');
+    const managedForkRollout = writeFakeCodexRolloutInHome(managedCodexHome, forkedThreadId);
+    const managedForkStateDb = writeFakeCodexStateDbInHome(managedCodexHome, forkedThreadId, managedForkRollout);
+    const managedForkLogsDb = writeFakeCodexLogsDbInHome(managedCodexHome, forkedThreadId);
+    client.send({ type: 'delete_session', sessionId: forkedSession.sessionId });
+    await client.waitForType(
+      'session_list',
+      (msg) => !msg.sessions.some((item) => item.id === forkedSession.sessionId),
+      8000,
+    );
+    await waitForCondition(() => !fs.existsSync(managedForkRollout), { label: 'managed Codex fork rollout deletion' });
+    await waitForCondition(
+      () => sql(managedForkStateDb, `select count(*) from threads where id=${sqlQuote(forkedThreadId)}`) === '0',
+      { label: 'managed Codex fork state row deletion' },
+    );
+    await waitForCondition(
+      () => sql(managedForkLogsDb, `select count(*) from logs where thread_id=${sqlQuote(forkedThreadId)}`) === '0',
+      { label: 'managed Codex fork log row deletion' },
+    );
+    assert(fs.existsSync(codexFixture.rolloutPath), 'Deleting a Codex fork must preserve the source imported rollout');
 
     // --- run-meta written on spawn ---
     const metaSession = await client.sendAndWaitType(
@@ -1761,11 +2572,11 @@ async function runRuntimeErrorRegressionCase({ port, password, logsDir }) {
       (msg) => msg.agent === 'codex' && msg.title === 'trigger codex silent exit',
     );
     await client.waitForType('text_delta', (msg) => /silent exit/.test(msg.text || ''), 8000);
-    const silentCodexError = await client.waitForType('error', (msg) => /Codex 任务异常结束（退出码 1）/.test(msg.message || ''), 8000);
-    assert(/Codex 任务异常结束（退出码 1）/.test(silentCodexError.message || ''), 'Codex silent non-zero exit should surface a generic failure message');
+    const silentCodexError = await client.waitForType('error', (msg) => /Codex 任务失败（退出码 1）/.test(msg.message || ''), 8000);
+    assert(/mock turn failed without additional output/.test(silentCodexError.message || ''), 'Codex failed App Server turn should surface its structured error');
     await client.waitForType('done', (msg) => msg.sessionId === silentCodexSession.sessionId, 8000);
     const silentCodexProcessCompleteLine = findProcessLogLine(logsDir, silentCodexSession.sessionId, 'process_complete');
-    assert(silentCodexProcessCompleteLine.includes('process exited with non-zero status 1 but returned no stderr'), 'Codex silent exit should be explicit in process_complete log');
+    assert(silentCodexProcessCompleteLine.includes('Codex mock turn failed without additional output'), 'Codex failed turn should be explicit in process_complete log');
 
     const silentClaudeSession = await client.sendAndWaitType(
       buildAgentMessagePayload({ text: 'trigger claude silent exit', mode: 'yolo', agent: 'claude' }),
@@ -1778,6 +2589,168 @@ async function runRuntimeErrorRegressionCase({ port, password, logsDir }) {
     await client.waitForType('done', (msg) => msg.sessionId === silentClaudeSession.sessionId, 8000);
     const silentClaudeProcessCompleteLine = findProcessLogLine(logsDir, silentClaudeSession.sessionId, 'process_complete');
     assert(silentClaudeProcessCompleteLine.includes('process exited with non-zero status 1 but returned no stderr'), 'Claude silent exit should be explicit in process_complete log');
+  });
+}
+
+async function runPiManagedRuntimeRegressionCase({ port, password, configDir, homeDir, piFixture }) {
+  await withAuthedClient(port, password, async ({ client }) => {
+    await saveConfigAndWait(
+      client,
+      'save_model_config',
+      {
+        mode: 'custom',
+        activeTemplate: 'Pi Responses Regression',
+        templates: [{
+          name: 'Pi Responses Regression',
+          apiKey: 'sk-pi-regression',
+          apiBase: 'https://example.com/v1',
+          upstreamType: 'openai',
+          defaultModel: 'pi-responses-model',
+        }],
+      },
+      'model_config',
+    );
+    const piConfig = await saveConfigAndWait(
+      client,
+      'save_pi_config',
+      { mode: 'unified', sharedTemplate: 'Pi Responses Regression' },
+      'pi_config',
+    );
+    assert(piConfig.config.mode === 'unified', 'Pi should save unified provider mode');
+
+    const runtimeDir = path.join(configDir, 'pi-runtime-home');
+    const models = JSON.parse(fs.readFileSync(path.join(runtimeDir, 'models.json'), 'utf8'));
+    const provider = models.providers?.webcoding;
+    assert(provider?.api === 'openai-responses', 'Pi unified runtime should use the Responses API');
+    assert(/^http:\/\/127\.0\.0\.1:\d+\/openai$/.test(provider?.baseUrl || ''), 'Pi unified runtime should route through the local bridge');
+    assert(provider?.apiKey === '$WEBCODING_PI_API_KEY', 'Pi runtime should reference the isolated bridge token env var');
+    const managedModel = provider?.models?.[0] || {};
+    assert(managedModel.id === 'pi-responses-model', 'Pi runtime should preserve the selected model id');
+    assert(!Object.prototype.hasOwnProperty.call(managedModel, 'contextWindow'), 'Pi runtime must not invent a model context window');
+    assert(!Object.prototype.hasOwnProperty.call(managedModel, 'maxTokens'), 'Pi runtime must not invent a model output limit');
+    assert(!Object.prototype.hasOwnProperty.call(managedModel, 'input'), 'Pi runtime must not claim unsupported image input');
+
+    const settings = JSON.parse(fs.readFileSync(path.join(runtimeDir, 'settings.json'), 'utf8'));
+    assert(settings.defaultProvider === 'webcoding' && settings.defaultModel === 'pi-responses-model', 'Pi managed settings should override only provider selection');
+    assert(settings.defaultThinkingLevel === 'high' && settings.theme === 'light', 'Pi managed settings should inherit user behavior preferences');
+    assert(Array.isArray(settings.packages) && settings.packages.includes('mock-pi-package'), 'Pi managed settings should inherit package configuration');
+    assert(!Object.prototype.hasOwnProperty.call(settings, 'enabledModels'), 'Pi managed settings should not retain incompatible local model cycling filters');
+    assert(!Object.prototype.hasOwnProperty.call(settings, 'sessionDir'), 'Pi managed settings should let Webcoding own session storage');
+    for (const key of ['extensions', 'skills', 'prompts', 'themes']) {
+      assert(
+        Array.isArray(settings[key]) && settings[key].some((entry) => String(entry).startsWith(path.join(homeDir, '.pi', 'agent'))),
+        `Pi managed settings should inherit global ${key}`,
+      );
+    }
+    for (const dirName of ['npm', 'git']) {
+      const mounted = path.join(runtimeDir, dirName);
+      assert(fs.realpathSync(mounted) === fs.realpathSync(path.join(piFixture.agentDir, dirName)), `Pi managed runtime should mount the user ${dirName} package store`);
+    }
+  });
+}
+
+async function runPiNativeImportAndForkRegressionCase({ port, password, sessionsDir, piFixture }) {
+  await withAuthedClient(port, password, async ({ client }) => {
+    const listed = await client.sendAndWaitType(
+      { type: 'list_pi_sessions' },
+      'pi_sessions',
+      (msg) => msg.groups?.some((group) => group.sessions?.some((item) => item.sessionId === piFixture.sessionId)),
+      8000,
+    );
+    const listedItem = listed.groups.flatMap((group) => group.sessions || [])
+      .find((item) => item.sessionId === piFixture.sessionId);
+    assert(listedItem && listedItem.title === 'Pi import fixture', 'Pi native listing should expose session name and id');
+
+    const imported = await client.sendAndWaitType(
+      { type: 'import_pi_session', sessionId: piFixture.sessionId, sessionPath: piFixture.filePath },
+      'session_info',
+      (msg) => msg.agent === 'pi' && msg.imported === true,
+      8000,
+    );
+    const importedText = (imported.messages || []).map((message) => message.content || '').join('\n');
+    assert(importedText.includes('Pi import prompt') && importedText.includes('active Pi branch'), 'Pi import should restore the active branch');
+    assert(!importedText.includes('discarded Pi branch') && !importedText.includes('discarded answer'), 'Pi import should exclude abandoned branches');
+    const importedAssistant = imported.messages.find((message) => message.role === 'assistant' && /Pi import answer/.test(message.content || ''));
+    assert(importedAssistant?.segments?.some((segment) => segment.thinking === true && /reasoning/.test(segment.text || '')), 'Pi import should preserve thinking segments');
+    assert(importedAssistant?.toolCalls?.[0]?.result === 'fixture tool result', 'Pi import should attach tool results to their calls');
+    const importedBash = imported.messages.find((message) => message.toolCalls?.some((tool) => tool.name === 'bash'));
+    const importedBashTool = importedBash?.toolCalls?.find((tool) => tool.name === 'bash');
+    assert(importedBashTool?.input?.command === 'printf fixture-bash && exit 7', 'Pi import should preserve native bashExecution commands');
+    assert(/fixture-bash/.test(importedBashTool?.result || '') && /输出已截断/.test(importedBashTool?.result || ''), 'Pi import should preserve bashExecution output and truncation details');
+    assert(importedBashTool?.isError === true && importedBashTool?.meta?.exitCode === 7, 'Pi import should preserve bashExecution failure state');
+    assert(imported.totalUsage?.inputTokens === 8 && imported.totalUsage?.cachedInputTokens === 3 && imported.totalUsage?.outputTokens === 11, 'Pi import should aggregate active-branch usage only');
+    assert(Math.abs(Number(imported.totalCost || 0) - 0.03) < 1e-9, 'Pi import should aggregate active-branch cost only');
+
+    let stored = readStoredSessionFile(sessionsDir, imported.sessionId);
+    assert(stored.piSessionId === piFixture.sessionId && stored.claudeSessionId === null, 'Pi import should persist its native id without reusing Claude metadata');
+    assert(getActiveStoredRuntimeId(stored, 'pi') === piFixture.sessionId, 'Pi import should bind the native id to the active Pi runtime context');
+    const importedStorageDir = path.join(sessionsDir, '_pi-sessions', imported.sessionId);
+    assert(fs.readdirSync(importedStorageDir).some((name) => name.endsWith('.jsonl')), 'Pi import should copy native JSONL into Webcoding-owned storage');
+
+    client.send(buildAgentMessagePayload({
+      text: 'continue imported Pi context',
+      sessionId: imported.sessionId,
+      mode: 'yolo',
+      agent: 'pi',
+    }));
+    await client.waitForType('done', (msg) => msg.sessionId === imported.sessionId, 8000);
+    stored = readStoredSessionFile(sessionsDir, imported.sessionId);
+    assert(getActiveStoredRuntimeId(stored, 'pi') === piFixture.sessionId, 'Continuing an imported Pi session should retain its native id');
+
+    const forkOptions = await client.sendAndWaitType(
+      buildAgentMessagePayload({
+        text: '/fork',
+        sessionId: imported.sessionId,
+        mode: 'yolo',
+        agent: 'pi',
+        clientMessageId: 'pi-native-fork',
+      }),
+      'pi_fork_options',
+      (msg) => msg.sessionId === imported.sessionId,
+      8000,
+    );
+    const selectedForkOption = forkOptions.options?.find((option) => option.entryId === 'active-user');
+    assert(selectedForkOption?.text === 'active Pi branch', 'Pi /fork should expose native user-message branch points');
+    client.send({
+      type: 'fork_pi_session',
+      sessionId: imported.sessionId,
+      entryId: selectedForkOption.entryId,
+    });
+    client.send({ type: 'delete_session', sessionId: imported.sessionId });
+    const blockedDelete = await client.waitForType(
+      'error',
+      (msg) => msg.sessionId === imported.sessionId && /正在创建分支/.test(msg.message || ''),
+      8000,
+    );
+    assert(blockedDelete, 'Deleting a Pi session must be blocked while its fork selection is in progress');
+    const forked = await client.waitForType(
+      'session_info',
+      (msg) => msg.agent === 'pi' && msg.sessionId !== imported.sessionId && /分支/.test(msg.title || ''),
+      8000,
+    );
+    assert(forked.forked === true && forked.draftText === 'active Pi branch', 'Pi /fork should return the selected prompt as an editable Web draft');
+    const forkedHistoryText = (forked.messages || []).map((message) => message.content || '').join('\n');
+    assert(forkedHistoryText.includes('Pi import prompt') && !forkedHistoryText.includes('active Pi branch'), 'Pi /fork should show history only up to the selected branch point');
+    assert(forked.totalUsage?.inputTokens === 5 && Math.abs(Number(forked.totalCost || 0) - 0.01) < 1e-9, 'Pi /fork should recalculate usage and cost for the selected history path');
+    const sourceAfterFork = readStoredSessionFile(sessionsDir, imported.sessionId);
+    const forkedStored = readStoredSessionFile(sessionsDir, forked.sessionId);
+    const sourceRuntimeId = getActiveStoredRuntimeId(sourceAfterFork, 'pi');
+    const forkedRuntimeId = getActiveStoredRuntimeId(forkedStored, 'pi');
+    assert(sourceRuntimeId === piFixture.sessionId, 'Pi /fork should restore the original RPC session after cloning');
+    assert(forkedRuntimeId && forkedRuntimeId !== sourceRuntimeId, 'Pi /fork should persist a distinct native session id');
+    assert(forkedStored.piSessionId === forkedRuntimeId && forkedStored.claudeSessionId === null, 'Pi fork should use dedicated Pi metadata');
+    const forkStorageDir = path.join(sessionsDir, '_pi-sessions', forked.sessionId);
+    assert(fs.readdirSync(forkStorageDir).some((name) => name.endsWith('.jsonl')), 'Pi /fork should copy the cloned native JSONL into the forked Web session');
+    assert(!fs.existsSync(path.join(importedStorageDir, `${forkedRuntimeId}.jsonl`)), 'Pi /fork should remove its temporary JSONL from the source Web session');
+
+    client.send(buildAgentMessagePayload({
+      text: 'continue forked Pi context',
+      sessionId: forked.sessionId,
+      mode: 'yolo',
+      agent: 'pi',
+    }));
+    await client.waitForType('done', (msg) => msg.sessionId === forked.sessionId, 8000);
+    assert(getActiveStoredRuntimeId(readStoredSessionFile(sessionsDir, forked.sessionId), 'pi') === forkedRuntimeId, 'Forked Pi session should resume its own native id');
   });
 }
 
@@ -1822,11 +2795,41 @@ async function runPiAgentRegressionCase({ port, password, sessionsDir, logsDir }
     assert(slashList.capabilities?.protocol === 'pi-rpc', 'Pi capabilities should advertise the RPC protocol');
     assert(slashList.capabilities?.askUser === true, 'Pi RPC capabilities should advertise respondable interaction');
     assert(slashList.capabilities?.nativeStreamingQueue === true, 'Pi RPC capabilities should advertise its native streaming queue');
+    assert(slashList.capabilities?.thinkingLevel === true, 'Pi RPC capabilities should advertise native thinking-level controls');
+    assert(slashList.commands.find((entry) => entry.cmd === '/thinking')?.availability === 'platform', 'Pi /thinking should be handled through native RPC');
     assert(
       slashList.capabilities?.streamingBehaviors?.includes('steer')
         && slashList.capabilities?.streamingBehaviors?.includes('followUp'),
       'Pi RPC capabilities should advertise steer and followUp modes',
     );
+
+    const thinkingList = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: '/thinking', sessionId: session.sessionId, mode: 'yolo', agent: 'pi' }),
+      'effort_list',
+      (msg) => msg.sessionId === session.sessionId && msg.agent === 'pi' && msg.command === 'thinking',
+      8000,
+    );
+    assert(thinkingList.current === 'medium', 'Pi /thinking should read the active RPC thinking level');
+    assert(thinkingList.entries.some((entry) => entry.value === 'xhigh'), 'Pi /thinking should expose every current native thinking level');
+    client.send(buildAgentMessagePayload({
+      text: '/thinking high',
+      sessionId: session.sessionId,
+      mode: 'yolo',
+      agent: 'pi',
+    }));
+    await client.waitForType(
+      'system_message',
+      (msg) => msg.sessionId === session.sessionId && /Pi 思考级别已切换为：high/.test(msg.message || ''),
+      8000,
+    );
+    assert(readStoredSessionFile(sessionsDir, session.sessionId).thinking === 'high', 'Pi thinking level should persist with the Web session');
+    const thinkingModelList = await client.sendAndWaitType(
+      buildAgentMessagePayload({ text: '/model', sessionId: session.sessionId, mode: 'yolo', agent: 'pi' }),
+      'model_list',
+      (msg) => msg.sessionId === undefined && msg.agent === 'pi' && msg.thinkingLevel === 'high',
+      8000,
+    );
+    assert(thinkingModelList.thinkingLevel === 'high', 'Pi set_thinking_level should update the live RPC runtime without restarting it');
 
     // Multi-turn resume via --session-id
     client.send(buildAgentMessagePayload({
@@ -1843,6 +2846,51 @@ async function runPiAgentRegressionCase({ port, password, sessionsDir, logsDir }
     await client.waitForType('done', (msg) => msg.sessionId === session.sessionId, 8000);
     const secondText = getLastStoredAssistantText(sessionsDir, session.sessionId);
     assert(/turn 2/.test(secondText || ''), 'Pi second turn should resume the same mock session state');
+
+    client.send(buildAgentMessagePayload({
+      text: 'trigger pi rpc passive ui',
+      mode: 'yolo',
+      agent: 'pi',
+      sessionId: session.sessionId,
+    }));
+    const passiveTitle = await client.waitForType(
+      'pi_extension_ui',
+      (msg) => msg.sessionId === session.sessionId && msg.method === 'setTitle',
+      8000,
+    );
+    const passiveStatus = await client.waitForType(
+      'pi_extension_ui',
+      (msg) => msg.sessionId === session.sessionId && msg.method === 'setStatus',
+      8000,
+    );
+    const passiveWidget = await client.waitForType(
+      'pi_extension_ui',
+      (msg) => msg.sessionId === session.sessionId && msg.method === 'setWidget',
+      8000,
+    );
+    const passiveEditor = await client.waitForType(
+      'pi_extension_ui',
+      (msg) => msg.sessionId === session.sessionId && msg.method === 'set_editor_text',
+      8000,
+    );
+    assert(passiveTitle.title === 'Pi Mock Workspace', 'Pi setTitle should reach the browser');
+    assert(passiveStatus.key === 'build' && passiveStatus.text === 'Build ready', 'Pi setStatus should reach the browser');
+    assert(passiveWidget.key === 'checks' && passiveWidget.lines?.length === 2, 'Pi setWidget should preserve widget lines');
+    assert(passiveEditor.text === 'follow up from Pi extension', 'Pi set_editor_text should prefill the browser composer');
+    await client.waitForType('done', (msg) => msg.sessionId === session.sessionId, 8000);
+
+    client.send({ type: 'load_session', sessionId: session.sessionId });
+    await client.waitForType('session_info', (msg) => msg.sessionId === session.sessionId, 8000);
+    await client.waitForType(
+      'pi_extension_ui',
+      (msg) => msg.sessionId === session.sessionId && msg.method === 'setStatus' && msg.text === 'Build ready',
+      8000,
+    );
+    await client.waitForType(
+      'pi_extension_ui',
+      (msg) => msg.sessionId === session.sessionId && msg.method === 'setWidget' && msg.lines?.includes('Tests: passed'),
+      8000,
+    );
 
     // Native streaming queue: follow-up is accepted first, but steering runs first.
     client.send(buildAgentMessagePayload({
@@ -2159,6 +3207,86 @@ async function runPiRpcReconnectRegressionCase({ port, password }) {
   }
 }
 
+async function runClaudeCodexInteractionReconnectRegressionCase({ port, password }) {
+  async function exercise({ agent, prompt, protocol, value, completionPattern }) {
+    let originalConnection = null;
+    let resumedConnection = null;
+    let sessionId = null;
+    let completed = false;
+    try {
+      originalConnection = await connectAuthedClient(port, password);
+      const session = await originalConnection.client.sendAndWaitType(
+        buildAgentMessagePayload({ text: prompt, mode: 'default', agent }),
+        'session_info',
+        (msg) => msg.agent === agent && msg.title === prompt,
+      );
+      sessionId = session.sessionId;
+      const initialRequest = await originalConnection.client.waitForType(
+        'interactive_request',
+        (msg) => msg.sessionId === sessionId && msg.protocol === protocol && msg.respondable === true,
+        8000,
+      );
+
+      await closeWs(originalConnection.ws);
+      resumedConnection = await connectAuthedClient(port, password);
+      resumedConnection.client.send({ type: 'load_session', sessionId });
+      await resumedConnection.client.waitForType(
+        'session_info',
+        (msg) => msg.sessionId === sessionId && msg.isRunning === true,
+        5000,
+      );
+      await resumedConnection.client.waitForType('resume_generating', (msg) => msg.sessionId === sessionId, 5000);
+      const replayedRequest = await resumedConnection.client.waitForType(
+        'interactive_request',
+        (msg) => msg.sessionId === sessionId && msg.requestId === initialRequest.requestId,
+        5000,
+      );
+      assert(replayedRequest.protocol === protocol, `${agent} should replay its pending native interaction after reconnect`);
+
+      resumedConnection.client.send({
+        type: 'interactive_response',
+        sessionId,
+        requestId: replayedRequest.requestId,
+        value,
+      });
+      await resumedConnection.client.waitForType(
+        'interactive_response_result',
+        (msg) => msg.sessionId === sessionId && msg.requestId === replayedRequest.requestId && msg.success === true,
+        5000,
+      );
+      await resumedConnection.client.waitForType(
+        'text_delta',
+        (msg) => msg.sessionId === sessionId && completionPattern.test(msg.text || ''),
+        8000,
+      );
+      await resumedConnection.client.waitForType('done', (msg) => msg.sessionId === sessionId, 8000);
+      completed = true;
+    } finally {
+      if (!completed && resumedConnection?.ws?.readyState === WebSocket.OPEN && sessionId) {
+        resumedConnection.client.send({ type: 'abort' });
+        await sleep(100);
+      }
+      if (originalConnection) await closeWs(originalConnection.ws);
+      if (resumedConnection) await closeWs(resumedConnection.ws);
+    }
+  }
+
+  await exercise({
+    agent: 'claude',
+    prompt: 'trigger claude interactive permission',
+    protocol: 'claude-stream-json',
+    value: 'allow-once',
+    completionPattern: /Claude mock permission response:/,
+  });
+  await exercise({
+    agent: 'codex',
+    prompt: 'trigger codex interactive approval',
+    protocol: 'codex-app-server',
+    value: 'accept',
+    completionPattern: /approval decision: accept/,
+  });
+}
+
 async function runPiHeadlessFallbackRegressionCase({ tempRoot, password }) {
   const fallbackRoot = path.join(tempRoot, 'pi-headless-fallback');
   const configDir = path.join(fallbackRoot, 'config');
@@ -2466,7 +3594,7 @@ async function runReconnectResumeRegressionCase({ port, password }) {
   }
 }
 
-async function runServerRestartRecoveryRegressionCase({ port, password, logsDir, serverHandle, serverEnv }) {
+async function runServerRestartRecoveryRegressionCase({ port, password, sessionsDir, serverHandle, serverEnv }) {
   let initialConnection = null;
   let restartedHandle = null;
   let recoveredConnection = null;
@@ -2478,6 +3606,8 @@ async function runServerRestartRecoveryRegressionCase({ port, password, logsDir,
       (msg) => msg.agent === 'codex' && msg.title === 'trigger codex slow stream restart',
     );
     await initialConnection.client.waitForType('text_delta', (msg) => /slow-start:restart/.test(msg.text || ''), 5000);
+    const nativeThreadId = getActiveStoredRuntimeId(readStoredSessionFile(sessionsDir, restartSession.sessionId), 'codex');
+    assert(nativeThreadId, 'Codex App Server should persist its native thread before restart');
 
     await stopServer(serverHandle);
     await waitForCondition(
@@ -2494,28 +3624,28 @@ async function runServerRestartRecoveryRegressionCase({ port, password, logsDir,
     const recoveredList = await recoveredConnection.client.sendAndWaitType(
       { type: 'list_sessions' },
       'session_list',
-      (msg) => msg.sessions.some((session) => session.id === restartSession.sessionId && session.isRunning),
+      (msg) => msg.sessions.some((session) => session.id === restartSession.sessionId),
       5000,
     );
-    assert(recoveredList.sessions.some((session) => session.id === restartSession.sessionId && session.isRunning), 'Recovered server should mark interrupted session as running');
+    assert(recoveredList.sessions.some((session) => session.id === restartSession.sessionId && !session.isRunning), 'Restarted server must not leave an interrupted App Server turn stuck as running');
 
     recoveredConnection.client.send({ type: 'load_session', sessionId: restartSession.sessionId });
     const loadedRestartSession = await recoveredConnection.client.waitForType(
       'session_info',
-      (msg) => msg.sessionId === restartSession.sessionId && msg.isRunning === true,
+      (msg) => msg.sessionId === restartSession.sessionId && msg.isRunning === false,
       5000,
     );
-    assert(loadedRestartSession.isRunning === true, 'Recovered session should still be attachable as running');
-    const resumedRestartStream = await recoveredConnection.client.waitForType(
-      'resume_generating',
-      (msg) => msg.sessionId === restartSession.sessionId && /slow-start:restart/.test(msg.text || ''),
-      5000,
-    );
-    assert(/slow-start:restart/.test(resumedRestartStream.text || ''), 'Recovered server should replay streamed text snapshot');
-    const recoveryLine = findProcessLogLine(logsDir, restartSession.sessionId, 'recovery_alive');
-    assert(recoveryLine, 'Recovered server should log recovery_alive for the resumed process');
-    await recoveredConnection.client.waitForType('text_delta', (msg) => /slow-mid:restart|slow-end:restart/.test(msg.text || ''), 6000);
+    assert(loadedRestartSession.isRunning === false, 'Interrupted App Server turn should reopen as idle after server restart');
+    recoveredConnection.client.send(buildAgentMessagePayload({
+      text: 'continue after codex app server restart',
+      sessionId: restartSession.sessionId,
+      mode: 'yolo',
+      agent: 'codex',
+    }));
+    await recoveredConnection.client.waitForType('text_delta', (msg) => /continue after codex app server restart/.test(msg.text || ''), 8000);
     await recoveredConnection.client.waitForType('done', (msg) => msg.sessionId === restartSession.sessionId, 10000);
+    const resumedThreadId = getActiveStoredRuntimeId(readStoredSessionFile(sessionsDir, restartSession.sessionId), 'codex');
+    assert(resumedThreadId === nativeThreadId, 'Codex should resume the persisted native thread after a Webcoding server restart');
   } finally {
     if (initialConnection) await closeWs(initialConnection.ws);
     if (recoveredConnection) await closeWs(recoveredConnection.ws);
@@ -2664,8 +3794,8 @@ async function runFetchModelsApiBaseCompatibilityRegressionCase({ port, password
     });
 
     const modelRequests = upstream.requests.filter((req) => req.path === '/v1/models');
-    assert(modelRequests.length >= 4, `Version compatibility regression should hit /v1/models at least 4 times, got ${modelRequests.length}`);
-    assert(!upstream.requests.some((req) => req.path.includes('/v1/v1/')), 'No fetch_models or Codex model request should duplicate /v1 in upstream path');
+    assert(modelRequests.length >= 2, `Version compatibility regression should hit /v1/models for both explicit fetches, got ${modelRequests.length}`);
+    assert(!upstream.requests.some((req) => req.path.includes('/v1/v1/')), 'No fetch_models request should duplicate /v1 in upstream path');
   } finally {
     await upstream.close();
   }
@@ -3110,6 +4240,7 @@ async function runClaudeSettingsRestoreRegressionCase({ tempRoot }) {
 
   const claudeSettingsPath = path.join(homeDir, '.claude', 'settings.json');
   const backupPath = path.join(configDir, 'claude-settings-backup.json');
+  const runtimeSettingsPath = path.join(configDir, 'claude-runtime-settings.json');
   mkdirp(path.dirname(claudeSettingsPath));
   const originalSettings = {
     env: {
@@ -3171,26 +4302,24 @@ async function runClaudeSettingsRestoreRegressionCase({ tempRoot }) {
       await client.waitForType('done', (msg) => msg.sessionId === claudeRuntimeSession.sessionId);
     });
 
-    const unifiedSettings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
-    assert(unifiedSettings.env?.PRESERVE_ME === 'still-here', 'Claude unified apply should preserve unrelated env keys');
-    assert(unifiedSettings.permissions?.allow?.[0] === 'Read(/tmp)', 'Claude unified apply should preserve unrelated top-level settings');
-    assert(unifiedSettings.env?.ANTHROPIC_API_KEY, 'Claude unified apply should inject managed API key');
-    assert(!unifiedSettings.env?.ANTHROPIC_AUTH_TOKEN, 'Claude unified apply should replace local auth token with managed key');
-    assert(/http:\/\/127\.0\.0\.1:\d+\/anthropic/.test(unifiedSettings.env?.ANTHROPIC_BASE_URL || ''), 'Claude unified apply should point at local bridge base URL');
-    assert(fs.existsSync(backupPath), 'Claude unified apply should persist a local settings backup');
-    const backupJson = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
-    assert(backupJson.version === 2, 'Claude settings backup should use the full-file backup format');
-    assert(backupJson.exists === true, 'Claude settings backup should record that the original settings file existed');
-    assert(isDeepStrictEqual(backupJson.settings, originalSettings), 'Claude settings backup should store the full original settings object');
+    const unchangedUserSettings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
+    assert(JSON.stringify(unchangedUserSettings) === JSON.stringify(originalSettings), 'Claude unified mode must not modify the user settings file');
+    const unifiedSettings = JSON.parse(fs.readFileSync(runtimeSettingsPath, 'utf8'));
+    assert(unifiedSettings.env?.PRESERVE_ME === 'still-here', 'Claude isolated runtime settings should preserve unrelated env keys');
+    assert(unifiedSettings.permissions?.allow?.[0] === 'Read(/tmp)', 'Claude isolated runtime settings should preserve unrelated top-level settings');
+    assert(unifiedSettings.env?.ANTHROPIC_API_KEY, 'Claude isolated runtime settings should inject the managed API key');
+    assert(!unifiedSettings.env?.ANTHROPIC_AUTH_TOKEN, 'Claude isolated runtime settings should replace the local auth token');
+    assert(/http:\/\/127\.0\.0\.1:\d+\/anthropic/.test(unifiedSettings.env?.ANTHROPIC_BASE_URL || ''), 'Claude isolated runtime settings should point at the local bridge');
+    assert(!fs.existsSync(backupPath), 'Fresh Claude unified mode should not need a user-settings backup');
     const storedCustomRuntimeSession = JSON.parse(fs.readFileSync(path.join(sessionsDir, `${claudeRuntimeSession.sessionId}.json`), 'utf8'));
     firstRuntimeSessionId = storedCustomRuntimeSession.claudeSessionId;
     assert(firstRuntimeSessionId, 'Claude runtime baseline should persist a native Claude session id');
     assert(storedCustomRuntimeSession.claudeRuntimeFingerprint, 'Claude runtime baseline should persist a runtime fingerprint');
 
-    unifiedSettings.model = 'custom-temp-model';
-    unifiedSettings.permissions.allow.push('Write(/tmp/generated)');
-    unifiedSettings.someUnifiedOnlyField = true;
-    fs.writeFileSync(claudeSettingsPath, JSON.stringify(unifiedSettings, null, 2));
+    unchangedUserSettings.model = 'custom-temp-model';
+    unchangedUserSettings.permissions.allow.push('Write(/tmp/generated)');
+    unchangedUserSettings.someUnifiedOnlyField = true;
+    fs.writeFileSync(claudeSettingsPath, JSON.stringify(unchangedUserSettings, null, 2));
 
     await stopServer(serverHandle);
     const restartedHandle = await startServer(serverEnv);
@@ -3246,7 +4375,8 @@ async function runClaudeSettingsRestoreRegressionCase({ tempRoot }) {
     assert(restoredSettings.env?.PRESERVE_ME === 'still-here', 'Claude local restore should keep unrelated env keys');
     assert(Array.isArray(restoredSettings.permissions?.allow) && restoredSettings.permissions.allow.includes('Write(/tmp/generated)'), 'Claude local restore should preserve concurrent top-level edits');
     assert(restoredSettings.someUnifiedOnlyField === true, 'Claude local restore should preserve concurrent fields outside managed env keys');
-    assert(!fs.existsSync(backupPath), 'Claude local restore should clear consumed backup file');
+    assert(!fs.existsSync(backupPath), 'Claude isolated settings should not leave a backup file');
+    assert(!fs.existsSync(runtimeSettingsPath), 'Switching back to local Claude should remove isolated runtime settings');
     const claudeSpawnLines = findProcessLogLines(logsDir, claudeRuntimeSession.sessionId, 'process_spawn');
     const latestClaudeSpawn = claudeSpawnLines[claudeSpawnLines.length - 1] || '';
     assert(claudeSpawnLines.length >= 2, 'Claude runtime switch regression should create at least two spawn records');
@@ -3624,11 +4754,11 @@ async function runCodexLocalConfigFingerprintRegressionCase({ tempRoot }) {
         'Codex local fingerprint change should continue the original thread by default',
       );
 
-      const spawnLines = findProcessLogLines(logsDir, session.sessionId, 'process_spawn');
+      const spawnLines = findProcessLogLines(logsDir, session.sessionId, 'codex_app_turn_start');
       const latestSpawnLine = spawnLines[spawnLines.length - 1] || '';
-      assert(spawnLines.length >= 2, 'Codex local fingerprint regression should produce at least two spawn records');
+      assert(spawnLines.length >= 2, 'Codex local fingerprint regression should produce at least two App Server turn records');
       assert(latestSpawnLine && latestSpawnLine.includes('"resume":true'), 'Codex local fingerprint change should keep resume on the next run by default');
-      assert(latestSpawnLine.includes('exec resume'), 'Codex local fingerprint change should keep exec resume on the next run by default');
+      assert(latestSpawnLine.includes('"operation":"thread/resume"'), 'Codex local fingerprint change should use thread/resume on the next run');
       const secondStoredSession = readStoredSessionFile(sessionsDir, session.sessionId);
       const secondThreadId = getActiveStoredRuntimeId(secondStoredSession, 'codex');
       assert(secondThreadId && secondThreadId === firstThreadId, 'Codex local fingerprint change should keep the original thread id by default');
@@ -3746,10 +4876,10 @@ async function runCodexConfigCarryoverRegressionCase({ tempRoot }) {
         'model_provider',
         '切到统一 API 后继续处理 /tmp/codex-carryover/src/index.js',
       ]);
-      const unifiedSpawnLines = findProcessLogLines(logsDir, session.sessionId, 'process_spawn');
+      const unifiedSpawnLines = findProcessLogLines(logsDir, session.sessionId, 'codex_app_turn_start');
       const unifiedSpawn = unifiedSpawnLines[unifiedSpawnLines.length - 1] || '';
       assert(unifiedSpawn.includes('"resume":false'), 'Codex carryover switch to unified should not resume the old thread');
-      assert(!unifiedSpawn.includes('exec resume'), 'Codex carryover switch to unified should drop exec resume after config change');
+      assert(unifiedSpawn.includes('"operation":"thread/start"'), 'Codex carryover switch to unified should use thread/start after config change');
 
       await saveConfigAndWait(
         client,
@@ -3802,10 +4932,10 @@ async function runCodexConfigCarryoverRegressionCase({ tempRoot }) {
         resumedCodexThreadId && resumedCodexThreadId === unifiedThreadId,
         'Codex carryover unified model change should keep the same thread id',
       );
-      const resumedCodexSpawnLines = findProcessLogLines(logsDir, session.sessionId, 'process_spawn');
+      const resumedCodexSpawnLines = findProcessLogLines(logsDir, session.sessionId, 'codex_app_turn_start');
       const resumedCodexSpawn = resumedCodexSpawnLines[resumedCodexSpawnLines.length - 1] || '';
       assert(resumedCodexSpawn.includes('"resume":true'), 'Codex carryover unified model change should resume the existing thread');
-      assert(resumedCodexSpawn.includes('exec resume'), 'Codex carryover unified model change should include exec resume');
+      assert(resumedCodexSpawn.includes('"operation":"thread/resume"'), 'Codex carryover unified model change should use thread/resume');
 
       await saveConfigAndWait(
         client,
@@ -3843,10 +4973,10 @@ async function runCodexConfigCarryoverRegressionCase({ tempRoot }) {
         !/\[webcoding 自动上下文续接\]/.test(restoredAssistantText),
         'Codex carryover switch back to local should not inject carryover envelope when resuming old local channel',
       );
-      const restoredSpawnLines = findProcessLogLines(logsDir, session.sessionId, 'process_spawn');
+      const restoredSpawnLines = findProcessLogLines(logsDir, session.sessionId, 'codex_app_turn_start');
       const restoredSpawn = restoredSpawnLines[restoredSpawnLines.length - 1] || '';
       assert(restoredSpawn.includes('"resume":true'), 'Codex carryover switch back to local should resume the original local thread');
-      assert(restoredSpawn.includes('exec resume'), 'Codex carryover switch back to local should include exec resume');
+      assert(restoredSpawn.includes('"operation":"thread/resume"'), 'Codex carryover switch back to local should use thread/resume');
     });
   });
 }
@@ -3981,10 +5111,10 @@ async function runCodexStickyUnifiedResumeRegressionCase({ tempRoot }) {
         !/\[webcoding 自动上下文续接\]/.test(stickyAssistantText),
         'Codex sticky unified resume should not inject the carryover envelope when reusing the original thread',
       );
-      const spawnLines = findProcessLogLines(logsDir, session.sessionId, 'process_spawn');
+      const spawnLines = findProcessLogLines(logsDir, session.sessionId, 'codex_app_turn_start');
       const latestSpawnLine = spawnLines[spawnLines.length - 1] || '';
       assert(latestSpawnLine.includes('"resume":true'), 'Codex sticky unified resume should keep resume enabled after channel switch');
-      assert(latestSpawnLine.includes('exec resume'), 'Codex sticky unified resume should include exec resume after channel switch');
+      assert(latestSpawnLine.includes('"operation":"thread/resume"'), 'Codex sticky unified resume should use thread/resume after channel switch');
     });
   });
 }
@@ -4046,9 +5176,9 @@ async function runCodexConfigMigrationRegressionCase({ port, password, sessionsD
     await client.waitForType('system_message', (msg) => THREAD_RESET_WARNING_RE.test(msg.message || ''));
     await client.waitForType('done', (msg) => msg.sessionId === legacySession.sessionId);
 
-    const spawnLine = findProcessLogLine(logsDir, legacySession.sessionId, 'process_spawn');
+    const spawnLine = findProcessLogLine(logsDir, legacySession.sessionId, 'codex_app_turn_start');
     assert(spawnLine && spawnLine.includes('"resume":false'), 'Legacy Codex session should not resume after config migration');
-    assert(!spawnLine.includes('exec resume'), 'Legacy Codex session should start a new thread after config migration');
+    assert(spawnLine.includes('"operation":"thread/start"'), 'Legacy Codex session should start a new App Server thread after config migration');
 
     const migratedJson = JSON.parse(fs.readFileSync(legacySessionPath, 'utf8'));
     assert(migratedJson.codexThreadId && migratedJson.codexThreadId !== 'legacy-thread-id', 'Codex session should persist a new thread id after migration');
@@ -4106,7 +5236,7 @@ async function runCodexReasoningEffortRegressionCase({ port, password, tempRoot,
     }));
     await client.waitForType('done', (msg) => msg.sessionId === session.sessionId);
 
-    const spawnLine = findProcessLogLine(logsDir, session.sessionId, 'process_spawn');
+    const spawnLine = findProcessLogLine(logsDir, session.sessionId, 'codex_app_turn_start');
     const spawnArgs = spawnLine ? (JSON.parse(spawnLine).args || '') : '';
     assert(!spawnArgs.includes('model_reasoning_effort='), 'Codex spawn should ignore legacy model_reasoning_effort config');
   });
@@ -4154,7 +5284,7 @@ async function runCodexBridgeProtocolNormalizationRegressionCase({ port, passwor
     );
     await client.waitForType('done', (msg) => msg.sessionId === session.sessionId, 8000);
 
-    const spawnLine = findProcessLogLine(logsDir, session.sessionId, 'process_spawn');
+    const spawnLine = findProcessLogLine(logsDir, session.sessionId, 'codex_app_turn_start');
     const spawnArgs = spawnLine ? (JSON.parse(spawnLine).args || '') : '';
     assert(/-c model_providers\.openai_compat\.base_url="http:\/\/127\.0\.0\.1:\d+\/openai"/.test(spawnArgs), 'Codex mislabel normalization should still route through the bridge openai endpoint');
 
@@ -4269,9 +5399,10 @@ async function runHappyPathRegressionCase({ port, password, tempRoot, configDir,
     );
     assert(runningSessionList.sessions.some((s) => s.id === firstMessageSession.sessionId && s.isRunning), 'Running Codex session should be marked as isRunning');
     await client.waitForType('done', (msg) => msg.sessionId === firstMessageSession.sessionId);
-    const spawnLine = findProcessLogLine(logsDir, firstMessageSession.sessionId, 'process_spawn');
+    const spawnLine = findProcessLogLine(logsDir, firstMessageSession.sessionId, 'codex_app_turn_start');
     const spawnArgs = spawnLine ? (JSON.parse(spawnLine).args || '') : '';
-    assert(spawnLine && !spawnLine.includes('--search') && spawnLine.includes('--image'), 'Codex exec should attach images and not append unsupported --search flag');
+    const appTurnLog = spawnLine ? JSON.parse(spawnLine) : null;
+    assert(appTurnLog?.attachmentCount === 1 && !spawnLine.includes('--search'), 'Codex App Server should receive one local image without unsupported --search flags');
     const runtimeToml = fs.readFileSync(path.join(configDir, 'codex-runtime-home', 'config.toml'), 'utf8');
     assert(runtimeToml.includes('preferred_auth_method = "apikey"'), 'Codex unified runtime should write isolated runtime auth mode');
     assert(runtimeToml.includes('name = "Regression Unified API"'), 'Codex unified runtime should point at the active unified API template');
@@ -4328,9 +5459,20 @@ async function runHappyPathRegressionCase({ port, password, tempRoot, configDir,
     client.send(buildAgentMessagePayload({ text: 'use sonnet 1m', sessionId: claudeModelSession.sessionId, mode: 'yolo', agent: 'claude' }));
     await client.waitForType('done', (msg) => msg.sessionId === claudeModelSession.sessionId);
     const claudeOneMSpawnLine = findProcessLogLine(logsDir, claudeModelSession.sessionId, 'process_spawn');
-    assert(claudeOneMSpawnLine && claudeOneMSpawnLine.includes('claude-sonnet-4-6[1m]'), 'Claude /model Sonnet 1M should pass the real 1M model value to CLI');
+    assert(claudeOneMSpawnLine && claudeOneMSpawnLine.includes('claude-sonnet-4-6[1m]'), 'Claude /model Sonnet 1M should honor the configured provider mapping');
     const storedClaudeOneMSession = JSON.parse(fs.readFileSync(path.join(sessionsDir, `${claudeModelSession.sessionId}.json`), 'utf8'));
-    assert(storedClaudeOneMSession.model === 'claude-sonnet-4-6[1m]', 'Claude /model should persist the real 1M model value');
+    assert(storedClaudeOneMSession.model === 'claude-sonnet-4-6[1m]', 'Claude /model should persist the configured provider mapping');
+
+    for (const inheritedName of ['constructor', '__proto__']) {
+      const changed = await client.sendAndWaitType(
+        buildAgentMessagePayload({ text: `/model ${inheritedName}`, sessionId: claudeModelSession.sessionId, mode: 'yolo', agent: 'claude' }),
+        'model_changed',
+        (msg) => msg.model === inheritedName,
+      );
+      assert(changed.model === inheritedName, `Claude /model should treat ${inheritedName} as a literal custom model name`);
+    }
+    const storedCustomModelSession = readStoredSessionFile(sessionsDir, claudeModelSession.sessionId);
+    assert(storedCustomModelSession.model === '__proto__', 'Claude /model must not resolve inherited object properties as model mappings');
 
     const claudeAttachment = await uploadAttachment(port, token, {
       filename: 'claude-test.png',
@@ -4344,13 +5486,13 @@ async function runHappyPathRegressionCase({ port, password, tempRoot, configDir,
     );
     await client.waitForType('done', (msg) => msg.sessionId === claudeImageSession.sessionId);
     const claudeSpawnLine = findProcessLogLine(logsDir, claudeImageSession.sessionId, 'process_spawn');
-    assert(claudeSpawnLine && claudeSpawnLine.includes('--input-format stream-json'), 'Claude image message should switch stdin to stream-json');
+    assert(claudeSpawnLine && claudeSpawnLine.includes('--input-format stream-json'), 'Claude image message should use stream-json input');
     const storedClaudeSession = JSON.parse(fs.readFileSync(path.join(sessionsDir, `${claudeImageSession.sessionId}.json`), 'utf8'));
     assert(Array.isArray(storedClaudeSession.messages?.[0]?.attachments) && storedClaudeSession.messages[0].attachments.length === 1, 'Claude message should persist attachment metadata');
-    const claudeSettingsPath = path.join(homeDir, '.claude', 'settings.json');
+    const claudeSettingsPath = path.join(configDir, 'claude-runtime-settings.json');
     const claudeSettings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
-    assert(claudeSettings.env?.ANTHROPIC_API_KEY, 'Claude unified runtime should write ANTHROPIC_API_KEY');
-    assert(!claudeSettings.env?.ANTHROPIC_AUTH_TOKEN, 'Claude unified runtime should not write ANTHROPIC_AUTH_TOKEN');
+    assert(claudeSettings.env?.ANTHROPIC_API_KEY, 'Claude unified runtime should inject ANTHROPIC_API_KEY into isolated settings');
+    assert(!claudeSettings.env?.ANTHROPIC_AUTH_TOKEN, 'Claude isolated runtime settings should not contain ANTHROPIC_AUTH_TOKEN');
 
     const nativeSessions = await client.sendAndWaitType(
       { type: 'list_native_sessions' },
@@ -4420,6 +5562,7 @@ async function main() {
 
     createFakeClaudeHistory(homeDir);
     const codexFixture = createFakeCodexHistory(homeDir);
+    const piFixture = createFakePiHistory(homeDir);
     const expiredAttachmentFixture = createExpiredAttachmentFixture(sessionsDir);
 
     const port = await getFreePort();
@@ -4428,6 +5571,7 @@ async function main() {
       '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000000020001e221bc330000000049454e44ae426082',
       'hex',
     );
+    const claudeEnvCapturePath = path.join(tempRoot, 'claude-env-captures.jsonl');
 
     const serverEnv = {
       PORT: String(port),
@@ -4436,10 +5580,13 @@ async function main() {
       CC_WEB_SESSIONS_DIR: sessionsDir,
       CC_WEB_LOGS_DIR: logsDir,
       HOME: homeDir,
-      CLAUDE_PATH: MOCK_CLAUDE,
+      CLAUDE_PATH: './scripts/mock-claude.js',
       CODEX_PATH: MOCK_CODEX,
       PI_PATH: MOCK_PI,
+      PI_CODING_AGENT_SESSION_DIR: '~/pi-native-sessions',
       CC_WEB_PI_TRANSPORT: 'rpc',
+      MOCK_CLAUDE_ENV_CAPTURE: claudeEnvCapturePath,
+      CC_WEB_CLI_ENV_PASSTHROUGH: 'MOCK_CLAUDE_ENV_CAPTURE',
     };
 
     await withServer(serverEnv, async (serverHandle) => {
@@ -4452,13 +5599,19 @@ async function main() {
         logsDir,
         homeDir,
         codexFixture,
+        piFixture,
         expiredAttachmentFixture,
         tinyPng,
+        claudeEnvCapturePath,
         serverEnv,
         serverHandle,
       };
       const runner = createTestRunner();
       await runner.run('agent runtime environment passthrough', () => runAgentRuntimeEnvironmentRegressionCase(ctx));
+      await runner.run('claude run cost ledger idempotency', () => runClaudeCostLedgerRegressionCase(ctx));
+      await runner.run('claude slash probe environment isolation', () => runClaudeSlashProbeEnvironmentRegressionCase(ctx));
+      await runner.run('claude persistent stream client lifecycle', () => runClaudeStreamClientLifecycleRegressionCase(ctx));
+      await runner.run('codex app server client lifecycle', () => runCodexAppServerClientLifecycleRegressionCase(ctx));
       await runner.run('pi rpc client lifecycle cleanup', () => runPiRpcClientLifecycleRegressionCase(ctx));
       await runner.run('custom CLI directories and server limits', () => runCustomCliDirectoriesRegressionCase(ctx));
       await runner.run('fetch_models apiBase version compatibility', () => runFetchModelsApiBaseCompatibilityRegressionCase(ctx));
@@ -4480,9 +5633,13 @@ async function main() {
       await runner.run('codex bridge protocol normalization', () => runCodexBridgeProtocolNormalizationRegressionCase(ctx));
       await runner.run('codex metadata warning rendering', () => runCodexMetadataWarningRegressionCase(ctx));
       await runner.run('auth failures and repeated auth', () => runAuthRegressionCase(ctx));
+      await runner.run('http asset and markdown security', () => runHttpSecurityRegressionCase(ctx));
       await runner.run('runtime error mapping', () => runRuntimeErrorRegressionCase(ctx));
       await runner.run('pi agent adapter', () => runPiAgentRegressionCase(ctx));
+      await runner.run('pi managed responses runtime', () => runPiManagedRuntimeRegressionCase(ctx));
+      await runner.run('pi native import and fork', () => runPiNativeImportAndForkRegressionCase(ctx));
       await runner.run('pi rpc interaction reconnect', () => runPiRpcReconnectRegressionCase(ctx));
+      await runner.run('claude and codex interaction reconnect', () => runClaudeCodexInteractionReconnectRegressionCase(ctx));
       await runner.run('pi headless transport fallback', () => runPiHeadlessFallbackRegressionCase(ctx));
       await runner.run('pi rpc configurable capacity', () => runPiRpcCapacityRegressionCase(ctx));
       await runner.run('headless parity interactive and slash', () => runHeadlessParityRegressionCase(ctx));

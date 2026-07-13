@@ -2699,6 +2699,73 @@ html[data-theme="localhost"] .localfile-pre {
   white-space: pre-wrap;
   line-height: 1.5;
 }
+.interactive-request-link {
+  display: inline-flex;
+  margin-top: 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.interactive-request-questions {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.interactive-request-question {
+  min-width: 0;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.interactive-request-question legend {
+  padding: 0 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+.interactive-request-question-text {
+  margin-bottom: 7px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.interactive-request-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 5px 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.interactive-request-choice input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.interactive-request-choice-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.interactive-request-choice-label {
+  color: var(--text-primary);
+}
+.interactive-request-choice-description {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.interactive-request-other {
+  display: grid;
+  gap: 4px;
+}
+.interactive-request-other .interactive-request-input {
+  margin-left: 24px;
+}
+.interactive-request-question .interactive-request-input {
+  margin-top: 4px;
+}
 .interactive-request-actions {
   margin-top: 10px;
   display: flex;
@@ -3382,6 +3449,27 @@ html[data-theme="localhost"] .localfile-pre {
   text-align: center;
   white-space: pre-line;
   box-shadow: none;
+}
+.msg.system.pi-extension-ui-msg {
+  width: min(90%, 680px);
+}
+.msg.system.pi-extension-ui-msg .msg-bubble {
+  border-style: solid;
+  text-align: left;
+  white-space: normal;
+}
+.pi-extension-ui-title {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 650;
+}
+.pi-extension-ui-body {
+  margin-top: 5px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* Error messages */
@@ -5273,6 +5361,98 @@ body.ws-reconnecting::before {
   font-size: 12px;
 }
 
+.pi-fork-modal {
+  max-width: 680px;
+}
+
+.pi-fork-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 260px;
+}
+
+.pi-fork-search {
+  flex: 0 0 auto;
+}
+
+.pi-fork-list-meta {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.pi-fork-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 180px;
+  max-height: min(54vh, 480px);
+  overflow-y: auto;
+  border-block: 1px solid var(--border-color);
+}
+
+.pi-fork-option {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  padding: 12px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border-color);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.pi-fork-option:last-child {
+  border-bottom: 0;
+}
+
+.pi-fork-option:hover,
+.pi-fork-option:focus-visible {
+  background: var(--accent-light);
+  outline: none;
+}
+
+.pi-fork-option.selected {
+  background: var(--accent-light);
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
+.pi-fork-option-order {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.pi-fork-option-text {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.pi-fork-status {
+  min-height: 18px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pi-fork-status.error {
+  color: var(--danger);
+}
+
 /* === New Session Project Picker === */
 .modal-panel-project {
   max-width: 720px;
@@ -5811,6 +5991,7 @@ body.ws-reconnecting::before {
   color: var(--text-muted);
   padding: 4px 0 8px;
   border-bottom: 2px solid var(--line);
+  overflow-wrap: anywhere;
   margin-bottom: 8px;
   word-break: break-all;
 }
@@ -5876,6 +6057,10 @@ body.ws-reconnecting::before {
   border: 2px solid var(--line);
   border-radius: 2px;
   padding: 2px 7px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .import-item-meta {
   font-size: 11px;
@@ -5893,6 +6078,18 @@ body.ws-reconnecting::before {
 }
 .import-item-btn:hover {
   /* keep explicit block for readability with shared button base */
+}
+
+@media (max-width: 480px) {
+  .import-item {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .import-item-btn {
+    align-self: flex-end;
+    min-height: 36px;
+  }
 }
 
 /* === Sidebar Resizer === */

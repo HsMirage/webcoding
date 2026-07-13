@@ -10,6 +10,10 @@ const { createAgentRuntime } = require('./lib/agent-runtime');
 const { createCodexRolloutStore } = require('./lib/codex-rollouts');
 const { getStaticHeadlessCapabilities } = require('./lib/runtime-capabilities');
 const { PiRpcClient } = require('./lib/pi-rpc-client');
+const { getPiSessionFiles, parsePiSessionFile, summarizePiSessionFile } = require('./lib/pi-sessions');
+const { CodexAppServerClient } = require('./lib/codex-app-server-client');
+const { ClaudeStreamClient } = require('./lib/claude-stream-client');
+const PACKAGE_VERSION = require('./package.json').version || 'unknown';
 
 // Load .env
 const envPath = path.join(__dirname, '.env');
@@ -36,6 +40,12 @@ const WS_MAX_PAYLOAD_BYTES = Number.isFinite(requestedWsMaxPayload) && requested
 const PI_TRANSPORT = String(process.env.CC_WEB_PI_TRANSPORT || 'rpc').trim().toLowerCase() === 'headless'
   ? 'headless'
   : 'rpc';
+const CODEX_TRANSPORT = String(process.env.CC_WEB_CODEX_TRANSPORT || 'app-server').trim().toLowerCase() === 'exec'
+  ? 'exec'
+  : 'app-server';
+const CLAUDE_TRANSPORT = String(process.env.CC_WEB_CLAUDE_TRANSPORT || 'stream-json').trim().toLowerCase() === 'headless'
+  ? 'headless'
+  : 'stream-json';
 const requestedPiRpcIdleMinutes = Number.parseInt(process.env.CC_WEB_PI_RPC_IDLE_TIMEOUT_MINUTES || '', 10);
 const PI_RPC_IDLE_TIMEOUT_MINUTES = Number.isFinite(requestedPiRpcIdleMinutes) && requestedPiRpcIdleMinutes > 0
   ? Math.min(Math.max(requestedPiRpcIdleMinutes, 1), 24 * 60)
@@ -44,6 +54,24 @@ const PI_RPC_IDLE_TIMEOUT_MS = PI_RPC_IDLE_TIMEOUT_MINUTES * 60 * 1000;
 const requestedMaxPiRpcRuntimes = Number.parseInt(process.env.CC_WEB_PI_RPC_MAX_RUNTIMES || '', 10);
 const MAX_PI_RPC_RUNTIMES = Number.isFinite(requestedMaxPiRpcRuntimes) && requestedMaxPiRpcRuntimes > 0
   ? Math.min(Math.max(requestedMaxPiRpcRuntimes, 1), 64)
+  : 8;
+const requestedCodexAppIdleMinutes = Number.parseInt(process.env.CC_WEB_CODEX_APP_IDLE_TIMEOUT_MINUTES || '', 10);
+const CODEX_APP_IDLE_TIMEOUT_MINUTES = Number.isFinite(requestedCodexAppIdleMinutes) && requestedCodexAppIdleMinutes > 0
+  ? Math.min(Math.max(requestedCodexAppIdleMinutes, 1), 24 * 60)
+  : 30;
+const CODEX_APP_IDLE_TIMEOUT_MS = CODEX_APP_IDLE_TIMEOUT_MINUTES * 60 * 1000;
+const requestedMaxCodexAppRuntimes = Number.parseInt(process.env.CC_WEB_CODEX_APP_MAX_RUNTIMES || '', 10);
+const MAX_CODEX_APP_RUNTIMES = Number.isFinite(requestedMaxCodexAppRuntimes) && requestedMaxCodexAppRuntimes > 0
+  ? Math.min(Math.max(requestedMaxCodexAppRuntimes, 1), 64)
+  : 8;
+const requestedClaudeStreamIdleMinutes = Number.parseInt(process.env.CC_WEB_CLAUDE_STREAM_IDLE_TIMEOUT_MINUTES || '', 10);
+const CLAUDE_STREAM_IDLE_TIMEOUT_MINUTES = Number.isFinite(requestedClaudeStreamIdleMinutes) && requestedClaudeStreamIdleMinutes > 0
+  ? Math.min(Math.max(requestedClaudeStreamIdleMinutes, 1), 24 * 60)
+  : 30;
+const CLAUDE_STREAM_IDLE_TIMEOUT_MS = CLAUDE_STREAM_IDLE_TIMEOUT_MINUTES * 60 * 1000;
+const requestedMaxClaudeStreamRuntimes = Number.parseInt(process.env.CC_WEB_CLAUDE_STREAM_MAX_RUNTIMES || '', 10);
+const MAX_CLAUDE_STREAM_RUNTIMES = Number.isFinite(requestedMaxClaudeStreamRuntimes) && requestedMaxClaudeStreamRuntimes > 0
+  ? Math.min(Math.max(requestedMaxClaudeStreamRuntimes, 1), 64)
   : 8;
 
 /**
@@ -87,10 +115,17 @@ function resolveCliBinary(envValue, defaultName, extraCandidates = []) {
   const home = process.env.HOME || process.env.USERPROFILE || '';
   const requested = String(envValue || '').trim() || defaultName;
   const baseName = path.basename(requested.replace(/\\/g, '/')) || defaultName;
+  const requestedHasPath = path.isAbsolute(requested) || requested.includes('/') || requested.includes('\\');
   const candidates = [];
 
   // 1) Explicit env value (absolute or relative path)
-  if (requested) candidates.push(requested);
+  if (requested) {
+    candidates.push(path.isAbsolute(requested)
+      ? requested
+      : requestedHasPath
+        ? path.resolve(__dirname, requested)
+        : requested);
+  }
 
   // 2) Well-known install locations (Claude Code installer uses ~/.local/bin)
   if (home) {
@@ -118,7 +153,7 @@ function resolveCliBinary(envValue, defaultName, extraCandidates = []) {
       if (seen.has(resolved)) continue;
       seen.add(resolved);
       if (isExecutablePath(resolved)) {
-        if (requested !== resolved && (path.isAbsolute(requested) || requested.includes('/'))) {
+        if (requested !== resolved && requestedHasPath) {
           // Stale absolute env path — fall through quietly, log later at boot.
         }
         return resolved;
@@ -160,6 +195,7 @@ const TUNNEL_STATE_PATH = path.join(CONFIG_DIR, 'tunnel-state.json');
 const TUNNEL_SCRIPT_PATH = path.join(__dirname, 'lib', 'cf-tunnel.js');
 const TUNNEL_START_TIMEOUT_MS = 30000;
 const CLAUDE_SETTINGS_BACKUP_PATH = path.join(CONFIG_DIR, 'claude-settings-backup.json');
+const CLAUDE_RUNTIME_SETTINGS_PATH = path.join(CONFIG_DIR, 'claude-runtime-settings.json');
 const BRIDGE_SCRIPT_PATH = path.join(__dirname, 'lib', 'local-api-bridge.js');
 const PUBLIC_ROOT = path.resolve(PUBLIC_DIR);
 const USER_HOME = process.env.HOME || process.env.USERPROFILE || '';
@@ -189,7 +225,7 @@ const SECURITY_HEADERS = {
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
   'X-XSS-Protection': '0',
   'Cross-Origin-Resource-Policy': 'same-origin',
-  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; frame-ancestors 'none'; base-uri 'none'",
+  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; script-src 'self' https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; frame-ancestors 'none'; base-uri 'none'",
 };
 
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -614,6 +650,8 @@ const pendingSlashCommands = new Map();
 const SLASH_COMMAND_DESCRIPTIONS = {
   // Webcoding platform commands (server-side handled)
   model: '查看/切换模型（Webcoding 平台）',
+  effort: '查看/切换推理强度（Webcoding 平台）',
+  thinking: '查看/切换 Pi 思考级别（Webcoding 平台）',
   mode: '查看/切换权限模式（Webcoding 平台）',
   compact: '压缩上下文（Webcoding 平台）',
   'web-help': '显示 Webcoding 平台帮助与已发现的斜杠命令',
@@ -650,16 +688,52 @@ const SLASH_COMMAND_DESCRIPTIONS = {
   'ralph-loop:cancel-ralph': '取消 Ralph Loop',
   'ralph-loop:ralph-loop': '启动 Ralph Loop',
   // Codex CLI built-in interactive commands
-  status: '查看当前模型、审批和 Token 使用量（TUI）',
-  fork: '分支当前对话到新线程（TUI）',
-  new: '开始新的对话（TUI）',
-  feedback: '发送反馈日志给维护者（TUI）',
+  status: '查看当前模型、审批和 Token 使用量',
+  fork: '分支当前对话到新线程',
+  new: '开始新的对话',
+  feedback: '发送反馈日志给维护者',
   mcp: '列出已配置的 MCP 工具',
-  permissions: '控制 Codex 何时请求确认（TUI）',
-  personality: '自定义 Codex 的沟通风格（TUI）',
-  rename: '重命名线程（TUI）',
+  permissions: '控制 Codex 何时请求确认',
+  personality: '自定义 Codex 的沟通风格',
+  rename: '重命名线程',
   skills: '列出可用技能',
-  statusline: '配置状态栏显示内容（TUI）',
+  statusline: '配置状态栏显示内容',
+  ide: '把当前 IDE 上下文加入下一条提示',
+  keymap: '配置 TUI 快捷键',
+  vim: '切换 TUI Vim 编辑模式',
+  'setup-default-sandbox': '配置 Windows 提升权限沙箱',
+  'sandbox-add-read-dir': '为 Windows 沙箱增加可读目录',
+  agent: '切换当前子 Agent 线程',
+  subagents: '查看或切换子 Agent 线程',
+  apps: '浏览可用 Apps / Connectors',
+  plugins: '浏览和管理插件',
+  hooks: '查看和管理生命周期 Hooks',
+  archive: '归档当前线程',
+  delete: '永久删除当前线程',
+  copy: '复制最近一条 Codex 回复',
+  diff: '查看当前 Git 变更',
+  exit: '退出 Codex TUI',
+  quit: '退出 Codex TUI',
+  experimental: '配置实验功能',
+  approve: '重试最近一次被自动审查拒绝的操作',
+  memories: '配置 Codex Memories',
+  import: '导入外部 Agent 配置与历史',
+  logout: '退出 Codex 登录',
+  mention: '把文件或目录加入下一条提示',
+  fast: '切换支持模型的 Fast 服务层级',
+  plan: '切换 Plan 模式',
+  ps: '查看当前线程的后台终端',
+  stop: '停止当前线程的后台终端',
+  app: '在 ChatGPT 桌面应用中继续当前线程',
+  side: '开启不打断主线程的临时对话',
+  btw: '开启不打断主线程的临时对话',
+  raw: '切换 TUI 原始滚动模式',
+  resume: '恢复已保存的 Codex 线程',
+  'debug-config': '显示 Codex 配置层与策略诊断',
+  title: '配置终端窗口标题',
+  theme: '选择 TUI 代码高亮主题',
+  pets: '选择或隐藏 TUI Pet',
+  pet: '选择或隐藏 TUI Pet',
   // Codex skills (user-installed) — discovered at runtime from ~/.codex/skills/
   imagegen: 'AI 图像生成',
   'openai-docs': 'OpenAI 官方文档查询',
@@ -672,14 +746,30 @@ const SLASH_COMMAND_DESCRIPTIONS = {
   'computer-use': 'macOS 桌面控制',
 };
 
-/** Codex slash commands that only work in interactive TUI, not headless `codex exec`. */
+/** Codex slash commands whose interactive TUI surface has no Web/App Server equivalent. */
 const CODEX_TUI_ONLY_COMMANDS = new Set([
-  'fork', 'new', 'permissions', 'personality', 'statusline', 'feedback', 'rename', 'status',
+  'ide', 'keymap', 'vim', 'setup-default-sandbox', 'sandbox-add-read-dir',
+  'agent', 'subagents', 'apps', 'plugins', 'hooks', 'clear', 'archive', 'delete', 'copy', 'diff',
+  'exit', 'quit', 'experimental', 'approve', 'memories', 'import', 'feedback', 'init', 'logout',
+  'mcp', 'mention', 'fast', 'plan', 'goal', 'permissions', 'personality', 'ps', 'stop',
+  'fork', 'new', 'app', 'side', 'btw', 'raw', 'resume', 'rename', 'skills', 'status', 'usage',
+  'debug-config', 'statusline', 'title', 'theme', 'pets', 'pet',
 ]);
+const CODEX_APP_PLATFORM_COMMANDS = new Set([
+  'fork', 'new', 'permissions', 'personality', 'rename', 'status', 'usage', 'ps', 'stop',
+  'mcp', 'skills', 'goal',
+]);
+const PI_RPC_PLATFORM_COMMANDS = new Set(['fork', 'clone', 'thinking']);
+const PI_RPC_PLATFORM_SLASH_COMMANDS = [
+  { name: 'fork', desc: '从当前 Pi 活动分支创建新的 Web 会话' },
+  { name: 'clone', desc: '复制当前 Pi 活动分支到新的 Web 会话' },
+  { name: 'thinking', desc: SLASH_COMMAND_DESCRIPTIONS.thinking },
+];
 
 /** Platform-handled slash commands (not CLI passthrough). */
 const PLATFORM_SLASH_COMMANDS = [
   { name: 'model', desc: SLASH_COMMAND_DESCRIPTIONS.model },
+  { name: 'effort', desc: SLASH_COMMAND_DESCRIPTIONS.effort },
   { name: 'mode', desc: SLASH_COMMAND_DESCRIPTIONS.mode },
   { name: 'compact', desc: SLASH_COMMAND_DESCRIPTIONS.compact },
   { name: 'web-help', desc: SLASH_COMMAND_DESCRIPTIONS['web-help'] },
@@ -691,21 +781,21 @@ const PERMISSION_MODE_META = {
     label: 'YOLO',
     short: '跳过审批与沙箱限制',
     claude: 'Claude: --permission-mode bypassPermissions',
-    codex: 'Codex: --dangerously-bypass-approvals-and-sandbox',
+    codex: 'Codex: approvalPolicy=never + danger-full-access',
     pi: 'Pi: --approve（信任项目本地扩展/技能）',
   },
   default: {
     label: '默认',
-    short: 'CLI 默认自动策略（非浏览器人工审批）',
-    claude: 'Claude: 默认权限模式（无 bypass）',
-    codex: 'Codex: --full-auto（自动执行，非网页审批）',
+    short: '受限写入；支持时在网页中请求审批',
+    claude: 'Claude: 默认权限模式；stream-json 支持网页审批',
+    codex: 'Codex: App Server on-request + workspace-write',
     pi: 'Pi: --no-approve（忽略项目本地文件自动信任）',
   },
   plan: {
     label: 'Plan',
-    short: '规划/只读向（非完整计划确认 UI）',
+    short: '规划/只读模式（按当前 Agent 原生能力映射）',
     claude: 'Claude: --permission-mode plan',
-    codex: 'Codex: -s read-only（只读沙箱）',
+    codex: 'Codex: Plan 协作模式 + read-only 沙箱',
     pi: 'Pi: --tools read,grep,find,ls（只读工具集）',
   },
 };
@@ -729,10 +819,12 @@ function formatPermissionModeHelp(agent, mode) {
 }
 
 const slashCommandsCache = {
-  claude: { commands: null }, // normalized: [{ name, desc }]
-  codex: { commands: null },
-  pi: { commands: null },
+  claude: { commands: null, discoveredAt: 0 }, // normalized: [{ name, desc }]
+  codex: { commands: null, discoveredAt: 0 },
+  pi: { commands: null, discoveredAt: 0 },
 };
+const CLAUDE_SLASH_DISCOVERY_TTL_MS = 5 * 60 * 1000;
+let claudeSlashDiscoveryPromise = null;
 
 function normalizeSlashCommandName(raw) {
   if (raw == null) return '';
@@ -793,11 +885,35 @@ function classifySlashCommand(agent, name, sourceHint = '') {
       reason: '由 Webcoding 平台处理，不透传 CLI',
     };
   }
+  if (
+    normalizedAgent === 'codex'
+    && CODEX_TRANSPORT === 'app-server'
+    && CODEX_APP_PLATFORM_COMMANDS.has(key)
+  ) {
+    return {
+      availability: 'platform',
+      execution: 'platform',
+      reason: '由 Webcoding 通过 Codex App Server 处理',
+    };
+  }
+  if (
+    normalizedAgent === 'pi'
+    && PI_TRANSPORT === 'rpc'
+    && PI_RPC_PLATFORM_COMMANDS.has(key)
+  ) {
+    return {
+      availability: 'platform',
+      execution: 'platform',
+      reason: '由 Webcoding 通过 Pi RPC 处理',
+    };
+  }
   if (normalizedAgent === 'codex' && CODEX_TUI_ONLY_COMMANDS.has(key)) {
     return {
       availability: 'tui-only',
       execution: 'blocked',
-      reason: '仅 Codex 交互 TUI 可用，headless exec 不支持',
+      reason: CODEX_TRANSPORT === 'app-server'
+        ? '该命令依赖 Codex 交互式 TUI，当前 App Server 没有等价网页接口'
+        : '该命令依赖 Codex 交互式 TUI，exec 协议不支持',
     };
   }
 
@@ -856,8 +972,12 @@ function buildSlashCommandList(agent) {
   const out = [];
   const seen = new Set();
 
+  const platformCommands = normalizedAgent === 'pi' && PI_TRANSPORT === 'rpc'
+    ? [...PLATFORM_SLASH_COMMANDS, ...PI_RPC_PLATFORM_SLASH_COMMANDS]
+    : PLATFORM_SLASH_COMMANDS;
+
   // 1) Platform controls first (always available in Webcoding)
-  for (const entry of PLATFORM_SLASH_COMMANDS) {
+  for (const entry of platformCommands) {
     const name = entry.name;
     if (!name || seen.has(name)) continue;
     seen.add(name);
@@ -877,7 +997,7 @@ function buildSlashCommandList(agent) {
     const name = entry?.name || normalizeSlashCommandName(entry);
     if (!name || seen.has(name)) continue;
     // Platform handlers take precedence over same-named CLI entries
-    if (PLATFORM_SLASH_COMMANDS.some((c) => c.name === name)) continue;
+    if (platformCommands.some((c) => c.name === name)) continue;
     seen.add(name);
     const source = entry?.source || defaultCliSource;
     const classified = classifySlashCommand(normalizedAgent, name, source);
@@ -936,6 +1056,7 @@ function formatSlashHelpMessage(agent) {
     '',
     '平台命令（不透传 CLI）:',
     '  /model — 查看/切换模型',
+    '  /effort — 查看/切换当前 Agent 的推理强度',
     '  /mode — 查看/切换权限模式（真实 CLI 标志见描述）',
     '  /compact — 压缩上下文',
     '  /web-help — 显示本帮助',
@@ -959,7 +1080,7 @@ function formatSlashHelpMessage(agent) {
     lines.push('');
   }
   if (passthrough.length) {
-    lines.push(`${label} 可透传命令（headless 执行）:`);
+    lines.push(`${label} 可透传命令（由当前原生协议执行）:`);
     passthrough.forEach((item) => lines.push(`  ${item.cmd} — ${item.desc || item.cmd}`));
     lines.push('');
   }
@@ -981,7 +1102,7 @@ function onSlashCommandsDiscovered(agent, commands) {
       && slashCommandsCache[normalizedAgent].commands.length > 0) {
     return;
   }
-  slashCommandsCache[normalizedAgent] = { commands: normalized };
+  slashCommandsCache[normalizedAgent] = { commands: normalized, discoveredAt: Date.now() };
   broadcastSlashCommands(normalizedAgent);
 }
 
@@ -1024,21 +1145,55 @@ function readSkillDescriptionFromFile(skillMdPath) {
   }
 }
 
-function discoverClaudeSlashCommands() {
-  return new Promise((resolve) => {
-    // Use text input with a minimal prompt — the init event arrives before any response
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', 'say hi'];
+function discoverClaudeSlashCommands(options = {}) {
+  const cached = slashCommandsCache.claude;
+  if (
+    Array.isArray(cached?.commands)
+    && cached.commands.length > 0
+    && Date.now() - Number(cached.discoveredAt || 0) < CLAUDE_SLASH_DISCOVERY_TTL_MS
+  ) {
+    return Promise.resolve(cached.commands);
+  }
+  if (claudeSlashDiscoveryPromise) return claudeSlashDiscoveryPromise;
+
+  claudeSlashDiscoveryPromise = new Promise((resolve) => {
+    // Streaming stdin stays open without sending a user turn. Claude can emit its
+    // init metadata, but no model request is made merely to populate a menu.
+    const args = [
+      '-p',
+      '--input-format', 'stream-json',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--replay-user-messages',
+      '--no-session-persistence',
+      '--bare',
+    ];
     let resolved = false;
+    let proc = null;
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      if (proc && proc.exitCode === null && proc.signalCode === null) {
+        try { proc.stdin.end(); } catch {}
+        try { proc.kill('SIGTERM'); } catch {}
+      }
+      resolve(value);
+    };
     const timer = setTimeout(() => {
-      if (!resolved) { resolved = true; resolve(null); }
-    }, 30000);
+      finish(null);
+    }, 10_000);
+    timer.unref?.();
 
     try {
-      const proc = spawn(CLAUDE_PATH, args, {
-        env: { ...process.env },
-        cwd: __dirname,
+      const modelConfig = loadModelConfig();
+      proc = spawn(CLAUDE_PATH, args, {
+        env: buildClaudeEnv(modelConfig.mode !== 'custom'),
+        cwd: options.cwd || process.env.HOME || process.env.USERPROFILE || __dirname,
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: false,
+        windowsHide: true,
+        shell: shouldUseShellForCommand(CLAUDE_PATH),
       });
 
       let buf = '';
@@ -1051,32 +1206,29 @@ function discoverClaudeSlashCommands() {
           try {
             const evt = JSON.parse(line);
             if (evt.type === 'system' && Array.isArray(evt.slash_commands)) {
-              if (!resolved) {
-                resolved = true;
-                clearTimeout(timer);
-                onSlashCommandsDiscovered('claude', evt.slash_commands);
-                proc.kill();
-                resolve(evt.slash_commands);
-              }
+              onSlashCommandsDiscovered('claude', evt.slash_commands);
+              finish(evt.slash_commands);
             }
           } catch {}
         }
       });
 
       proc.stderr.on('data', () => {});
-      proc.on('error', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(null); } });
-      proc.on('close', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(null); } });
+      proc.on('error', () => finish(null));
+      proc.on('close', () => finish(null));
     } catch {
-      if (!resolved) { resolved = true; clearTimeout(timer); resolve(null); }
+      finish(null);
     }
+  }).finally(() => {
+    claudeSlashDiscoveryPromise = null;
   });
+  return claudeSlashDiscoveryPromise;
 }
 
-// Codex has no runtime discovery API — discover slash commands by reading the filesystem:
-//   1. Built-in interactive commands (hardcoded from binary analysis)
+// Codex has no runtime slash-command discovery API — combine:
+//   1. The official built-in command catalog (kept explicit and marked by Web availability)
 //   2. Skills from ~/.codex/skills/ (user-installed + .system/)
-//   3. Plugins from ~/.codex/.tmp/bundled-marketplaces/*/plugins/
-//   4. Custom prompts from ~/.codex/prompts/*.md → /prompts:<stem>
+//   3. Custom prompts from ~/.codex/prompts/*.md → /prompts:<stem>
 function discoverCodexSlashCommands() {
   // Menu discovery always reads the user-facing Codex home (where skills/prompts are installed).
   // Custom/unified mode remaps CODEX_HOME to a managed runtime; prepareCodexCustomRuntime
@@ -1089,7 +1241,6 @@ function discoverCodexSlashCommands() {
     else markCodexOverlayLocal();
   } catch {}
   const skillsDir = path.join(codexHome, 'skills');
-  const marketplacesDir = path.join(codexHome, '.tmp', 'bundled-marketplaces');
   const promptsDir = path.join(codexHome, 'prompts');
   /** @type {Map<string, { desc: string, source: string }>} */
   const commands = new Map();
@@ -1113,12 +1264,16 @@ function discoverCodexSlashCommands() {
     }
   }
 
-  // 1. Built-in interactive commands (from Codex binary analysis — stable across versions)
+  // 1. Built-in commands from the official Codex command reference.
   // Note: interactive-only TUI commands are marked tui-only in buildSlashCommandList.
-  const builtIn = ['compact', 'model', 'status', 'review', 'fork', 'new',
-    'feedback', 'init', 'mcp', 'permissions', 'personality', 'rename', 'skills', 'statusline',
-    // goals feature (stable in recent Codex) — headless may treat as normal prompt
-    'goal'];
+  const builtIn = [
+    'permissions', 'ide', 'keymap', 'vim', 'setup-default-sandbox', 'sandbox-add-read-dir',
+    'agent', 'subagents', 'apps', 'plugins', 'hooks', 'clear', 'rename', 'archive', 'delete',
+    'compact', 'copy', 'diff', 'exit', 'experimental', 'approve', 'memories', 'skills', 'import',
+    'feedback', 'init', 'logout', 'mcp', 'mention', 'model', 'fast', 'plan', 'goal', 'personality',
+    'ps', 'stop', 'fork', 'app', 'side', 'btw', 'raw', 'resume', 'new', 'quit', 'review', 'status',
+    'usage', 'debug-config', 'statusline', 'title', 'theme', 'pets', 'pet',
+  ];
   builtIn.forEach((c) => addCommand(c, SLASH_COMMAND_DESCRIPTIONS[c] || (
     c === 'goal' ? '设置/管理目标（Goals）' : c
   ), 'codex-cli'));
@@ -1175,32 +1330,7 @@ function discoverCodexSlashCommands() {
     }
   } catch {}
 
-  // 4. Plugins (under bundled-marketplaces/*/plugins/)
-  try {
-    const mkDirs = fs.readdirSync(marketplacesDir, { withFileTypes: true });
-    for (const mk of mkDirs) {
-      if (!mk.isDirectory() || mk.name.startsWith('.')) continue;
-      const pluginsDir = path.join(marketplacesDir, mk.name, 'plugins');
-      try {
-        const pluginEntries = fs.readdirSync(pluginsDir, { withFileTypes: true });
-        for (const pe of pluginEntries) {
-          if (!pe.isDirectory()) continue;
-          const pluginJsonPath = path.join(pluginsDir, pe.name, '.codex-plugin', 'plugin.json');
-          try {
-            if (fs.existsSync(pluginJsonPath)) {
-              const raw = fs.readFileSync(pluginJsonPath, 'utf8');
-              const parsed = JSON.parse(raw);
-              if (parsed.name) {
-                addCommand(parsed.name, parsed.description || parsed.summary || '', 'codex-plugin');
-              }
-            }
-          } catch {}
-        }
-      } catch {}
-    }
-  } catch {}
-
-  // 5. Custom prompts (~/.codex/prompts/*.md) → official slash form /prompts:<stem>
+  // 4. Custom prompts (~/.codex/prompts/*.md) → official slash form /prompts:<stem>
   // Docs: https://developers.openai.com/codex/custom-prompts
   try {
     if (fs.existsSync(promptsDir)) {
@@ -1242,6 +1372,10 @@ const pendingCompactRetries = new Map();
 // Active processes: sessionId -> { pid, ws, fullText, toolCalls, segments, lastCost, tailer }
 const activeProcesses = new Map();
 const piRpcRuntimes = new Map();
+const codexAppRuntimes = new Map();
+const claudeStreamRuntimes = new Map();
+const piForkOperations = new Set();
+const codexForkOperations = new Set();
 
 // Track which session each ws is viewing: ws -> sessionId
 const wsSessionMap = new Map();
@@ -1278,16 +1412,21 @@ function removeActiveProcess(sessionId) {
 
 function execFileQuiet(command, args = []) {
   return new Promise((resolve) => {
-    execFile(command, args, { timeout: 4000, maxBuffer: 1024 * 1024 }, (error) => {
-      resolve({ ok: !error, error });
+    execFile(command, args, { timeout: 4000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        error,
+        stdout: String(stdout || ''),
+        stderr: String(stderr || ''),
+      });
     });
   });
 }
 
 const DEFAULT_CLAUDE_MODEL_MAP = {
-  opus: 'claude-opus-4-6',
-  sonnet: 'claude-sonnet-4-6',
-  haiku: 'claude-haiku-4-5',
+  opus: 'opus',
+  sonnet: 'sonnet',
+  haiku: 'haiku',
 };
 
 // Default fallback MODEL_MAP (overridden by model config at runtime)
@@ -1297,32 +1436,27 @@ const CLAUDE_MODEL_MENU_ENTRIES = [
   {
     alias: 'default',
     label: '默认（推荐）',
-    desc: '使用默认模型（当前为 Sonnet 4.6）',
-    pricing: '输入/输出 $3 / $15 / 百万 Token',
+    desc: '使用当前 Claude Code 或提供商配置的默认模型',
   },
   {
     alias: 'sonnet[1m]',
     label: 'Sonnet（1M 上下文）',
-    desc: 'Sonnet 4.6，适合长上下文会话',
-    pricing: '输入/输出 $3 / $15 / 百万 Token',
+    desc: '使用当前 Sonnet 映射并启用 1M 上下文',
   },
   {
     alias: 'opus',
     label: 'Opus',
-    desc: 'Opus 4.6，复杂任务能力最强',
-    pricing: '输入/输出 $5 / $25 / 百万 Token',
+    desc: '使用当前 Opus 模型映射',
   },
   {
     alias: 'opus[1m]',
     label: 'Opus（1M 上下文）',
-    desc: 'Opus 4.6，支持 1M 上下文，适合复杂任务',
-    pricing: '输入/输出 $5 / $25 / 百万 Token',
+    desc: '使用当前 Opus 映射并启用 1M 上下文',
   },
   {
     alias: 'haiku',
     label: 'Haiku',
-    desc: 'Haiku 4.5，响应最快，适合快速问答',
-    pricing: '输入/输出 $1 / $5 / 百万 Token',
+    desc: '使用当前 Haiku 模型映射',
   },
 ];
 
@@ -1416,7 +1550,7 @@ async function getModelList() {
   const now = Date.now();
   if (_modelCache && now - _modelCache.fetchedAt < 3600_000) return _modelCache;
   const creds = resolveActiveApiCredentials();
-  if (!creds) return null; // no credentials — caller uses hardcoded fallback
+  if (!creds) return null; // no credentials — caller uses stable CLI aliases
   try {
     const { models, source } = await fetchModelsFromApi(creds);
     if (models.length > 0) {
@@ -1426,7 +1560,7 @@ async function getModelList() {
   } catch (e) {
     console.error('[model-api] fetch failed:', e.message);
   }
-  return null; // caller uses hardcoded fallback
+  return null; // caller uses stable CLI aliases
 }
 
 // === Model Config ===
@@ -1762,14 +1896,114 @@ function resolvePiActiveSource(config) {
 
 const PI_RUNTIME_HOME = path.join(CONFIG_DIR, 'pi-runtime-home');
 const PI_MANAGED_PROVIDER_ID = 'webcoding';
+const PI_RESOURCE_SETTING_KEYS = ['extensions', 'skills', 'prompts', 'themes'];
+const PI_PACKAGE_STORE_DIRS = ['npm', 'git'];
+
+function expandPiUserPath(value) {
+  const configured = String(value || '');
+  if (!configured) return '';
+  const home = getUserHomeDir();
+  if (configured === '~') return home;
+  if (configured.startsWith('~/') || (process.platform === 'win32' && configured.startsWith('~\\'))) {
+    return path.join(home, configured.slice(2));
+  }
+  return configured;
+}
+
+function getUserPiAgentDir() {
+  return expandPiUserPath(process.env.PI_CODING_AGENT_DIR)
+    || path.join(getUserHomeDir(), '.pi', 'agent');
+}
+
+function getUserPiSessionsDir() {
+  return expandPiUserPath(process.env.PI_CODING_AGENT_SESSION_DIR)
+    || path.join(getUserPiAgentDir(), 'sessions');
+}
+
+function loadUserPiSettings() {
+  const filePath = path.join(getUserPiAgentDir(), 'settings.json');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveInheritedPiResourceEntry(entry, userPiDir) {
+  if (typeof entry !== 'string') return null;
+  const value = entry.trim();
+  if (!value) return null;
+  const prefix = ['!', '+', '-'].includes(value[0]) ? value[0] : '';
+  const resourcePath = prefix ? value.slice(1) : value;
+  if (!resourcePath || path.isAbsolute(resourcePath) || resourcePath.startsWith('~')) return value;
+  return `${prefix}${path.resolve(userPiDir, resourcePath)}`;
+}
+
+function buildManagedPiSettings(modelId) {
+  const userPiDir = getUserPiAgentDir();
+  const inherited = cloneJson(loadUserPiSettings());
+  delete inherited.defaultProvider;
+  delete inherited.defaultModel;
+  delete inherited.enabledModels;
+  delete inherited.sessionDir;
+
+  for (const key of PI_RESOURCE_SETTING_KEYS) {
+    const entries = Array.isArray(inherited[key]) ? inherited[key] : [];
+    const resolvedEntries = entries
+      .map((entry) => resolveInheritedPiResourceEntry(entry, userPiDir))
+      .filter(Boolean);
+    const conventionalDir = path.join(userPiDir, key);
+    if (fs.existsSync(conventionalDir)) resolvedEntries.unshift(conventionalDir);
+    if (resolvedEntries.length > 0) inherited[key] = Array.from(new Set(resolvedEntries));
+    else delete inherited[key];
+  }
+
+  return {
+    ...inherited,
+    defaultProvider: PI_MANAGED_PROVIDER_ID,
+    defaultModel: modelId,
+  };
+}
+
+function syncManagedPiPackageStores() {
+  const userPiDir = getUserPiAgentDir();
+  for (const dirName of PI_PACKAGE_STORE_DIRS) {
+    const source = path.join(userPiDir, dirName);
+    const target = path.join(PI_RUNTIME_HOME, dirName);
+    let targetStat = null;
+    try { targetStat = fs.lstatSync(target); } catch {}
+    if (!fs.existsSync(source)) {
+      if (targetStat?.isSymbolicLink()) {
+        try { fs.unlinkSync(target); } catch {}
+      }
+      continue;
+    }
+    if (targetStat?.isSymbolicLink()) {
+      try {
+        if (fs.realpathSync(target) === fs.realpathSync(source)) continue;
+        fs.unlinkSync(target);
+      } catch {
+        try { fs.unlinkSync(target); } catch {}
+      }
+    } else if (targetStat) {
+      // Keep existing managed content rather than deleting data we did not create as a link.
+      continue;
+    }
+    try {
+      fs.symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      plog('WARN', 'pi_resource_mount_failed', { dirName, error: error.message });
+    }
+  }
+}
 
 function getPiRuntimeFingerprint(config) {
   const source = resolvePiActiveSource(config || loadPiConfig());
   if (!source || source.mode === 'local') {
-    const piDir = process.env.PI_CODING_AGENT_DIR
-      || path.join(process.env.HOME || process.env.USERPROFILE || '', '.pi', 'agent');
+    const piDir = getUserPiAgentDir();
     return JSON.stringify({
-      runtimeVersion: 1,
+      runtimeVersion: 2,
       mode: 'local',
       modelsFingerprint: fileContentFingerprint(path.join(piDir, 'models.json')),
       settingsFingerprint: fileContentFingerprint(path.join(piDir, 'settings.json')),
@@ -1778,12 +2012,13 @@ function getPiRuntimeFingerprint(config) {
   }
   if (source.error) return `error:${source.error}`;
   return JSON.stringify({
-    runtimeVersion: 1,
+    runtimeVersion: 2,
     mode: 'remote',
     sourceName: String(source.name || '').trim(),
     apiBase: String(source.apiBase || '').trim().replace(/\/+$/, ''),
     upstreamType: String(source.upstreamType || 'openai').toLowerCase(),
     defaultModel: String(source.defaultModel || '').trim(),
+    userSettingsFingerprint: fileContentFingerprint(path.join(getUserPiAgentDir(), 'settings.json')),
   });
 }
 
@@ -1799,32 +2034,32 @@ function preparePiCustomRuntime(config) {
   }
 
   const modelId = source.defaultModel || 'default';
-  const api = source.upstreamType === 'anthropic' ? 'anthropic-messages' : 'openai-completions';
+  let bridge;
+  try {
+    bridge = ensureBridgeRuntimeForTemplate(source);
+  } catch (error) {
+    return { error: `启动 Pi 本地 API 桥接失败: ${error.message || error}` };
+  }
   const modelsJson = {
     providers: {
       [PI_MANAGED_PROVIDER_ID]: {
-        baseUrl: source.apiBase,
-        api,
+        baseUrl: bridge.openaiBaseUrl,
+        api: 'openai-responses',
         apiKey: '$WEBCODING_PI_API_KEY',
         models: [
           {
             id: modelId,
             name: modelId,
-            contextWindow: 200000,
-            maxTokens: 16384,
-            input: ['text', 'image'],
           },
         ],
       },
     },
   };
-  const settingsJson = {
-    defaultProvider: PI_MANAGED_PROVIDER_ID,
-    defaultModel: modelId,
-  };
+  const settingsJson = buildManagedPiSettings(modelId);
 
   try {
     fs.mkdirSync(PI_RUNTIME_HOME, { recursive: true });
+    syncManagedPiPackageStores();
     writeJsonAtomic(path.join(PI_RUNTIME_HOME, 'models.json'), modelsJson);
     writeJsonAtomic(path.join(PI_RUNTIME_HOME, 'settings.json'), settingsJson);
     // Keep an empty auth file so Pi doesn't fall back to host auth unexpectedly.
@@ -1839,8 +2074,8 @@ function preparePiCustomRuntime(config) {
     mode: 'custom',
     homeDir: PI_RUNTIME_HOME,
     provider: PI_MANAGED_PROVIDER_ID,
-    apiKey: source.apiKey,
-    apiBase: source.apiBase,
+    apiKey: bridge.token,
+    apiBase: bridge.openaiBaseUrl,
     defaultModel: modelId,
     profileName: source.name,
     upstreamType: source.upstreamType,
@@ -2132,9 +2367,45 @@ function getRuntimeCapabilities(agent) {
       pluginsOk: isCodexOverlayMountOk('plugins'),
     } : null,
   };
+  if (normalizedAgent === 'codex' && CODEX_TRANSPORT === 'app-server') {
+    Object.assign(extras, {
+      headless: false,
+      protocol: 'codex-app-server',
+      interactiveApproval: true,
+      askUser: true,
+      planConfirmUi: true,
+      goalsStructured: true,
+      goalsWritable: true,
+      reasoningEffort: true,
+      nativeStreamingQueue: true,
+      streamingBehaviors: ['steer'],
+      respondableInteractiveKinds: ['select', 'confirm', 'input', 'editor', 'questions'],
+      notes: [
+        'Codex 使用持久 App Server，支持原生线程续接、流式事件、运行中转向、中断、审批、用户问答和内联 Review。',
+        '默认模式采用 workspace-write，并把需要确认的命令或文件操作发送到网页审批卡片。',
+      ],
+    });
+  }
+  if (normalizedAgent === 'claude' && CLAUDE_TRANSPORT === 'stream-json') {
+    Object.assign(extras, {
+      protocol: 'claude-stream-json',
+      persistentSession: true,
+      streamingInput: true,
+      interactiveApproval: true,
+      askUser: true,
+      planConfirmUi: true,
+      reasoningEffort: true,
+      respondableInteractiveKinds: ['select', 'confirm', 'questions'],
+      nativeStreamingQueue: false,
+      notes: [
+        'Claude 使用常驻 stream-json 输入/输出，普通文本与图片采用同一结构化协议，并启用 partial message 与 hook 事件。',
+        'Claude 的 can_use_tool 与 MCP elicitation 会显示为可回应的网页审批卡片；运行中的新消息仍由网页队列在下一轮发送。',
+      ],
+    });
+  }
   if (normalizedAgent === 'codex' && codexMode !== 'local') {
     extras.notes = [
-      ...(getStaticHeadlessCapabilities(normalizedAgent).notes || []),
+      ...(extras.notes || getStaticHeadlessCapabilities(normalizedAgent).notes || []),
       'Codex custom/unified 模式依赖 managed runtime 对 skills/prompts/plugins 的 overlay。',
     ];
   }
@@ -2145,11 +2416,12 @@ function getRuntimeCapabilities(agent) {
       interactiveApproval: false,
       askUser: true,
       planConfirmUi: false,
+      thinkingLevel: true,
       nativeStreamingQueue: true,
       streamingBehaviors: ['steer', 'followUp'],
       respondableInteractiveKinds: ['select', 'confirm', 'input', 'editor'],
       notes: [
-        'Pi 使用持久 RPC 通道，支持扩展交互、运行中转向/接着做、模型发现、命令发现和原生中断。',
+        'Pi 使用持久 RPC 通道，支持扩展对话框、状态/Widget/输入框更新、运行中转向/接着做、模型发现、命令发现和原生中断。',
         'Pi 本身没有 Claude/Codex 式权限审批；Plan 模式仍映射为只读工具集。',
       ],
     });
@@ -2205,11 +2477,11 @@ function prepareCodexCustomRuntime(config) {
 function normalizeCodexModelEntries(rawModels) {
   const entries = [];
   for (const raw of Array.isArray(rawModels) ? rawModels : []) {
-    const value = String(raw?.slug || raw?.id || raw?.name || raw || '').trim();
+    const value = String(raw?.slug || raw?.id || raw?.model || raw?.name || raw || '').trim();
     if (!value) continue;
     const visibility = String(raw?.visibility || '').toLowerCase();
     if (visibility && visibility !== 'list') continue;
-    const label = String(raw?.display_name || raw?.name || value).trim() || value;
+    const label = String(raw?.display_name || raw?.displayName || raw?.name || value).trim() || value;
     const desc = String(raw?.description || '').trim() || 'Codex 模型';
     entries.push({
       value,
@@ -2368,7 +2640,21 @@ async function getCodexModelMenuPayload(session) {
   let dynamicEntries = [];
   let source = null;
 
-  if (activeTemplate?.apiBase && activeTemplate?.apiKey) {
+  if (CODEX_TRANSPORT === 'app-server' && session) {
+    try {
+      const spawnSpec = buildCodexSpawnSpec(session, { transport: 'app-server' });
+      if (!spawnSpec?.error) {
+        const runtime = await ensureCodexAppRuntime(session, spawnSpec);
+        const result = await runtime.client.request('model/list', { limit: 100 }, { timeoutMs: 15_000 });
+        dynamicEntries = normalizeCodexModelEntries(result?.data || result?.models || []);
+        if (dynamicEntries.length) source = 'codex-app-server';
+      }
+    } catch (error) {
+      plog('WARN', 'codex_app_model_list_failed', { error: error.message });
+    }
+  }
+
+  if (!dynamicEntries.length && activeTemplate?.apiBase && activeTemplate?.apiKey) {
     try {
       const fetched = await fetchCodexModelsFromApi(activeTemplate);
       if (fetched?.entries?.length) {
@@ -2427,6 +2713,117 @@ async function getCodexModelMenuPayload(session) {
     current,
     currentFull,
     source,
+  };
+}
+
+const CLAUDE_EFFORT_ENTRIES = [
+  { value: 'default', label: '默认', desc: '使用 Claude Code 当前默认推理强度' },
+  { value: 'low', label: 'Low', desc: '更快响应，适合简单任务' },
+  { value: 'medium', label: 'Medium', desc: '速度与推理深度平衡' },
+  { value: 'high', label: 'High', desc: '提高复杂任务的推理深度' },
+  { value: 'xhigh', label: 'XHigh', desc: '用于高难度任务的额外推理' },
+  { value: 'max', label: 'Max', desc: 'Claude Code 支持的最大推理强度' },
+];
+const CODEX_FALLBACK_EFFORT_ENTRIES = [
+  { value: 'default', label: '默认', desc: '使用当前 Codex 模型的默认推理强度' },
+  { value: 'low', label: 'Low', desc: '更快响应，使用较轻推理' },
+  { value: 'medium', label: 'Medium', desc: '速度与推理深度平衡' },
+  { value: 'high', label: 'High', desc: '提高复杂任务的推理深度' },
+  { value: 'xhigh', label: 'XHigh', desc: '用于高难度任务的额外推理' },
+];
+const PI_THINKING_ENTRIES = [
+  { value: 'default', label: '默认', desc: '使用 Pi 配置或当前模型的默认思考级别' },
+  { value: 'off', label: 'Off', desc: '关闭额外思考' },
+  { value: 'minimal', label: 'Minimal', desc: '最少量思考' },
+  { value: 'low', label: 'Low', desc: '较低思考深度' },
+  { value: 'medium', label: 'Medium', desc: '中等思考深度' },
+  { value: 'high', label: 'High', desc: '较高思考深度' },
+  { value: 'xhigh', label: 'XHigh', desc: '最高思考深度' },
+];
+
+function codexEffortEntries(models, requestedModel) {
+  const list = Array.isArray(models) ? models : [];
+  const model = list.find((entry) => {
+    const id = String(entry?.id || entry?.model || entry?.slug || '');
+    return requestedModel && id === requestedModel;
+  }) || list.find((entry) => entry?.isDefault === true) || list[0] || null;
+  const supported = Array.isArray(model?.supportedReasoningEfforts)
+    ? model.supportedReasoningEfforts
+    : (Array.isArray(model?.supported_reasoning_efforts) ? model.supported_reasoning_efforts : []);
+  const entries = [{
+    value: 'default',
+    label: '默认',
+    desc: model?.defaultReasoningEffort
+      ? `使用当前模型默认值（${model.defaultReasoningEffort}）`
+      : '使用当前 Codex 模型的默认推理强度',
+  }];
+  const seen = new Set(['default']);
+  for (const item of supported) {
+    const value = String(item?.reasoningEffort || item?.reasoning_effort || item || '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    entries.push({
+      value,
+      label: value.charAt(0).toUpperCase() + value.slice(1),
+      desc: String(item?.description || `Codex 推理强度：${value}`),
+    });
+  }
+  return entries.length > 1 ? entries : CODEX_FALLBACK_EFFORT_ENTRIES;
+}
+
+async function getEffortMenuPayload(session, agent) {
+  const normalizedAgent = normalizeAgent(agent);
+  if (normalizedAgent === 'codex' && CODEX_TRANSPORT === 'app-server' && session) {
+    try {
+      const spawnSpec = buildCodexSpawnSpec(session, { transport: 'app-server' });
+      if (!spawnSpec?.error) {
+        const runtime = await ensureCodexAppRuntime(session, spawnSpec);
+        const result = await runtime.client.request('model/list', { limit: 100 }, { timeoutMs: 15_000 });
+        return {
+          type: 'effort_list',
+          sessionId: session.id,
+          agent: 'codex',
+          entries: codexEffortEntries(result?.data || result?.models || [], session.model || ''),
+          current: session.effort || 'default',
+          command: 'effort',
+          source: 'codex-app-server',
+        };
+      }
+    } catch (error) {
+      plog('WARN', 'codex_effort_menu_failed', { error: error.message });
+    }
+  }
+  if (normalizedAgent === 'pi' && PI_TRANSPORT === 'rpc' && session) {
+    let current = session.thinking || 'default';
+    try {
+      const spawnSpec = buildPiSpawnSpec(session, { transport: 'rpc' });
+      if (!spawnSpec?.error) {
+        const runtime = await ensurePiRpcRuntime(session, spawnSpec);
+        const state = (await runtime.client.request({ type: 'get_state' }, { timeoutMs: 15_000 })).data;
+        persistPiRpcState(runtime, state);
+        current = session.thinking || state?.thinkingLevel || 'default';
+      }
+    } catch (error) {
+      plog('WARN', 'pi_thinking_menu_failed', { error: error.message });
+    }
+    return {
+      type: 'effort_list',
+      sessionId: session.id,
+      agent: 'pi',
+      entries: PI_THINKING_ENTRIES,
+      current,
+      command: 'thinking',
+      source: 'pi-rpc',
+    };
+  }
+  return {
+    type: 'effort_list',
+    sessionId: session?.id || null,
+    agent: normalizedAgent,
+    entries: normalizedAgent === 'codex' ? CODEX_FALLBACK_EFFORT_ENTRIES : CLAUDE_EFFORT_ENTRIES,
+    current: session?.effort || 'default',
+    command: 'effort',
+    source: normalizedAgent === 'claude' ? 'claude-cli' : null,
   };
 }
 
@@ -2663,12 +3060,16 @@ function applyCustomTemplateToSettings(tpl, existingBridge) {
   const currentSnapshot = readClaudeSettingsSnapshot();
   const settings = cloneJson(currentSnapshot.settings) || {};
   const managedEnv = buildManagedClaudeSettingsEnv(tpl, bridge);
-  ensureClaudeSettingsBackupForCustom(currentSnapshot, managedEnv, bridge);
   settings.env = {
     ...stripManagedClaudeSettingsEnv(settings.env),
     ...managedEnv,
   };
-  writeClaudeSettings(settings);
+  writeJsonAtomic(CLAUDE_RUNTIME_SETTINGS_PATH, settings);
+  return CLAUDE_RUNTIME_SETTINGS_PATH;
+}
+
+function clearClaudeRuntimeSettings() {
+  try { fs.unlinkSync(CLAUDE_RUNTIME_SETTINGS_PATH); } catch {}
 }
 
 function refreshCodexGeneratedRuntimeSnapshot(context = 'runtime_refresh') {
@@ -2750,12 +3151,14 @@ function applyModelConfig() {
 // Apply on startup
 applyModelConfig();
 try {
+  // Migrate installations from the older behavior that edited ~/.claude/settings.json.
+  restoreManagedClaudeSettings(null, { onlyIfBackupExists: true });
   const activeTemplate = getActiveUnifiedTemplate();
   if (activeTemplate) {
     const bridge = ensureBridgeRuntimeForTemplate(activeTemplate);
     applyCustomTemplateToSettings(activeTemplate, bridge);
   } else {
-    restoreManagedClaudeSettings(null, { onlyIfBackupExists: true });
+    clearClaudeRuntimeSettings();
   }
   refreshCodexGeneratedRuntimeSnapshot('codex_runtime_refresh_on_startup');
 } catch (error) {
@@ -3225,10 +3628,17 @@ function buildRuntimeChannelKey(agent, descriptor) {
 
 function getLegacyRuntimeMirror(session, agent) {
   if (!session) return { runtimeId: null, runtimeFingerprint: null };
-  if (normalizeAgent(agent || session?.agent) === 'codex') {
+  const normalizedAgent = normalizeAgent(agent || session?.agent);
+  if (normalizedAgent === 'codex') {
     return {
       runtimeId: session.codexThreadId ? String(session.codexThreadId) : null,
       runtimeFingerprint: session.codexRuntimeFingerprint ? String(session.codexRuntimeFingerprint) : null,
+    };
+  }
+  if (normalizedAgent === 'pi') {
+    return {
+      runtimeId: session.piSessionId ? String(session.piSessionId) : null,
+      runtimeFingerprint: session.piRuntimeFingerprint ? String(session.piRuntimeFingerprint) : null,
     };
   }
   return {
@@ -3388,11 +3798,22 @@ function syncLegacyRuntimeMirror(session) {
     session.codexRuntimeFingerprint = state.entry?.runtimeFingerprint || null;
     session.claudeSessionId = null;
     session.claudeRuntimeFingerprint = null;
+    session.piSessionId = null;
+    session.piRuntimeFingerprint = null;
+  } else if (agent === 'pi') {
+    session.piSessionId = state.entry?.runtimeId || null;
+    session.piRuntimeFingerprint = state.entry?.runtimeFingerprint || null;
+    session.claudeSessionId = null;
+    session.claudeRuntimeFingerprint = null;
+    session.codexThreadId = null;
+    session.codexRuntimeFingerprint = null;
   } else {
     session.claudeSessionId = state.entry?.runtimeId || null;
     session.claudeRuntimeFingerprint = state.entry?.runtimeFingerprint || null;
     session.codexThreadId = null;
     session.codexRuntimeFingerprint = null;
+    session.piSessionId = null;
+    session.piRuntimeFingerprint = null;
   }
 }
 
@@ -3509,6 +3930,14 @@ function normalizeSession(session) {
   if (!Object.prototype.hasOwnProperty.call(session, 'claudeRuntimeFingerprint')) session.claudeRuntimeFingerprint = null;
   if (!Object.prototype.hasOwnProperty.call(session, 'codexThreadId')) session.codexThreadId = null;
   if (!Object.prototype.hasOwnProperty.call(session, 'codexRuntimeFingerprint')) session.codexRuntimeFingerprint = null;
+  if (!Object.prototype.hasOwnProperty.call(session, 'piSessionId')) session.piSessionId = null;
+  if (!Object.prototype.hasOwnProperty.call(session, 'piRuntimeFingerprint')) session.piRuntimeFingerprint = null;
+  if (session.agent === 'pi' && !session.piSessionId && session.claudeSessionId) {
+    session.piSessionId = session.claudeSessionId;
+    session.piRuntimeFingerprint = session.claudeRuntimeFingerprint || null;
+    session.claudeSessionId = null;
+    session.claudeRuntimeFingerprint = null;
+  }
   if (!Object.prototype.hasOwnProperty.call(session, 'totalCost')) session.totalCost = 0;
   if (!Object.prototype.hasOwnProperty.call(session, 'projectId')) session.projectId = null;
   if (!Object.prototype.hasOwnProperty.call(session, 'totalUsage') || !session.totalUsage) {
@@ -3577,6 +4006,13 @@ function normalizeClaudeModelAliasInput(modelInput) {
   return raw;
 }
 
+function getClaudeModelMapValue(alias) {
+  const key = String(alias || '');
+  if (!Object.prototype.hasOwnProperty.call(MODEL_MAP, key)) return null;
+  const value = MODEL_MAP[key];
+  return typeof value === 'string' && value ? value : null;
+}
+
 function modelShortName(fullModel) {
   if (!fullModel) return null;
   const normalized = normalizeClaudeModelAliasInput(fullModel);
@@ -3613,8 +4049,9 @@ function getClaudeModelMenuEntries() {
     const isOneM = entry.alias.endsWith('[1m]');
     const baseAlias = isOneM ? entry.alias.slice(0, -4) : entry.alias;
     let value = entry.alias;
-    if (useResolvedIds && MODEL_MAP[baseAlias]) {
-      value = isOneM ? `${MODEL_MAP[baseAlias]}[1m]` : MODEL_MAP[baseAlias];
+    const mappedModel = getClaudeModelMapValue(baseAlias);
+    if (useResolvedIds && mappedModel) {
+      value = isOneM ? `${mappedModel}[1m]` : mappedModel;
     }
     return { ...entry, value };
   });
@@ -3630,15 +4067,17 @@ function resolveClaudeModelInput(modelInput) {
   }
   if (lower.endsWith('[1m]')) {
     const baseAlias = lower.slice(0, -4);
-    if (MODEL_MAP[baseAlias]) {
+    const mappedModel = getClaudeModelMapValue(baseAlias);
+    if (mappedModel) {
       return {
-        resolvedModel: `${MODEL_MAP[baseAlias]}[1m]`,
+        resolvedModel: `${mappedModel}[1m]`,
         resolvedAlias: `${baseAlias}[1m]`,
       };
     }
   }
-  if (MODEL_MAP[lower]) {
-    return { resolvedModel: MODEL_MAP[lower], resolvedAlias: lower };
+  const mappedModel = getClaudeModelMapValue(lower);
+  if (mappedModel) {
+    return { resolvedModel: mappedModel, resolvedAlias: lower };
   }
   const exactEntry = Object.entries(MODEL_MAP).find(([, value]) => String(value || '').toLowerCase() === lower);
   if (exactEntry) {
@@ -5264,7 +5703,7 @@ function handleProcessComplete(sessionId, exitCode, signal) {
 // Global PID monitor: detect process completion (especially after server restart)
 setInterval(() => {
   for (const [sessionId, entry] of activeProcesses) {
-    if (entry.transport === 'pi-rpc') continue;
+    if (entry.transport === 'pi-rpc' || entry.transport === 'codex-app-server' || entry.transport === 'claude-stream-json') continue;
     if (entry.pendingProcessComplete) continue;
     if (entry.pid && !isProcessRunning(entry.pid)) {
       plog('INFO', 'pid_monitor_detected_exit', {
@@ -5282,6 +5721,24 @@ setInterval(() => {
   for (const runtime of piRpcRuntimes.values()) {
     if (!activeProcesses.has(runtime.sessionId) && runtime.lastUsedAt < cutoff) {
       disposePiRpcRuntime(runtime.sessionId, 'idle_timeout');
+    }
+  }
+}, 60_000).unref?.();
+
+setInterval(() => {
+  const cutoff = Date.now() - CODEX_APP_IDLE_TIMEOUT_MS;
+  for (const runtime of codexAppRuntimes.values()) {
+    if (!activeProcesses.has(runtime.sessionId) && runtime.lastUsedAt < cutoff) {
+      disposeCodexAppRuntime(runtime.sessionId, 'idle_timeout');
+    }
+  }
+}, 60_000).unref?.();
+
+setInterval(() => {
+  const cutoff = Date.now() - CLAUDE_STREAM_IDLE_TIMEOUT_MS;
+  for (const runtime of claudeStreamRuntimes.values()) {
+    if (!activeProcesses.has(runtime.sessionId) && runtime.lastUsedAt < cutoff) {
+      disposeClaudeStreamRuntime(runtime.sessionId, 'idle_timeout');
     }
   }
 }, 60_000).unref?.();
@@ -5320,6 +5777,7 @@ function recoverProcesses() {
         const permissionMode = runMeta?.permissionMode || session?.permissionMode || 'yolo';
         plog('INFO', 'recovery_alive', { sessionId: sessionId.slice(0, 8), pid, agent, permissionMode });
         const entry = {
+          runId: runMeta?.runId || `legacy-${sessionId}-${runMeta?.startedAt || pid}`,
           pid,
           ws: null,
           agent,
@@ -5350,7 +5808,21 @@ function recoverProcesses() {
         console.log(`[recovery] Processing completed output for session ${sessionId}`);
         plog('INFO', 'recovery_dead', { sessionId: sessionId.slice(0, 8), pid, agent });
         if (fs.existsSync(outputPath)) {
-          const tempEntry = { pid: 0, ws: null, agent, fullText: '', toolCalls: [], segments: [], lastCost: null, lastUsage: null, lastError: null, errorSent: false, tailer: null };
+          const runMeta = readRunMeta(sessionId);
+          const tempEntry = {
+            runId: runMeta?.runId || `legacy-${sessionId}-${runMeta?.startedAt || pid}`,
+            pid: 0,
+            ws: null,
+            agent,
+            fullText: '',
+            toolCalls: [],
+            segments: [],
+            lastCost: null,
+            lastUsage: null,
+            lastError: null,
+            errorSent: false,
+            tailer: null,
+          };
           const content = fs.readFileSync(outputPath, 'utf8');
           for (const line of content.split('\n')) {
             if (!line.trim()) continue;
@@ -5489,12 +5961,17 @@ const server = http.createServer((req, res) => {
       }
       const ext = path.extname(absPath).toLowerCase();
       if (ext === '.md' || ext === '.markdown') {
-        // Render markdown to HTML
+        const encodedMarkdown = JSON.stringify(data)
+          .replace(/</g, '\\u003c')
+          .replace(/>/g, '\\u003e')
+          .replace(/&/g, '\\u0026');
+        const viewerVersion = getPublicAssetVersion('markdown-viewer.js');
         const htmlContent = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${path.basename(absPath).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>body{font-family:system-ui,sans-serif;font-size:15px;line-height:1.7;max-width:860px;margin:0 auto;padding:32px 24px;color:#222}pre{background:#f5f5f5;padding:12px;border-radius:4px;overflow-x:auto}code{background:#f0f0f0;padding:1px 5px;border-radius:3px;font-size:0.9em}pre code{background:none;padding:0}img{max-width:100%}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px 10px}th{background:#f5f5f5}blockquote{border-left:3px solid #ccc;margin:0;padding-left:14px;color:#666}a{color:#0066cc}hr{border:none;border-top:1px solid #ddd}</style>
-</head><body><div id="content"></div>
-<script>document.getElementById('content').innerHTML=marked.parse(${JSON.stringify(data)});</script>
+</head><body><main id="content"></main>
+<script type="application/json" id="markdown-source">${encodedMarkdown}</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+<script src="/markdown-viewer.js?v=${viewerVersion}"></script>
 </body></html>`;
         writeHeadWithSecurity(res, 200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
         return res.end(htmlContent);
@@ -5670,7 +6147,7 @@ wss.on('connection', (ws, req) => {
         handleAbort(ws);
         break;
       case 'interactive_response':
-        handlePiRpcInteractiveResponse(ws, msg);
+        handleInteractiveResponse(ws, msg);
         break;
       case 'new_session':
         handleNewSession(ws, msg);
@@ -5747,8 +6224,11 @@ wss.on('connection', (ws, req) => {
           });
         };
         if (slashAgent === 'claude') {
-          // Claude: spawn CLI to capture init event (real-time discovery)
-          discoverClaudeSlashCommands().then(sendSlashList).catch(sendSlashList);
+          // Claude: capture init metadata without sending a model turn.
+          const viewedSession = loadSession(wsSessionMap.get(ws));
+          discoverClaudeSlashCommands({ cwd: viewedSession?.cwd || null })
+            .then(sendSlashList)
+            .catch(sendSlashList);
         } else if (slashAgent === 'pi') {
           const viewedSession = loadSession(wsSessionMap.get(ws));
           if (PI_TRANSPORT === 'rpc' && viewedSession && getSessionAgent(viewedSession) === 'pi') {
@@ -5790,6 +6270,21 @@ wss.on('connection', (ws, req) => {
         break;
       case 'import_codex_session':
         handleImportCodexSession(ws, msg);
+        break;
+      case 'list_pi_sessions':
+        handleListPiSessions(ws);
+        break;
+      case 'import_pi_session':
+        handleImportPiSession(ws, msg);
+        break;
+      case 'fork_pi_session':
+        handlePiForkSelection(ws, msg).catch((error) => {
+          wsSend(ws, {
+            type: 'error',
+            sessionId: sanitizeId(msg?.sessionId || '') || null,
+            message: `Pi Fork 失败：${error.message}`,
+          });
+        });
         break;
       case 'list_cwd_suggestions':
         handleListCwdSuggestions(ws);
@@ -5956,12 +6451,14 @@ function handleSaveModelConfig(ws, newConfig) {
   // Re-apply at runtime
   MODEL_MAP = { ...DEFAULT_CLAUDE_MODEL_MAP };
   applyModelConfig();
-  // custom mode: write to ~/.claude/settings.json immediately on save
+  // Custom mode uses an isolated settings file passed with --settings.
   if (merged.mode === 'custom' && merged.activeTemplate) {
+    restoreManagedClaudeSettings(previousTemplate, { onlyIfBackupExists: true });
     const tpl = merged.templates.find(t => t.name === merged.activeTemplate);
     if (tpl) applyCustomTemplateToSettings(tpl);
   } else {
-    restoreManagedClaudeSettings(previousTemplate);
+    restoreManagedClaudeSettings(previousTemplate, { onlyIfBackupExists: true });
+    clearClaudeRuntimeSettings();
   }
   refreshCodexGeneratedRuntimeSnapshot('codex_runtime_refresh_after_model_save');
   plog('INFO', 'model_config_saved', { mode: merged.mode, activeTemplate: merged.activeTemplate });
@@ -6253,6 +6750,659 @@ function sendMessageAccepted(ws, sessionId, clientMessageId, extra = {}) {
   });
 }
 
+async function performCodexFork(ws, session) {
+  if (!session || CODEX_TRANSPORT !== 'app-server') {
+    throw new Error('当前 Codex 运行方式不支持原生 Fork。');
+  }
+  const spawnSpec = buildCodexSpawnSpec(session, { transport: 'app-server' });
+  if (spawnSpec?.error) throw new Error(spawnSpec.error);
+  const threadId = spawnSpec.runtimeId || getRuntimeSessionId(session, {
+    agent: 'codex',
+    channelKey: spawnSpec.channelKey || null,
+    channelDescriptor: spawnSpec.channelDescriptor || null,
+  });
+  if (!threadId) throw new Error('当前会话尚未建立 Codex 原生线程，无法 Fork。');
+  const runtime = await ensureCodexAppRuntime(session, spawnSpec);
+  const result = await runtime.client.request('thread/fork', {
+    threadId,
+    cwd: spawnSpec.cwd,
+    model: session.model || null,
+    approvalPolicy: spawnSpec.approvalPolicy,
+    sandbox: spawnSpec.threadSandbox,
+  }, { timeoutMs: 30_000 });
+  const forkedThreadId = result?.thread?.id;
+  if (!forkedThreadId) throw new Error('Codex App Server 未返回 Fork 后的 threadId。');
+
+  const now = new Date().toISOString();
+  const runtimeContexts = cloneJson(session.runtimeContexts || { claude: {}, codex: {}, pi: {} });
+  runtimeContexts.codex = {};
+  const forked = {
+    ...cloneJson(session),
+    id: crypto.randomUUID(),
+    title: `${session.title || 'Codex 会话'}（分支）`.slice(0, 100),
+    created: now,
+    updated: now,
+    hasUnread: false,
+    messages: cloneJson(session.messages || []),
+    codexThreadId: null,
+    codexRuntimeFingerprint: spawnSpec.runtimeFingerprint || null,
+    importedRolloutPath: null,
+    runtimeContexts,
+  };
+  setRuntimeSessionState(forked, {
+    runtimeId: forkedThreadId,
+    runtimeFingerprint: spawnSpec.runtimeFingerprint || null,
+    channelDescriptor: spawnSpec.channelDescriptor || null,
+  }, {
+    agent: 'codex',
+    channelKey: spawnSpec.channelKey || null,
+    channelDescriptor: spawnSpec.channelDescriptor || null,
+  });
+  saveSession(forked);
+  wsSessionMap.set(ws, forked.id);
+  wsSend(ws, {
+    type: 'session_info',
+    sessionId: forked.id,
+    messages: forked.messages,
+    title: forked.title,
+    mode: forked.permissionMode || 'yolo',
+    model: sessionModelLabel(forked),
+    agent: 'codex',
+    cwd: forked.cwd || null,
+    totalCost: forked.totalCost || 0,
+    totalUsage: forked.totalUsage || null,
+    updated: forked.updated,
+    hasUnread: false,
+    historyPending: false,
+    isRunning: false,
+    ...buildSessionRuntimeMeta(forked),
+  });
+  sendSessionList(ws);
+  wsSend(ws, {
+    type: 'system_message',
+    sessionId: forked.id,
+    message: '已通过 Codex App Server Fork 当前线程，原会话保持不变。',
+  });
+}
+
+async function handleCodexFork(ws, session) {
+  if (!session?.id) throw new Error('当前没有可 Fork 的 Codex 会话。');
+  if (codexForkOperations.has(session.id)) {
+    throw new Error('当前 Codex 会话正在创建分支，请稍候。');
+  }
+  codexForkOperations.add(session.id);
+  try {
+    return await performCodexFork(ws, session);
+  } finally {
+    codexForkOperations.delete(session.id);
+  }
+}
+
+function normalizePiForkOptions(messages) {
+  const options = [];
+  const seen = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const entryId = String(message?.entryId || '').trim();
+    const text = String(message?.text || '').trim();
+    if (!entryId || !text || seen.has(entryId)) continue;
+    seen.add(entryId);
+    options.push({ entryId, text: text.slice(0, 4000) });
+  }
+  const total = options.length;
+  const visible = options.slice(-1000);
+  return { options: visible, total, truncated: visible.length < total };
+}
+
+async function getPiForkOptions(session) {
+  if (!session || PI_TRANSPORT !== 'rpc') {
+    throw new Error('当前 Pi 运行方式不支持原生 Fork。');
+  }
+  const spawnSpec = buildPiSpawnSpec(session, { transport: 'rpc' });
+  if (spawnSpec?.error) throw new Error(spawnSpec.error);
+  const sourceRuntimeId = spawnSpec.runtimeId || getRuntimeSessionId(session, {
+    agent: 'pi',
+    channelKey: spawnSpec.channelKey || null,
+    channelDescriptor: spawnSpec.channelDescriptor || null,
+  });
+  if (!sourceRuntimeId) throw new Error('当前会话尚未建立 Pi 原生线程，无法 Fork。');
+  const runtime = await ensurePiRpcRuntime(session, spawnSpec);
+  const response = await runtime.client.request({ type: 'get_fork_messages' }, { timeoutMs: 15_000 });
+  return normalizePiForkOptions(response.data?.messages);
+}
+
+async function sendPiForkOptions(ws, session) {
+  const result = await getPiForkOptions(session);
+  if (result.options.length === 0) {
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: session.id,
+      message: '当前 Pi 会话还没有可作为分支起点的用户消息。',
+    });
+    return;
+  }
+  wsSend(ws, {
+    type: 'pi_fork_options',
+    sessionId: session.id,
+    options: result.options,
+    total: result.total,
+    truncated: result.truncated,
+  });
+}
+
+function materializePiForkSessionFile(session, forkState, originalFile) {
+  const sessionFile = path.resolve(String(forkState?.sessionFile || ''));
+  const expectedDir = path.resolve(piSessionDir(session.id));
+  if (!forkState?.sessionId || !sessionFile || !isPathInside(sessionFile, expectedDir)) {
+    throw new Error('Pi RPC 返回了无效的 Fork 会话路径。');
+  }
+  if (!fs.existsSync(sessionFile)) {
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: String(forkState.sessionId),
+      timestamp: new Date().toISOString(),
+      cwd: session.cwd || process.cwd(),
+      parentSession: originalFile,
+    })}\n`, { flag: 'wx' });
+  }
+  const summary = summarizePiSessionFile(sessionFile);
+  if (summary?.sessionId !== String(forkState.sessionId)) {
+    throw new Error('Pi RPC 返回的 Fork 会话文件与会话编号不匹配。');
+  }
+  return sessionFile;
+}
+
+function cleanupPiForkSessionFile(session, candidatePath, originalFile) {
+  const rawCandidate = String(candidatePath || '').trim();
+  if (!rawCandidate) return;
+  const candidate = path.resolve(rawCandidate);
+  const original = path.resolve(String(originalFile || ''));
+  if (candidate === original || !isPathInside(candidate, path.resolve(piSessionDir(session.id)))) return;
+  try {
+    if (fs.existsSync(candidate)) fs.unlinkSync(candidate);
+  } catch (error) {
+    plog('WARN', 'pi_rpc_fork_temp_cleanup_failed', {
+      sessionId: session.id.slice(0, 8),
+      error: error.message,
+    });
+  }
+}
+
+async function performPiFork(ws, session, entryId = null) {
+  if (!session || PI_TRANSPORT !== 'rpc') {
+    throw new Error('当前 Pi 运行方式不支持原生 Fork。');
+  }
+  const spawnSpec = buildPiSpawnSpec(session, { transport: 'rpc' });
+  if (spawnSpec?.error) throw new Error(spawnSpec.error);
+  const sourceRuntimeId = spawnSpec.runtimeId || getRuntimeSessionId(session, {
+    agent: 'pi',
+    channelKey: spawnSpec.channelKey || null,
+    channelDescriptor: spawnSpec.channelDescriptor || null,
+  });
+  if (!sourceRuntimeId) throw new Error('当前会话尚未建立 Pi 原生线程，无法 Fork。');
+
+  const runtime = await ensurePiRpcRuntime(session, spawnSpec);
+  const originalStateResponse = await runtime.client.request({ type: 'get_state' }, { timeoutMs: 15_000 });
+  const originalState = originalStateResponse.data || runtime.state || null;
+  const originalFile = String(originalState?.sessionFile || '').trim();
+  if (!originalFile || !fs.existsSync(originalFile)) {
+    throw new Error('Pi RPC 未返回可分支的原生会话文件。');
+  }
+
+  let forkState = null;
+  let forkSessionFile = null;
+  let selectedText = '';
+  let restored = false;
+  let forkOperationError = null;
+  try {
+    const forkResponse = await runtime.client.request(
+      entryId
+        ? { type: 'fork', entryId: String(entryId) }
+        : { type: 'clone' },
+      { timeoutMs: 30_000 },
+    );
+    if (forkResponse.data?.cancelled) throw new Error('Pi 扩展取消了本次 Fork。');
+    selectedText = entryId ? String(forkResponse.data?.text || '') : '';
+    const forkStateResponse = await runtime.client.request({ type: 'get_state' }, { timeoutMs: 15_000 });
+    forkState = forkStateResponse.data || null;
+    if (!forkState?.sessionId || !forkState?.sessionFile) {
+      throw new Error('Pi RPC 未返回 Fork 后的会话信息。');
+    }
+    if (String(forkState.sessionId) === String(sourceRuntimeId)) {
+      throw new Error('Pi RPC Fork 后仍返回原会话编号。');
+    }
+    forkSessionFile = materializePiForkSessionFile(session, forkState, originalFile);
+  } catch (error) {
+    forkOperationError = error;
+  } finally {
+    try {
+      const restoreResponse = await runtime.client.request({
+        type: 'switch_session',
+        sessionPath: originalFile,
+      }, { timeoutMs: 30_000 });
+      if (restoreResponse.data?.cancelled) throw new Error('Pi 扩展取消恢复原会话');
+      const restoredStateResponse = await runtime.client.request({ type: 'get_state' }, { timeoutMs: 15_000 });
+      runtime.state = restoredStateResponse.data || originalState;
+      persistPiRpcState(runtime, runtime.state);
+      restored = String(runtime.state?.sessionId || '') === String(sourceRuntimeId);
+    } catch (error) {
+      plog('WARN', 'pi_rpc_fork_restore_failed', {
+        sessionId: session.id.slice(0, 8),
+        error: error.message,
+      });
+    }
+    if (!restored) disposePiRpcRuntime(session.id, 'fork_restore_failed');
+  }
+
+  if (forkOperationError) {
+    cleanupPiForkSessionFile(session, forkSessionFile || forkState?.sessionFile, originalFile);
+    throw forkOperationError;
+  }
+
+  let forkedId = null;
+  let forkSaved = false;
+  try {
+    if (!forkState) throw new Error('Pi RPC 未完成 Fork。');
+    const parsedFork = entryId && forkSessionFile ? parsePiSessionFile(forkSessionFile) : null;
+    if (entryId && !parsedFork) throw new Error('无法解析 Pi Fork 后的会话文件。');
+    const now = new Date().toISOString();
+    forkedId = crypto.randomUUID();
+    const runtimeContexts = cloneJson(session.runtimeContexts || { claude: {}, codex: {}, pi: {} });
+    runtimeContexts.pi = {};
+    const forked = normalizeSession({
+      ...cloneJson(session),
+      id: forkedId,
+      title: `${session.title || 'Pi 会话'}（分支）`.slice(0, 100),
+      created: now,
+      updated: now,
+      hasUnread: false,
+      messages: parsedFork ? parsedFork.messages : cloneJson(session.messages || []),
+      claudeSessionId: null,
+      codexThreadId: null,
+      piSessionId: null,
+      runtimeContexts,
+      importedFrom: 'pi-fork',
+      importedPiSourcePath: null,
+      totalCost: parsedFork ? parsedFork.totalCost : (session.totalCost || 0),
+      totalUsage: parsedFork ? parsedFork.totalUsage : (session.totalUsage || null),
+    });
+    forked.importedPiSessionPath = copyPiSessionIntoWebStorage(
+      forkSessionFile,
+      forked.id,
+      String(forkState.sessionId),
+    );
+    cleanupPiForkSessionFile(session, forkSessionFile, originalFile);
+    setRuntimeSessionState(forked, {
+      runtimeId: String(forkState.sessionId),
+      runtimeFingerprint: spawnSpec.runtimeFingerprint || null,
+      channelDescriptor: spawnSpec.channelDescriptor || null,
+    }, {
+      agent: 'pi',
+      channelKey: spawnSpec.channelKey || null,
+      channelDescriptor: spawnSpec.channelDescriptor || null,
+    });
+    saveSession(forked);
+    forkSaved = true;
+    wsSessionMap.set(ws, forked.id);
+    wsSend(ws, {
+      type: 'session_info',
+      sessionId: forked.id,
+      messages: forked.messages,
+      title: forked.title,
+      mode: forked.permissionMode || 'yolo',
+      model: sessionModelLabel(forked),
+      agent: 'pi',
+      cwd: forked.cwd || null,
+      projectId: forked.projectId || null,
+      totalCost: forked.totalCost || 0,
+      totalUsage: forked.totalUsage || null,
+      updated: forked.updated,
+      hasUnread: false,
+      historyPending: false,
+      isRunning: false,
+      forked: true,
+      draftText: selectedText,
+      ...buildSessionRuntimeMeta(forked),
+    });
+    sendSessionList(ws);
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: forked.id,
+      message: entryId
+        ? '已从选中的 Pi 历史消息前创建分支；原提示已放回输入框，可修改后发送。'
+        : '已通过 Pi RPC Clone 当前活动分支，原会话保持不变。',
+    });
+  } catch (error) {
+    if (forkedId && !forkSaved) deletePiLocalSession(forkedId);
+    throw error;
+  } finally {
+    cleanupPiForkSessionFile(session, forkSessionFile || forkState?.sessionFile, originalFile);
+  }
+}
+
+async function withPiForkLock(sessionId, operation) {
+  if (piForkOperations.has(sessionId)) {
+    throw new Error('当前 Pi 会话正在创建分支，请稍候。');
+  }
+  piForkOperations.add(sessionId);
+  try {
+    return await operation();
+  } finally {
+    piForkOperations.delete(sessionId);
+  }
+}
+
+async function handlePiFork(ws, session, entryId = null) {
+  if (!session?.id) throw new Error('当前没有可 Fork 的 Pi 会话。');
+  return withPiForkLock(session.id, () => performPiFork(ws, session, entryId));
+}
+
+async function handlePiForkSelection(ws, msg) {
+  const sessionId = sanitizeId(msg?.sessionId || '');
+  const entryId = String(msg?.entryId || '').trim();
+  if (!sessionId || wsSessionMap.get(ws) !== sessionId) {
+    throw new Error('当前页面不属于该 Pi 会话。');
+  }
+  const session = loadSession(sessionId);
+  if (!session || getSessionAgent(session) !== 'pi') throw new Error('未找到对应的 Pi 会话。');
+  return withPiForkLock(session.id, async () => {
+    if (activeProcesses.has(session.id)) throw new Error('当前 Pi 仍在运行，请结束本轮后再 Fork。');
+    if (!entryId) throw new Error('请选择一条历史用户消息作为分支起点。');
+    const available = await getPiForkOptions(session);
+    if (!available.options.some((option) => option.entryId === entryId)) {
+      throw new Error('所选 Pi 历史消息已失效，请重新执行 /fork。');
+    }
+    if (activeProcesses.has(session.id)) throw new Error('当前 Pi 仍在运行，请结束本轮后再 Fork。');
+    return performPiFork(ws, session, entryId);
+  });
+}
+
+async function getCodexPlatformRuntime(session) {
+  if (!session || getSessionAgent(session) !== 'codex' || CODEX_TRANSPORT !== 'app-server') {
+    throw new Error('当前会话不支持 Codex App Server 平台命令。');
+  }
+  const spawnSpec = buildCodexSpawnSpec(session, { transport: 'app-server' });
+  if (spawnSpec?.error) throw new Error(spawnSpec.error);
+  const runtime = await ensureCodexAppRuntime(session, spawnSpec);
+  const threadId = spawnSpec.runtimeId || getRuntimeSessionId(session, {
+    agent: 'codex',
+    channelKey: spawnSpec.channelKey || null,
+    channelDescriptor: spawnSpec.channelDescriptor || null,
+  }) || runtime.threadId || null;
+  return { runtime, threadId };
+}
+
+async function handleCodexSkillsCommand(ws, session) {
+  const { runtime } = await getCodexPlatformRuntime(session);
+  const result = await runtime.client.request('skills/list', {
+    cwds: session.cwd ? [session.cwd] : [],
+    forceReload: true,
+  }, { timeoutMs: 20_000 });
+  const seen = new Set();
+  const skills = [];
+  for (const group of Array.isArray(result?.data) ? result.data : []) {
+    for (const skill of Array.isArray(group?.skills) ? group.skills : []) {
+      const name = String(skill?.name || '').trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      skills.push(skill);
+    }
+  }
+  const lines = [`Codex Skills（${skills.length}）`];
+  if (skills.length === 0) {
+    lines.push('当前目录没有可用 Skill。');
+  } else {
+    for (const skill of skills.slice(0, 100)) {
+      const scope = skill.scope ? ` · ${skill.scope}` : '';
+      const disabled = skill.enabled === false ? ' · 已停用' : '';
+      const description = String(
+        skill.interface?.shortDescription || skill.shortDescription || skill.description || '',
+      ).trim().replace(/\s+/g, ' ').slice(0, 160);
+      lines.push(`- $${skill.name}${scope}${disabled}${description ? ` — ${description}` : ''}`);
+    }
+    if (skills.length > 100) lines.push(`另有 ${skills.length - 100} 个 Skill 未展开。`);
+    lines.push('', '使用方式：在消息中输入 $SkillName。');
+  }
+  wsSend(ws, { type: 'system_message', sessionId: session.id, message: lines.join('\n') });
+}
+
+function codexMcpAuthLabel(status) {
+  if (status === 'oAuth') return 'OAuth 已登录';
+  if (status === 'bearerToken') return 'Token 已配置';
+  if (status === 'notLoggedIn') return '未登录';
+  return '无需登录';
+}
+
+async function handleCodexMcpCommand(ws, session) {
+  const { runtime, threadId } = await getCodexPlatformRuntime(session);
+  const servers = [];
+  let cursor = null;
+  for (let page = 0; page < 10; page += 1) {
+    const result = await runtime.client.request('mcpServerStatus/list', {
+      cursor,
+      limit: 100,
+      detail: 'toolsAndAuthOnly',
+      threadId,
+    }, { timeoutMs: 20_000 });
+    servers.push(...(Array.isArray(result?.data) ? result.data : []));
+    cursor = result?.nextCursor || null;
+    if (!cursor) break;
+  }
+  const lines = [`Codex MCP 服务（${servers.length}）`];
+  if (servers.length === 0) {
+    lines.push('当前没有已配置的 MCP 服务。');
+  } else {
+    for (const server of servers) {
+      const tools = Object.keys(server?.tools && typeof server.tools === 'object' ? server.tools : {});
+      lines.push(`- ${server.name || '未命名'} · ${codexMcpAuthLabel(server.authStatus)} · ${tools.length} 个工具`);
+      if (tools.length > 0) {
+        lines.push(`  ${tools.slice(0, 12).join(', ')}${tools.length > 12 ? ` 等 ${tools.length} 个` : ''}`);
+      }
+    }
+  }
+  wsSend(ws, { type: 'system_message', sessionId: session.id, message: lines.join('\n') });
+}
+
+function formatCodexGoal(goal) {
+  if (!goal) return '当前 Codex 线程没有活动目标。';
+  const budget = Number.isFinite(goal.tokenBudget) ? ` / ${goal.tokenBudget}` : '';
+  return [
+    `目标：${goal.objective || '未命名'}`,
+    `状态：${goal.status || 'active'}`,
+    `Token：${Number(goal.tokensUsed) || 0}${budget}`,
+    `耗时：${Number(goal.timeUsedSeconds) || 0} 秒`,
+  ].join('\n');
+}
+
+async function handleCodexGoalCommand(ws, session, args) {
+  const { runtime, threadId } = await getCodexPlatformRuntime(session);
+  if (!threadId) {
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: session.id,
+      message: '当前会话尚未建立 Codex 原生线程，请先发送一条普通消息后再设置目标。',
+    });
+    return;
+  }
+  const input = String(args || '').trim();
+  const action = input.toLowerCase();
+  if (!input) {
+    const result = await runtime.client.request('thread/goal/get', { threadId }, { timeoutMs: 15_000 });
+    wsSend(ws, { type: 'system_message', sessionId: session.id, message: formatCodexGoal(result?.goal) });
+    return;
+  }
+  if (action === 'clear') {
+    const result = await runtime.client.request('thread/goal/clear', { threadId }, { timeoutMs: 15_000 });
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: session.id,
+      message: result?.cleared === false ? '当前 Codex 线程没有可清除的目标。' : 'Codex 线程目标已清除。',
+    });
+    return;
+  }
+  const statusByAction = {
+    pause: 'paused',
+    resume: 'active',
+    complete: 'complete',
+  };
+  const params = statusByAction[action]
+    ? { threadId, objective: null, status: statusByAction[action], tokenBudget: null }
+    : { threadId, objective: input, status: 'active', tokenBudget: null };
+  const result = await runtime.client.request('thread/goal/set', params, { timeoutMs: 15_000 });
+  wsSend(ws, {
+    type: 'system_message',
+    sessionId: session.id,
+    message: `Codex 线程目标已更新。\n${formatCodexGoal(result?.goal)}`,
+  });
+}
+
+async function handleCodexPersonalityCommand(ws, session, args) {
+  const input = String(args || '').trim().toLowerCase();
+  if (!input) {
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: session.id,
+      message: [
+        `当前 Codex 沟通风格：${session.codexPersonality || '默认'}`,
+        '可选：none、friendly、pragmatic；使用 default 清除覆盖。',
+      ].join('\n'),
+    });
+    return;
+  }
+  const personality = input === 'default' ? null : input;
+  if (personality !== null && !['none', 'friendly', 'pragmatic'].includes(personality)) {
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: session.id,
+      message: '无效沟通风格。可选：default、none、friendly、pragmatic。',
+    });
+    return;
+  }
+  const { runtime, threadId } = await getCodexPlatformRuntime(session);
+  if (!threadId) {
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: session.id,
+      message: '当前会话尚未建立 Codex 原生线程，请先发送一条普通消息后再设置沟通风格。',
+    });
+    return;
+  }
+  await runtime.client.request('thread/settings/update', {
+    threadId,
+    personality,
+  }, { timeoutMs: 15_000 });
+  session.codexPersonality = personality;
+  session.updated = new Date().toISOString();
+  saveSession(session);
+  wsSend(ws, {
+    type: 'system_message',
+    sessionId: session.id,
+    message: personality
+      ? `Codex 沟通风格已切换为：${personality}`
+      : 'Codex 沟通风格已恢复为线程默认值。',
+  });
+}
+
+function formatCodexRateLimitWindow(label, window) {
+  if (!window || window.usedPercent == null || !Number.isFinite(Number(window.usedPercent))) return null;
+  const reset = window.resetsAt != null && Number.isFinite(Number(window.resetsAt))
+    ? ` · 重置 ${new Date(Number(window.resetsAt) * 1000).toLocaleString('zh-CN', { hour12: false })}`
+    : '';
+  const duration = window.windowDurationMins != null && Number.isFinite(Number(window.windowDurationMins))
+    ? ` · ${Number(window.windowDurationMins)} 分钟窗口`
+    : '';
+  return `${label}: 已用 ${Number(window.usedPercent)}%${duration}${reset}`;
+}
+
+async function handleCodexUsageCommand(ws, session) {
+  const { runtime } = await getCodexPlatformRuntime(session);
+  const [usageResult, rateLimitResult] = await Promise.allSettled([
+    runtime.client.request('account/usage/read', null, { timeoutMs: 15_000 }),
+    runtime.client.request('account/rateLimits/read', null, { timeoutMs: 15_000 }),
+  ]);
+  if (usageResult.status === 'rejected' && rateLimitResult.status === 'rejected') {
+    throw new Error(`账户用量不可用：${usageResult.reason?.message || rateLimitResult.reason?.message || '未知错误'}`);
+  }
+  const lines = ['Codex 账户用量'];
+  if (usageResult.status === 'fulfilled') {
+    const summary = usageResult.value?.summary || {};
+    if (summary.lifetimeTokens != null && Number.isFinite(Number(summary.lifetimeTokens))) lines.push(`累计 Token: ${Number(summary.lifetimeTokens)}`);
+    if (summary.peakDailyTokens != null && Number.isFinite(Number(summary.peakDailyTokens))) lines.push(`单日峰值: ${Number(summary.peakDailyTokens)}`);
+    if (summary.currentStreakDays != null && Number.isFinite(Number(summary.currentStreakDays))) lines.push(`连续使用: ${Number(summary.currentStreakDays)} 天`);
+  }
+  if (rateLimitResult.status === 'fulfilled') {
+    const snapshot = rateLimitResult.value?.rateLimits || null;
+    const primary = formatCodexRateLimitWindow('主要限额', snapshot?.primary);
+    const secondary = formatCodexRateLimitWindow('次要限额', snapshot?.secondary);
+    if (primary) lines.push(primary);
+    if (secondary) lines.push(secondary);
+    if (snapshot?.credits?.unlimited === true) lines.push('Credits: 不限量');
+    else if (snapshot?.credits?.balance != null) lines.push(`Credits: ${snapshot.credits.balance}`);
+    const resetCredits = Number(rateLimitResult.value?.rateLimitResetCredits?.availableCount);
+    if (Number.isFinite(resetCredits) && resetCredits > 0) lines.push(`可用限额重置次数: ${resetCredits}`);
+  }
+  if (lines.length === 1) lines.push('当前账户没有返回可显示的用量数据。');
+  wsSend(ws, { type: 'system_message', sessionId: session.id, message: lines.join('\n') });
+}
+
+async function listCodexBackgroundTerminals(runtime, threadId) {
+  const terminals = [];
+  let cursor = null;
+  for (let page = 0; page < 10; page += 1) {
+    const result = await runtime.client.request('thread/backgroundTerminals/list', {
+      threadId,
+      cursor,
+      limit: 100,
+    }, { timeoutMs: 15_000 });
+    terminals.push(...(Array.isArray(result?.data) ? result.data : []));
+    cursor = result?.nextCursor || null;
+    if (!cursor) break;
+  }
+  return terminals;
+}
+
+async function handleCodexBackgroundTerminalsCommand(ws, session, stopAll = false) {
+  const { runtime, threadId } = await getCodexPlatformRuntime(session);
+  if (!threadId) {
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: session.id,
+      message: '当前会话尚未建立 Codex 原生线程。',
+    });
+    return;
+  }
+  const terminals = await listCodexBackgroundTerminals(runtime, threadId);
+  if (!stopAll) {
+    const lines = [`Codex 后台终端（${terminals.length}）`];
+    if (terminals.length === 0) lines.push('当前线程没有后台终端。');
+    for (const terminal of terminals) {
+      const rss = terminal.rssKb != null && Number.isFinite(Number(terminal.rssKb)) ? ` · ${Math.round(Number(terminal.rssKb) / 1024)} MB` : '';
+      const cpu = terminal.cpuPercent != null && Number.isFinite(Number(terminal.cpuPercent)) ? ` · CPU ${Number(terminal.cpuPercent).toFixed(1)}%` : '';
+      lines.push(`- ${terminal.command || terminal.processId}${cpu}${rss}`);
+      if (terminal.cwd) lines.push(`  ${terminal.cwd}`);
+    }
+    wsSend(ws, { type: 'system_message', sessionId: session.id, message: lines.join('\n') });
+    return;
+  }
+  if (terminals.length === 0) {
+    wsSend(ws, { type: 'system_message', sessionId: session.id, message: '当前线程没有需要停止的后台终端。' });
+    return;
+  }
+  const results = await Promise.allSettled(terminals.map((terminal) => runtime.client.request(
+    'thread/backgroundTerminals/terminate',
+    { threadId, processId: terminal.processId },
+    { timeoutMs: 15_000 },
+  )));
+  const stopped = results.filter((result) => result.status === 'fulfilled').length;
+  const failed = results.length - stopped;
+  wsSend(ws, {
+    type: 'system_message',
+    sessionId: session.id,
+    message: `已停止 ${stopped} 个 Codex 后台终端${failed ? `，${failed} 个停止失败` : ''}。`,
+  });
+}
+
 // === Slash Command Handler ===
 // Slash *menu* is discovery-only (no hard-coded 6-command subset).
 // Execution: pass almost everything to the CLI. Only a few platform controls stay
@@ -6260,6 +7410,83 @@ function sendMessageAccepted(ws, sessionId, clientMessageId, extra = {}) {
 //
 // Local handlers ACK with execution:'local' so the client does NOT startGenerating.
 // They intentionally do NOT emit `done` (avoids racing a subsequent real CLI turn).
+async function applyEffortSelection(ws, session, agent, rawValue) {
+  if (!session) throw new Error('请先进入一个会话再切换推理强度。');
+  const normalizedAgent = normalizeAgent(agent);
+  const value = String(rawValue || '').trim().toLowerCase();
+  const targetValue = value === 'default' ? null : value;
+  let appliedValue = targetValue;
+  if (!value) {
+    wsSend(ws, await getEffortMenuPayload(session, normalizedAgent));
+    return;
+  }
+  if (normalizedAgent === 'claude' && !CLAUDE_EFFORT_ENTRIES.some((entry) => entry.value === value)) {
+    throw new Error(`Claude 不支持推理强度 ${value}。`);
+  }
+  if (normalizedAgent === 'pi' && !PI_THINKING_ENTRIES.some((entry) => entry.value === value)) {
+    throw new Error(`Pi 不支持思考级别 ${value}。`);
+  }
+  if (normalizedAgent === 'codex' && !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(value)) {
+    throw new Error('Codex 推理强度格式无效。请从列表中选择。');
+  }
+
+  const running = activeProcesses.has(session.id);
+  if (normalizedAgent === 'pi') session.thinking = targetValue;
+  else session.effort = targetValue;
+  session.updated = new Date().toISOString();
+  saveSession(session);
+
+  if (!running && normalizedAgent === 'codex' && CODEX_TRANSPORT === 'app-server') {
+    const spawnSpec = buildCodexSpawnSpec(session, { transport: 'app-server' });
+    if (spawnSpec?.error) throw new Error(spawnSpec.error);
+    const threadId = spawnSpec.runtimeId || getRuntimeSessionId(session, {
+      agent: 'codex',
+      channelKey: spawnSpec.channelKey || null,
+      channelDescriptor: spawnSpec.channelDescriptor || null,
+    });
+    if (threadId) {
+      const runtime = await ensureCodexAppRuntime(session, spawnSpec);
+      await runtime.client.request('thread/settings/update', {
+        threadId,
+        effort: targetValue,
+      }, { timeoutMs: 15_000 });
+    }
+  }
+
+  if (!running && normalizedAgent === 'pi' && PI_TRANSPORT === 'rpc') {
+    if (!targetValue) {
+      // Pi has no "restore configured default" RPC command; restart the idle
+      // runtime without --thinking so its own settings become authoritative.
+      disposePiRpcRuntime(session.id, 'thinking_reset');
+    } else {
+      const spawnSpec = buildPiSpawnSpec(session, { transport: 'rpc' });
+      if (spawnSpec?.error) throw new Error(spawnSpec.error);
+      let runtime = piRpcRuntimes.get(session.id);
+      if (!runtime?.client?.isAlive) runtime = await ensurePiRpcRuntime(session, spawnSpec);
+      await runtime.client.request({ type: 'set_thinking_level', level: targetValue }, { timeoutMs: 15_000 });
+      const state = (await runtime.client.request({ type: 'get_state' }, { timeoutMs: 15_000 })).data;
+      appliedValue = String(state?.thinkingLevel || targetValue);
+      session.thinking = appliedValue;
+      session.updated = new Date().toISOString();
+      saveSession(session);
+      const appliedSpawnSpec = buildPiSpawnSpec(session, { transport: 'rpc' });
+      runtime.spawnSpec = appliedSpawnSpec?.error ? spawnSpec : appliedSpawnSpec;
+      runtime.key = piRpcRuntimeKey(runtime.spawnSpec);
+      persistPiRpcState(runtime, state);
+    }
+  }
+
+  const label = normalizedAgent === 'pi' ? 'Pi 思考级别' : `${agentDisplayName(normalizedAgent)} 推理强度`;
+  const adjustment = targetValue && appliedValue && appliedValue !== targetValue
+    ? `（当前模型实际使用 ${appliedValue}）`
+    : '';
+  wsSend(ws, {
+    type: 'system_message',
+    sessionId: session.id,
+    message: `${label}已切换为：${targetValue || '默认'}${adjustment}${running ? '（当前轮次不变，下一轮生效）' : ''}`,
+  });
+}
+
 function handleSlashCommand(ws, text, sessionId, fallbackAgent, clientMessageIdRaw = null, streamingBehavior = null) {
   const parts = String(text || '').trim().split(/\s+/);
   const cmd = (parts[0] || '').toLowerCase();
@@ -6417,6 +7644,19 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent, clientMessageIdR
     return;
   }
 
+  if (cmd === '/effort' || (cmd === '/thinking' && agent === 'pi' && PI_TRANSPORT === 'rpc')) {
+    if (ackLocal()) return;
+    markLocalAccepted();
+    applyEffortSelection(ws, session, agent, parts[1] || '').catch((error) => {
+      wsSend(ws, {
+        type: 'error',
+        sessionId: targetSessionId,
+        message: `${cmd} 执行失败：${error.message}`,
+      });
+    });
+    return;
+  }
+
   if (cmd === '/mode') {
     if (ackLocal()) return;
     markLocalAccepted();
@@ -6430,7 +7670,11 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent, clientMessageIdR
         '可选:',
         ...VALID_MODES.map((m) => formatPermissionModeHelp(agent, m)),
         '',
-        '说明: 模式映射为真实 CLI 参数；网页侧尚无人工审批卡片。运行中切换将在下一轮生效。',
+        agent === 'codex' && CODEX_TRANSPORT === 'app-server'
+          ? '说明: Codex 默认模式支持网页审批；运行中切换将在下一轮生效。'
+          : agent === 'claude' && CLAUDE_TRANSPORT === 'stream-json'
+            ? '说明: Claude 默认模式支持网页审批与用户问题；运行中切换将在下一轮生效。'
+            : '说明: 模式映射为真实 CLI 参数；运行中切换将在下一轮生效。',
       ];
       wsSend(ws, { type: 'system_message', sessionId: targetSessionId, message: lines.join('\n') });
     } else if (VALID_MODES.includes(modeInput.toLowerCase())) {
@@ -6462,6 +7706,113 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent, clientMessageIdR
       type: 'system_message',
       sessionId: targetSessionId,
       message: formatSlashHelpMessage(agent),
+    });
+    return;
+  }
+
+  if (agent === 'codex' && CODEX_TRANSPORT === 'app-server' && CODEX_APP_PLATFORM_COMMANDS.has(cmd.slice(1))) {
+    if (ackLocal()) return;
+    markLocalAccepted();
+    if (cmd === '/fork') {
+      if (!session || activeProcesses.has(session.id)) {
+        wsSend(ws, {
+          type: 'system_message',
+          sessionId: targetSessionId,
+          message: activeProcesses.has(session?.id) ? '当前 Codex 仍在运行，请结束本轮后再 Fork。' : '当前没有可 Fork 的 Codex 会话。',
+        });
+        return;
+      }
+      handleCodexFork(ws, session).catch((error) => {
+        wsSend(ws, { type: 'error', sessionId: targetSessionId, message: `Codex Fork 失败：${error.message}` });
+      });
+      return;
+    }
+    if (cmd === '/new') {
+      handleNewSession(ws, {
+        agent: 'codex',
+        cwd: session?.cwd || null,
+        mode: session?.permissionMode || 'yolo',
+        projectId: session?.projectId || null,
+      });
+      return;
+    }
+    if (cmd === '/rename') {
+      const nextTitle = parts.slice(1).join(' ').trim();
+      if (!session || !nextTitle) {
+        wsSend(ws, { type: 'system_message', sessionId: targetSessionId, message: '用法：/rename 新标题' });
+      } else {
+        handleRenameSession(ws, session.id, nextTitle);
+      }
+      return;
+    }
+    if (cmd === '/status') {
+      const runtimeId = session ? getRuntimeSessionId(session) : null;
+      const usage = session?.totalUsage || null;
+      wsSend(ws, {
+        type: 'system_message',
+        sessionId: targetSessionId,
+        message: [
+          'Codex App Server 状态',
+          `模型: ${session?.model || '默认'}`,
+          `权限: ${formatPermissionModeHelp('codex', session?.permissionMode || 'yolo')}`,
+          `目录: ${session?.cwd || '未设置'}`,
+          `线程: ${runtimeId || '尚未建立'}`,
+          usage
+            ? `累计 Token: 输入 ${Number(usage.inputTokens) || 0} · 缓存 ${Number(usage.cachedInputTokens) || 0} · 输出 ${Number(usage.outputTokens) || 0}`
+            : '累计 Token: 暂无统计',
+        ].join('\n'),
+      });
+      return;
+    }
+    if (cmd === '/permissions') {
+      wsSend(ws, {
+        type: 'system_message',
+        sessionId: targetSessionId,
+        message: [
+          `当前权限模式:\n${formatPermissionModeHelp('codex', session?.permissionMode || 'yolo')}`,
+          '',
+          '使用 /mode default 启用网页审批，/mode plan 切换只读规划，/mode yolo 跳过审批与沙箱。',
+        ].join('\n'),
+      });
+      return;
+    }
+    let platformTask = null;
+    if (cmd === '/skills') platformTask = handleCodexSkillsCommand(ws, session);
+    else if (cmd === '/mcp') platformTask = handleCodexMcpCommand(ws, session);
+    else if (cmd === '/personality') platformTask = handleCodexPersonalityCommand(ws, session, parts.slice(1).join(' '));
+    else if (cmd === '/usage') platformTask = handleCodexUsageCommand(ws, session);
+    else if (cmd === '/ps') platformTask = handleCodexBackgroundTerminalsCommand(ws, session, false);
+    else if (cmd === '/stop') platformTask = handleCodexBackgroundTerminalsCommand(ws, session, true);
+    else if (cmd === '/goal') platformTask = handleCodexGoalCommand(ws, session, parts.slice(1).join(' '));
+    if (platformTask) {
+      platformTask.catch((error) => {
+        wsSend(ws, {
+          type: 'error',
+          sessionId: targetSessionId,
+          message: `${cmd} 执行失败：${error.message}`,
+        });
+      });
+      return;
+    }
+  }
+
+  if (agent === 'pi' && PI_TRANSPORT === 'rpc' && PI_RPC_PLATFORM_COMMANDS.has(cmd.slice(1))) {
+    if (ackLocal()) return;
+    markLocalAccepted();
+    if (!session || activeProcesses.has(session.id)) {
+      wsSend(ws, {
+        type: 'system_message',
+        sessionId: targetSessionId,
+        message: activeProcesses.has(session?.id) ? '当前 Pi 仍在运行，请结束本轮后再 Fork。' : '当前没有可 Fork 的 Pi 会话。',
+      });
+      return;
+    }
+    const entryId = cmd === '/fork' ? (parts[1] || null) : null;
+    const operation = cmd === '/fork' && !entryId
+      ? sendPiForkOptions(ws, session)
+      : handlePiFork(ws, session, entryId);
+    operation.catch((error) => {
+      wsSend(ws, { type: 'error', sessionId: targetSessionId, message: `Pi Fork 失败：${error.message}` });
     });
     return;
   }
@@ -6524,7 +7875,7 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent, clientMessageIdR
     const reason = classified.reason || slashMeta?.reason || '';
     const headline = classified.availability === 'runtime-unavailable'
       ? `${cmd} 当前在 managed Codex runtime 中不可用（overlay 未就绪）。`
-      : `${cmd} 仅在 ${label} 交互式 TUI 中可用，Webcoding 的 headless 模式不支持。`;
+      : `${cmd} 仅在 ${label} 交互式 TUI 中可用，当前 Web 接入没有等价界面。`;
     wsSend(ws, {
       type: 'system_message',
       sessionId: targetSessionId,
@@ -6539,7 +7890,25 @@ function handleSlashCommand(ws, text, sessionId, fallbackAgent, clientMessageIdR
     return;
   }
 
-  // --- Everything else: full CLI passthrough (incl. /goal, /clear, /help, skills, prompts…) ---
+  if (agent === 'codex' && CODEX_TRANSPORT === 'app-server' && slashMeta?.source === 'codex-skills') {
+    const skillText = `$${cmdName}${parts.length > 1 ? ` ${parts.slice(1).join(' ')}` : ''}`;
+    handleMessage(ws, {
+      text: skillText,
+      sessionId: targetSessionId,
+      mode: session?.permissionMode || 'yolo',
+      agent,
+      clientMessageId,
+      streamingBehavior,
+    }, { hideInHistory: false });
+    wsSend(ws, {
+      type: 'system_message',
+      sessionId: targetSessionId,
+      message: `正在以 Codex 原生 Skill 语法调用 $${cmdName}…`,
+    });
+    return;
+  }
+
+  // --- Everything else: CLI passthrough (for example /clear, /help and custom prompts) ---
   handleMessage(ws, {
     text,
     sessionId: targetSessionId,
@@ -6591,7 +7960,9 @@ function handleNewSession(ws, msg) {
     claudeSessionId: null,
     codexThreadId: null,
     codexRuntimeFingerprint: null,
-    runtimeContexts: { claude: {}, codex: {} },
+    piSessionId: null,
+    piRuntimeFingerprint: null,
+    runtimeContexts: { claude: {}, codex: {}, pi: {} },
     model: null,
     permissionMode: requestedMode,
     totalCost: 0,
@@ -6715,7 +8086,14 @@ function handleLoadSession(ws, sessionId) {
     if (entry.transport === 'pi-rpc') {
       resendPiRpcInteractiveRequests(entry);
       sendPiRpcQueueState(entry);
+    } else if (entry.transport === 'codex-app-server') {
+      resendCodexAppInteractiveRequests(entry);
+    } else if (entry.transport === 'claude-stream-json') {
+      resendClaudeStreamInteractiveRequests(entry);
     }
+  } else if (getSessionAgent(session) === 'pi') {
+    const runtime = piRpcRuntimes.get(sessionId);
+    if (runtime?.client?.isAlive) sendPiRpcExtensionUiState(ws, runtime);
   }
 }
 
@@ -6763,18 +8141,27 @@ async function deleteCodexLocalSession(threadId, importedRolloutPath = null) {
     const sqliteAvailable = await execFileQuiet('sqlite3', ['-version']);
     if (sqliteAvailable.ok) {
       const quotedThreadId = sqlQuote(threadId);
-      const stateSql = [
-        'PRAGMA foreign_keys = ON;',
-        `DELETE FROM thread_dynamic_tools WHERE thread_id = ${quotedThreadId};`,
-        `DELETE FROM stage1_outputs WHERE thread_id = ${quotedThreadId};`,
-        `DELETE FROM logs WHERE thread_id = ${quotedThreadId};`,
-        `DELETE FROM threads WHERE id = ${quotedThreadId};`,
-      ].join(' ');
-      const stateResult = await execFileQuiet('sqlite3', [CODEX_STATE_DB_PATH, stateSql]);
-      if (stateResult.ok) removedDbRows = true;
+      for (const stateDbPath of [CODEX_STATE_DB_PATH, CODEX_RUNTIME_STATE_DB_PATH]) {
+        if (!fs.existsSync(stateDbPath)) continue;
+        const tablesResult = await execFileQuiet('sqlite3', [
+          stateDbPath,
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('thread_dynamic_tools','stage1_outputs','logs','threads');",
+        ]);
+        if (!tablesResult.ok) continue;
+        const tables = new Set(tablesResult.stdout.split(/\r?\n/).map((item) => item.trim()).filter(Boolean));
+        const statements = ['PRAGMA foreign_keys = ON;'];
+        if (tables.has('thread_dynamic_tools')) statements.push(`DELETE FROM thread_dynamic_tools WHERE thread_id = ${quotedThreadId};`);
+        if (tables.has('stage1_outputs')) statements.push(`DELETE FROM stage1_outputs WHERE thread_id = ${quotedThreadId};`);
+        if (tables.has('logs')) statements.push(`DELETE FROM logs WHERE thread_id = ${quotedThreadId};`);
+        if (tables.has('threads')) statements.push(`DELETE FROM threads WHERE id = ${quotedThreadId};`);
+        if (statements.length === 1) continue;
+        const stateResult = await execFileQuiet('sqlite3', [stateDbPath, statements.join(' ')]);
+        if (stateResult.ok && tables.has('threads')) removedDbRows = true;
+      }
 
-      if (fs.existsSync(CODEX_LOG_DB_PATH)) {
-        await execFileQuiet('sqlite3', [CODEX_LOG_DB_PATH, `DELETE FROM logs WHERE thread_id = ${quotedThreadId};`]);
+      for (const logDbPath of [CODEX_LOG_DB_PATH, CODEX_RUNTIME_LOG_DB_PATH]) {
+        if (!fs.existsSync(logDbPath)) continue;
+        await execFileQuiet('sqlite3', [logDbPath, `DELETE FROM logs WHERE thread_id = ${quotedThreadId};`]);
       }
     }
   } catch {}
@@ -6783,6 +8170,15 @@ async function deleteCodexLocalSession(threadId, importedRolloutPath = null) {
 }
 
 function handleDeleteSession(ws, sessionId) {
+  sessionId = sanitizeId(sessionId || '');
+  if (!sessionId) {
+    wsSend(ws, { type: 'error', message: 'Invalid session id' });
+    return;
+  }
+  if (piForkOperations.has(sessionId) || codexForkOperations.has(sessionId)) {
+    wsSend(ws, { type: 'error', sessionId, message: '当前会话正在创建分支，请稍候再删除。' });
+    return;
+  }
   pendingSlashCommands.delete(sessionId);
   pendingCompactRetries.delete(sessionId);
   if (activeProcesses.has(sessionId)) {
@@ -6790,10 +8186,14 @@ function handleDeleteSession(ws, sessionId) {
     if (entry.tailer) entry.tailer.stop();
     removeActiveProcess(sessionId);
     if (entry.transport === 'pi-rpc') disposePiRpcRuntime(sessionId, 'session_deleted');
+    else if (entry.transport === 'codex-app-server') disposeCodexAppRuntime(sessionId, 'session_deleted');
+    else if (entry.transport === 'claude-stream-json') disposeClaudeStreamRuntime(sessionId, 'session_deleted');
     else try { killProcess(entry.pid); } catch {}
     if (entry.ws) wsSend(entry.ws, { type: 'done', sessionId });
   }
   disposePiRpcRuntime(sessionId, 'session_deleted');
+  disposeCodexAppRuntime(sessionId, 'session_deleted');
+  disposeClaudeStreamRuntime(sessionId, 'session_deleted');
   cleanRunDir(sessionId);
   try {
     const p = sessionPath(sessionId);
@@ -6809,10 +8209,14 @@ function handleDeleteSession(ws, sessionId) {
     invalidateSessionListCache();
     if (sessionAgent === 'codex') {
       const codexThreadIds = getAllRuntimeSessionIds(session, 'codex');
-      Promise.all(codexThreadIds.map((threadId) => deleteCodexLocalSession(
-        threadId,
-        session?.importedRolloutPath || null
-      ).then((result) => ({ threadId, result })))).then((results) => {
+      (async () => {
+        const results = [];
+        for (const threadId of codexThreadIds) {
+          const result = await deleteCodexLocalSession(threadId, session?.importedRolloutPath || null);
+          results.push({ threadId, result });
+        }
+        return results;
+      })().then((results) => {
         for (const item of results) {
           plog('INFO', 'codex_local_session_deleted', {
             sessionId: sessionId.slice(0, 8),
@@ -6851,7 +8255,41 @@ function handleRenameSession(ws, sessionId, title) {
     saveSession(session);
     sendSessionList(ws);
     wsSend(ws, { type: 'session_renamed', sessionId: safeSessionId, title: session.title });
+    if (getSessionAgent(session) === 'codex' && CODEX_TRANSPORT === 'app-server') {
+      syncCodexThreadName(session, session.title).catch((error) => {
+        plog('WARN', 'codex_thread_rename_failed', {
+          sessionId: safeSessionId.slice(0, 8),
+          error: error.message,
+        });
+        wsSend(ws, {
+          type: 'system_message',
+          sessionId: safeSessionId,
+          message: `网页标题已更新，但 Codex 原生线程名称同步失败：${error.message}`,
+        });
+      });
+    }
   }
+}
+
+async function syncCodexThreadName(session, title) {
+  const spawnSpec = buildCodexSpawnSpec(session, { transport: 'app-server' });
+  if (spawnSpec?.error) throw new Error(spawnSpec.error);
+  const threadId = spawnSpec.runtimeId || getRuntimeSessionId(session, {
+    agent: 'codex',
+    channelKey: spawnSpec.channelKey || null,
+    channelDescriptor: spawnSpec.channelDescriptor || null,
+  });
+  if (!threadId) return false;
+  const runtime = await ensureCodexAppRuntime(session, spawnSpec);
+  await runtime.client.request('thread/name/set', {
+    threadId,
+    name: String(title).slice(0, 100),
+  }, { timeoutMs: 15_000 });
+  plog('INFO', 'codex_thread_renamed', {
+    sessionId: session.id.slice(0, 8),
+    threadId,
+  });
+  return true;
 }
 
 function handleSetMode(ws, sessionId, mode) {
@@ -6960,6 +8398,26 @@ function handleAbort(ws) {
     });
     return;
   }
+  if (entry.transport === 'codex-app-server') {
+    const runtime = entry.appRuntime || codexAppRuntimes.get(sessionId);
+    if (!runtime?.client?.isAlive || !runtime.threadId || !runtime.turnId) {
+      handleProcessComplete(sessionId, 0, null);
+      return;
+    }
+    runtime.client.request('turn/interrupt', {
+      threadId: runtime.threadId,
+      turnId: runtime.turnId,
+    }, { timeoutMs: 10_000 }).catch((error) => {
+      if (activeProcesses.get(sessionId) !== entry) return;
+      entry.lastError = `Codex 中断失败：${error.message}`;
+      disposeCodexAppRuntime(sessionId, 'interrupt_failed');
+    });
+    return;
+  }
+  if (entry.transport === 'claude-stream-json') {
+    disposeClaudeStreamRuntime(sessionId, 'user_abort');
+    return;
+  }
   killProcess(entry.pid);
   setTimeout(() => {
     const activeEntry = activeProcesses.get(sessionId);
@@ -7021,6 +8479,1034 @@ function createRuntimeEntry(session, ws, spawnSpec, resolvedAttachments, pid, tr
     rpcQueuedRequests: new Map(),
     rpcPersistedAssistantMessages: 0,
   };
+}
+
+function claudeStreamRuntimeKey(spawnSpec) {
+  const stableArgs = [];
+  for (let index = 0; index < (spawnSpec.args || []).length; index += 1) {
+    if (spawnSpec.args[index] === '--resume') {
+      index += 1;
+      continue;
+    }
+    stableArgs.push(spawnSpec.args[index]);
+  }
+  return crypto.createHash('sha256').update(JSON.stringify({
+    command: spawnSpec.command,
+    args: stableArgs,
+    cwd: spawnSpec.cwd,
+    mode: spawnSpec.mode,
+    model: spawnSpec.effectiveModel || null,
+    runtimeFingerprint: spawnSpec.runtimeFingerprint || null,
+  })).digest('hex');
+}
+
+function disposeClaudeStreamRuntime(sessionId, reason = 'dispose') {
+  const runtime = claudeStreamRuntimes.get(sessionId);
+  if (!runtime) return;
+  claudeStreamRuntimes.delete(sessionId);
+  runtime.disposeReason = reason;
+  runtime.pendingUi?.clear();
+  runtime.client?.dispose();
+}
+
+function ensureClaudeStreamCapacity(sessionId) {
+  if (claudeStreamRuntimes.size < MAX_CLAUDE_STREAM_RUNTIMES) return true;
+  const candidate = [...claudeStreamRuntimes.values()]
+    .filter((runtime) => runtime.sessionId !== sessionId && !activeProcesses.has(runtime.sessionId))
+    .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
+  if (!candidate) return false;
+  disposeClaudeStreamRuntime(candidate.sessionId, 'capacity_eviction');
+  return true;
+}
+
+function claudePermissionSuggestionLabel(suggestion, index) {
+  const rules = Array.isArray(suggestion?.rules) ? suggestion.rules : [];
+  const rule = String(rules[0]?.ruleContent || '').trim();
+  const directories = Array.isArray(suggestion?.directories) ? suggestion.directories : [];
+  if (rule) return `允许并记住：${rule.slice(0, 120)}`;
+  if (directories.length > 0) return `允许并记住目录：${String(directories[0]).slice(0, 100)}`;
+  return `允许并采用 CLI 建议 ${index + 1}`;
+}
+
+function sendClaudeStreamInteractiveRequest(runtime, request) {
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'claude-stream-json' || entry.streamRuntime !== runtime || !entry.ws) return;
+  const params = request.params || {};
+  const base = {
+    type: 'interactive_request',
+    sessionId: runtime.sessionId,
+    agent: 'claude',
+    protocol: 'claude-stream-json',
+    requestId: request.requestId,
+    eventType: `control_request.${request.kind}`,
+  };
+  if (request.kind === 'can_use_tool') {
+    const askQuestions = params.tool_name === 'AskUserQuestion' && Array.isArray(params.input?.questions)
+      ? params.input.questions
+      : [];
+    if (askQuestions.length > 0) {
+      request.askUserQuestions = new Map();
+      const questions = askQuestions.map((question, index) => {
+        const id = `question-${index + 1}`;
+        request.askUserQuestions.set(id, {
+          text: String(question?.question || `问题 ${index + 1}`),
+          multiple: question?.multiSelect === true,
+        });
+        return {
+          id,
+          header: question?.header || `问题 ${index + 1}`,
+          question: question?.question || '',
+          options: (Array.isArray(question?.options) ? question.options : []).map((option) => ({
+            value: String(option?.label || ''),
+            label: String(option?.label || ''),
+            description: String(option?.description || ''),
+          })).filter((option) => option.value),
+          multiple: question?.multiSelect === true,
+          required: true,
+          isOther: true,
+        };
+      });
+      wsSend(entry.ws, {
+        ...base,
+        respondable: true,
+        interactiveKind: 'questions',
+        title: params.title || 'Claude 需要补充信息',
+        message: params.description || '请回答以下问题后继续。',
+        questions,
+      });
+      return;
+    }
+    const options = [{ value: 'allow-once', label: '允许一次' }];
+    request.permissionSuggestions = new Map();
+    (Array.isArray(params.permission_suggestions) ? params.permission_suggestions : []).forEach((suggestion, index) => {
+      const value = `allow-suggestion-${index}`;
+      request.permissionSuggestions.set(value, cloneJson(suggestion));
+      options.push({ value, label: claudePermissionSuggestionLabel(suggestion, index) });
+    });
+    options.push(
+      { value: 'deny', label: '拒绝' },
+      { value: 'cancel', label: '拒绝并停止' },
+    );
+    const safeInput = sanitizeToolInput(params.tool_name || '', params.input || {});
+    let inputText = '';
+    try { inputText = JSON.stringify(safeInput, null, 2).slice(0, 4000); } catch {}
+    wsSend(entry.ws, {
+      ...base,
+      respondable: true,
+      interactiveKind: 'select',
+      title: params.title || params.display_name || `Claude 请求使用 ${params.tool_name || '工具'}`,
+      message: [
+        params.description || '',
+        params.blocked_path ? `受限路径：${params.blocked_path}` : '',
+        params.decision_reason || '',
+        inputText,
+      ].filter(Boolean).join('\n'),
+      options,
+    });
+    return;
+  }
+  if (request.kind === 'elicitation') {
+    const normalized = request.normalizedParams;
+    if (normalized.mode === 'url') {
+      wsSend(entry.ws, {
+        ...base,
+        respondable: true,
+        interactiveKind: 'confirm',
+        title: `${normalized.serverName || 'MCP'} 需要网页授权`,
+        message: normalized.message || '请完成外部授权后确认。',
+        url: normalizeExternalHttpUrl(normalized.url),
+      });
+    } else {
+      wsSend(entry.ws, {
+        ...base,
+        respondable: true,
+        interactiveKind: 'questions',
+        title: `${normalized.serverName || 'MCP'} 需要输入`,
+        message: normalized.message || '请填写以下信息。',
+        questions: codexElicitationQuestions(normalized),
+      });
+    }
+    return;
+  }
+  wsSend(entry.ws, {
+    ...base,
+    respondable: false,
+    interactiveKind: 'dialog',
+    title: `Claude 请求打开 ${params.dialog_kind || '原生对话框'}`,
+    message: `当前 Web 界面尚未实现此开放式对话框：\n${JSON.stringify(params.payload || {}, null, 2).slice(0, 4000)}`,
+  });
+}
+
+function handleClaudeStreamControlRequest(runtime, event) {
+  const rawId = String(event?.request_id || '').trim();
+  const params = event?.request && typeof event.request === 'object' ? event.request : {};
+  const kind = String(params.subtype || '').trim();
+  if (!rawId || !kind) return;
+  const requestId = `claude-${rawId}`;
+  const request = { requestId, controlRequestId: rawId, kind, params };
+  if (kind === 'elicitation') {
+    request.normalizedParams = {
+      serverName: params.mcp_server_name || '',
+      message: params.message || '',
+      mode: params.mode || 'form',
+      url: params.url || '',
+      elicitationId: params.elicitation_id || '',
+      requestedSchema: params.requested_schema || {},
+    };
+  }
+  runtime.pendingUi.set(requestId, request);
+  sendClaudeStreamInteractiveRequest(runtime, request);
+}
+
+function handleClaudeStreamControlCancel(runtime, event) {
+  const requestId = `claude-${String(event?.request_id || '').trim()}`;
+  const request = runtime.pendingUi.get(requestId);
+  if (!request) return;
+  runtime.pendingUi.delete(requestId);
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (entry?.ws) {
+    wsSend(entry.ws, {
+      type: 'interactive_response_result',
+      sessionId: runtime.sessionId,
+      requestId,
+      success: false,
+      retryable: false,
+      error: 'Claude 已取消该交互请求。',
+    });
+  }
+}
+
+function resendClaudeStreamInteractiveRequests(entry) {
+  const runtime = entry?.streamRuntime;
+  if (!runtime?.pendingUi) return;
+  for (const request of runtime.pendingUi.values()) sendClaudeStreamInteractiveRequest(runtime, request);
+}
+
+function handleClaudeStreamEvent(runtime, event) {
+  if (!runtime || runtime.disposeReason) return;
+  runtime.lastUsedAt = Date.now();
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'claude-stream-json' || entry.streamRuntime !== runtime) {
+    if (runtime.acceptEarlyEvents && event?.type === 'system') runtime.earlyEvents.push(event);
+    return;
+  }
+  if (event?.type === 'control_request') {
+    handleClaudeStreamControlRequest(runtime, event);
+    return;
+  }
+  if (event?.type === 'control_cancel_request') {
+    handleClaudeStreamControlCancel(runtime, event);
+    return;
+  }
+  processRuntimeEvent(entry, event, runtime.sessionId);
+  if (event?.type === 'result') {
+    runtime.lastUsedAt = Date.now();
+    runtime.entry = null;
+    handleProcessComplete(runtime.sessionId, entry.lastError ? 1 : 0, null);
+  }
+}
+
+function handleClaudeStreamExit(runtime, info) {
+  if (!runtime) return;
+  if (claudeStreamRuntimes.get(runtime.sessionId) === runtime) claudeStreamRuntimes.delete(runtime.sessionId);
+  plog(info.expected ? 'INFO' : 'WARN', 'claude_stream_exit', {
+    sessionId: runtime.sessionId.slice(0, 8),
+    pid: runtime.client?.pid || null,
+    exitCode: info.code,
+    signal: info.signal,
+    expected: info.expected,
+    error: info.expected ? null : info.error?.message || null,
+  });
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'claude-stream-json' || entry.streamRuntime !== runtime) return;
+  if (!info.expected && runtime.client?.stderr?.trim()) entry.lastError = runtime.client.stderr.trim();
+  handleProcessComplete(runtime.sessionId, info.expected ? 0 : (info.code ?? 1), info.signal || null);
+}
+
+async function ensureClaudeStreamRuntime(session, spawnSpec) {
+  const sessionId = session.id;
+  const key = claudeStreamRuntimeKey(spawnSpec);
+  const existing = claudeStreamRuntimes.get(sessionId);
+  if (existing?.key === key && existing.client?.isAlive) {
+    existing.lastUsedAt = Date.now();
+    return existing;
+  }
+  if (existing) disposeClaudeStreamRuntime(sessionId, 'runtime_changed');
+  if (!ensureClaudeStreamCapacity(sessionId)) {
+    throw new Error(`Claude stream-json 会话已达到上限（${MAX_CLAUDE_STREAM_RUNTIMES}），请先停止或关闭其他 Claude 会话。`);
+  }
+  const runtime = {
+    sessionId,
+    key,
+    client: null,
+    entry: null,
+    earlyEvents: [],
+    acceptEarlyEvents: true,
+    pendingUi: new Map(),
+    lastUsedAt: Date.now(),
+    disposeReason: null,
+  };
+  claudeStreamRuntimes.set(sessionId, runtime);
+  try {
+    runtime.client = await ClaudeStreamClient.start({
+      command: spawnSpec.command,
+      args: spawnSpec.args,
+      env: spawnSpec.env,
+      cwd: spawnSpec.cwd,
+      useShell: spawnSpec.useShell,
+      onEvent: (event) => handleClaudeStreamEvent(runtime, event),
+      onProtocolError: (error) => plog('WARN', 'claude_stream_protocol_error', {
+        sessionId: sessionId.slice(0, 8),
+        error: error.message,
+      }),
+      onExit: (info) => handleClaudeStreamExit(runtime, info),
+    });
+    plog('INFO', 'process_spawn', {
+      sessionId: sessionId.slice(0, 8),
+      pid: runtime.client.pid,
+      agent: 'claude',
+      transport: 'stream-json',
+      mode: spawnSpec.mode,
+      model: session.model || 'default',
+      resume: spawnSpec.resume,
+      args: spawnSpec.args.join(' '),
+    });
+    if (claudeStreamRuntimes.get(sessionId) !== runtime || runtime.disposeReason) {
+      runtime.client.dispose();
+      throw new Error('Claude stream runtime changed during startup');
+    }
+    return runtime;
+  } catch (error) {
+    if (claudeStreamRuntimes.get(sessionId) === runtime) claudeStreamRuntimes.delete(sessionId);
+    runtime.disposeReason = 'startup_failed';
+    runtime.client?.dispose();
+    throw error;
+  }
+}
+
+function claudeStreamContent(text, attachments) {
+  const content = [];
+  if (String(text || '').trim()) content.push({ type: 'text', text: String(text) });
+  for (const attachment of attachments || []) {
+    if (!attachment?.path) continue;
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: attachment.mime,
+        data: fs.readFileSync(attachment.path).toString('base64'),
+      },
+    });
+  }
+  return content;
+}
+
+async function startClaudeStreamTurn(ws, session, spawnSpec, resolvedAttachments, runtimeInputText) {
+  const sessionId = session.id;
+  let runtime;
+  let entry;
+  try {
+    runtime = await ensureClaudeStreamRuntime(session, spawnSpec);
+    entry = createRuntimeEntry(session, ws, spawnSpec, resolvedAttachments, runtime.client.pid, 'claude-stream-json');
+    entry.streamRuntime = runtime;
+    entry.runId = crypto.randomUUID();
+    runtime.entry = entry;
+    setActiveProcess(sessionId, entry);
+    runtime.acceptEarlyEvents = false;
+    for (const event of runtime.earlyEvents.splice(0)) processRuntimeEvent(entry, event, sessionId);
+    sendSessionList(ws);
+    plog('INFO', 'claude_stream_turn_start', {
+      sessionId: sessionId.slice(0, 8),
+      pid: runtime.client.pid,
+      agent: 'claude',
+      transport: 'stream-json',
+      mode: spawnSpec.mode,
+      model: session.model || 'default',
+      resume: spawnSpec.resume,
+      runId: entry.runId,
+    });
+    await runtime.client.sendUserMessage(claudeStreamContent(runtimeInputText, resolvedAttachments));
+  } catch (error) {
+    if (entry && activeProcesses.get(sessionId) === entry) {
+      entry.lastError = error.message || String(error);
+      handleProcessComplete(sessionId, 1, null);
+    } else {
+      wsSend(ws, {
+        type: 'error',
+        sessionId,
+        message: formatRuntimeError('claude', error.message || String(error), { exitCode: null, signal: null }),
+      });
+      wsSend(ws, { type: 'done', sessionId, costUsd: null });
+      sendSessionList(ws);
+    }
+  }
+}
+
+function codexAppRuntimeKey(spawnSpec) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    command: spawnSpec.command,
+    args: spawnSpec.args,
+    cwd: spawnSpec.cwd,
+    runtimeFingerprint: spawnSpec.runtimeFingerprint || null,
+  })).digest('hex');
+}
+
+function disposeCodexAppRuntime(sessionId, reason = 'dispose') {
+  const runtime = codexAppRuntimes.get(sessionId);
+  if (!runtime) return;
+  codexAppRuntimes.delete(sessionId);
+  runtime.disposeReason = reason;
+  for (const request of runtime.pendingUi.values()) {
+    if (request.timeout) clearTimeout(request.timeout);
+  }
+  runtime.pendingUi.clear();
+  runtime.client?.dispose();
+}
+
+function ensureCodexAppCapacity(sessionId) {
+  if (codexAppRuntimes.size < MAX_CODEX_APP_RUNTIMES) return true;
+  const candidate = [...codexAppRuntimes.values()]
+    .filter((runtime) => runtime.sessionId !== sessionId && !activeProcesses.has(runtime.sessionId))
+    .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
+  if (!candidate) return false;
+  disposeCodexAppRuntime(candidate.sessionId, 'capacity_eviction');
+  return true;
+}
+
+function codexAppInput(text, attachments = []) {
+  const input = [];
+  if (String(text || '').trim()) input.push({ type: 'text', text: String(text) });
+  for (const attachment of attachments) {
+    if (attachment?.path) input.push({ type: 'localImage', path: attachment.path });
+  }
+  return input;
+}
+
+async function getCodexAppCollaborationModes(runtime) {
+  if (Array.isArray(runtime?.collaborationModes)) return runtime.collaborationModes;
+  if (runtime?.collaborationModesPromise) return runtime.collaborationModesPromise;
+  if (!runtime?.client?.isAlive) return [];
+  runtime.collaborationModesPromise = runtime.client.request('collaborationMode/list', {}, { timeoutMs: 15_000 })
+    .then((result) => {
+      const modes = Array.isArray(result?.data) ? result.data : [];
+      runtime.collaborationModes = modes;
+      return modes;
+    })
+    .catch((error) => {
+      runtime.collaborationModes = [];
+      plog('WARN', 'codex_collaboration_modes_failed', {
+        sessionId: String(runtime.sessionId || '').slice(0, 8),
+        error: error.message,
+      });
+      return [];
+    })
+    .finally(() => {
+      runtime.collaborationModesPromise = null;
+    });
+  return runtime.collaborationModesPromise;
+}
+
+async function buildCodexAppCollaborationMode(runtime, permissionMode, fallbackModel, effort = null) {
+  const mode = permissionMode === 'plan' ? 'plan' : 'default';
+  const modes = await getCodexAppCollaborationModes(runtime);
+  const preset = modes.find((entry) => entry?.mode === mode) || null;
+  const model = String(preset?.model || fallbackModel || '').trim();
+  if (!model) return null;
+  return {
+    mode,
+    settings: {
+      model,
+      reasoning_effort: effort || preset?.reasoning_effort || null,
+      developer_instructions: null,
+    },
+  };
+}
+
+function codexAppUsageFromRuntime(runtime) {
+  const usage = runtime.latestTokenUsage?.last || runtime.latestTokenUsage || null;
+  if (!usage) return null;
+  return {
+    input_tokens: usage.inputTokens || 0,
+    cached_input_tokens: usage.cachedInputTokens || 0,
+    output_tokens: usage.outputTokens || 0,
+  };
+}
+
+function handleCodexAppNotification(runtime, method, params) {
+  if (!runtime || runtime.disposeReason) return;
+  runtime.lastUsedAt = Date.now();
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'codex-app-server' || entry.appRuntime !== runtime) return;
+  if (params?.threadId && runtime.threadId && params.threadId !== runtime.threadId) return;
+
+  switch (method) {
+    case 'thread/started': {
+      const threadId = params.thread?.id || params.threadId;
+      if (threadId) {
+        runtime.threadId = threadId;
+        processRuntimeEvent(entry, { type: 'thread.started', thread_id: threadId }, runtime.sessionId);
+      }
+      break;
+    }
+    case 'turn/started': {
+      runtime.turnId = params.turn?.id || params.turnId || runtime.turnId;
+      processRuntimeEvent(entry, { type: 'turn.started', turn_id: runtime.turnId }, runtime.sessionId);
+      break;
+    }
+    case 'item/started':
+      processRuntimeEvent(entry, { type: 'item.started', item: params.item }, runtime.sessionId);
+      break;
+    case 'item/completed':
+      processRuntimeEvent(entry, { type: 'item.completed', item: params.item }, runtime.sessionId);
+      break;
+    case 'item/agentMessage/delta':
+      processRuntimeEvent(entry, {
+        type: 'item.delta',
+        item: { id: params.itemId, type: 'agent_message', delta: params.delta },
+      }, runtime.sessionId);
+      break;
+    case 'item/reasoning/summaryTextDelta':
+    case 'item/reasoning/textDelta':
+    case 'item/plan/delta':
+    // Kept for older App Server builds that used the pre-schema method name.
+    case 'turn/plan/delta':
+      processRuntimeEvent(entry, {
+        type: 'item.reasoning.delta',
+        delta: params.delta || '',
+      }, runtime.sessionId);
+      break;
+    case 'turn/plan/updated': {
+      const statusLabels = {
+        pending: '[ ]',
+        inProgress: '[>]',
+        completed: '[x]',
+      };
+      const lines = ['Codex 计划更新'];
+      if (params.explanation) lines.push(String(params.explanation));
+      for (const step of Array.isArray(params.plan) ? params.plan : []) {
+        const text = String(step?.step || '').trim();
+        if (!text) continue;
+        lines.push(`${statusLabels[step.status] || '[ ]'} ${text}`);
+      }
+      if (entry.ws) {
+        wsSend(entry.ws, {
+          type: 'goal_update',
+          sessionId: runtime.sessionId,
+          summary: lines.join('\n'),
+          plan: Array.isArray(params.plan) ? params.plan : [],
+        });
+      }
+      break;
+    }
+    case 'thread/tokenUsage/updated':
+      runtime.latestTokenUsage = params.tokenUsage || null;
+      break;
+    case 'thread/goal/updated':
+      processRuntimeEvent(entry, {
+        type: 'thread_goal_updated',
+        goal: params.goal || params,
+      }, runtime.sessionId);
+      break;
+    case 'thread/goal/cleared':
+      processRuntimeEvent(entry, {
+        type: 'thread_goal_cleared',
+      }, runtime.sessionId);
+      break;
+    case 'serverRequest/resolved': {
+      const requestId = `codex-${params.requestId}`;
+      const request = runtime.pendingUi.get(requestId);
+      if (!request) break;
+      if (request.timeout) clearTimeout(request.timeout);
+      runtime.pendingUi.delete(requestId);
+      if (entry.ws) {
+        wsSend(entry.ws, {
+          type: 'interactive_response_result',
+          sessionId: runtime.sessionId,
+          requestId,
+          success: true,
+        });
+      }
+      break;
+    }
+    case 'error': {
+      const message = params.error?.message || params.message || 'Codex App Server 返回错误';
+      if (params.willRetry) {
+        if (entry.ws) wsSend(entry.ws, { type: 'system_message', sessionId: runtime.sessionId, message: `Codex 正在重试：${message}` });
+      } else {
+        entry.lastError = message;
+      }
+      break;
+    }
+    case 'thread/compacted':
+      if (entry.ws) wsSend(entry.ws, { type: 'system_message', sessionId: runtime.sessionId, message: 'Codex 原生上下文压缩已完成。' });
+      break;
+    case 'turn/completed': {
+      const turn = params.turn || {};
+      if (runtime.turnId && turn.id && runtime.turnId !== turn.id) return;
+      if (turn.status === 'failed') entry.lastError = turn.error?.message || 'Codex 任务失败';
+      processRuntimeEvent(entry, {
+        type: turn.status === 'failed' ? 'turn.failed' : 'turn.completed',
+        ...(turn.status === 'failed'
+          ? { error: turn.error || { message: entry.lastError } }
+          : { usage: codexAppUsageFromRuntime(runtime) }),
+      }, runtime.sessionId);
+      runtime.turnId = null;
+      runtime.latestTokenUsage = null;
+      runtime.lastUsedAt = Date.now();
+      handleProcessComplete(runtime.sessionId, turn.status === 'failed' ? 1 : 0, null);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function normalizeExternalHttpUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || '').trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function codexElicitationOptions(schema) {
+  const multiple = schema?.type === 'array';
+  const optionSchema = multiple ? (schema.items || {}) : (schema || {});
+  if (Array.isArray(optionSchema.enum)) {
+    return optionSchema.enum.map((value, index) => ({
+      value: String(value),
+      label: String(optionSchema.enumNames?.[index] || value),
+    }));
+  }
+  const variants = Array.isArray(optionSchema.oneOf)
+    ? optionSchema.oneOf
+    : (Array.isArray(optionSchema.anyOf) ? optionSchema.anyOf : []);
+  return variants
+    .filter((option) => option && Object.prototype.hasOwnProperty.call(option, 'const'))
+    .map((option) => ({ value: String(option.const), label: String(option.title || option.const) }));
+}
+
+function codexElicitationQuestions(params) {
+  const properties = params?.requestedSchema?.properties;
+  if (!properties || typeof properties !== 'object') return [];
+  const required = new Set(Array.isArray(params.requestedSchema.required) ? params.requestedSchema.required : []);
+  return Object.entries(properties).map(([id, schema]) => {
+    const multiple = schema?.type === 'array';
+    let options = codexElicitationOptions(schema);
+    if (!multiple && schema?.type === 'boolean' && options.length === 0) {
+      options = [{ value: 'true', label: '是' }, { value: 'false', label: '否' }];
+    }
+    const format = String(schema?.format || '').toLowerCase();
+    const inputType = schema?.type === 'number' || schema?.type === 'integer'
+      ? 'number'
+      : format === 'email'
+        ? 'email'
+        : format === 'uri'
+          ? 'url'
+          : format === 'date'
+            ? 'date'
+            : format === 'date-time'
+              ? 'datetime-local'
+              : 'text';
+    return {
+      id,
+      header: schema?.title || id,
+      question: schema?.description || schema?.title || id,
+      options,
+      multiple,
+      required: required.has(id),
+      inputType,
+      isSecret: schema?.writeOnly === true || format === 'password',
+      defaultValue: schema?.default ?? '',
+      min: schema?.minimum ?? null,
+      max: schema?.maximum ?? null,
+      step: schema?.type === 'integer' ? 1 : null,
+      minLength: schema?.minLength ?? null,
+      maxLength: schema?.maxLength ?? null,
+      minItems: schema?.minItems ?? null,
+      maxItems: schema?.maxItems ?? null,
+    };
+  });
+}
+
+function codexApprovalDecisionLabel(decision) {
+  if (decision === 'accept') return '允许一次';
+  if (decision === 'acceptForSession') return '本会话允许';
+  if (decision === 'decline') return '拒绝';
+  if (decision === 'cancel') return '拒绝并停止';
+  const execPolicy = decision?.acceptWithExecpolicyAmendment?.execpolicy_amendment;
+  if (Array.isArray(execPolicy) && execPolicy.length > 0) return '允许并记住类似命令';
+  const networkPolicy = decision?.applyNetworkPolicyAmendment?.network_policy_amendment;
+  if (networkPolicy?.host) {
+    return networkPolicy.action === 'deny'
+      ? `拒绝并记住域名 ${networkPolicy.host}`
+      : `允许并记住域名 ${networkPolicy.host}`;
+  }
+  return '';
+}
+
+function codexApprovalOptions(request, fallbackDecisions) {
+  const supplied = Array.isArray(request.params?.availableDecisions) && request.params.availableDecisions.length > 0
+    ? request.params.availableDecisions
+    : fallbackDecisions;
+  const decisions = new Map();
+  const options = [];
+  supplied.forEach((decision, index) => {
+    const label = codexApprovalDecisionLabel(decision);
+    if (!label) return;
+    const value = typeof decision === 'string' ? decision : `structured-${index}`;
+    decisions.set(value, cloneJson(decision));
+    options.push({ value, label });
+  });
+  request.approvalDecisions = decisions;
+  return options;
+}
+
+function sendCodexAppInteractiveRequest(runtime, request) {
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'codex-app-server' || !entry.ws) return;
+  const params = request.params || {};
+  const base = {
+    type: 'interactive_request',
+    sessionId: runtime.sessionId,
+    agent: 'codex',
+    protocol: 'codex-app-server',
+    requestId: request.requestId,
+    respondable: true,
+  };
+  if (request.kind === 'command-approval') {
+    const options = codexApprovalOptions(request, ['accept', 'acceptForSession', 'decline', 'cancel']);
+    wsSend(entry.ws, {
+      ...base,
+      interactiveKind: 'select',
+      title: 'Codex 请求执行命令',
+      message: [params.command, params.cwd ? `目录: ${params.cwd}` : '', params.reason || ''].filter(Boolean).join('\n'),
+      options,
+    });
+  } else if (request.kind === 'file-approval') {
+    const options = codexApprovalOptions(request, ['accept', 'acceptForSession', 'decline', 'cancel']);
+    wsSend(entry.ws, {
+      ...base,
+      interactiveKind: 'select',
+      title: 'Codex 请求修改文件',
+      message: params.reason || params.grantRoot || '请确认是否允许本次文件修改。',
+      options,
+    });
+  } else if (request.kind === 'permissions') {
+    wsSend(entry.ws, {
+      ...base,
+      interactiveKind: 'select',
+      title: 'Codex 请求额外权限',
+      message: params.reason || `工作目录: ${params.cwd || entry.cwd || ''}`,
+      options: [
+        { value: 'grant-turn', label: '仅本轮允许' },
+        { value: 'grant-session', label: '本会话允许' },
+        { value: 'decline', label: '拒绝' },
+      ],
+    });
+  } else if (request.kind === 'questions') {
+    wsSend(entry.ws, {
+      ...base,
+      interactiveKind: 'questions',
+      title: 'Codex 需要补充信息',
+      message: '请回答以下问题后继续。',
+      questions: params.questions || [],
+      timeout: params.autoResolutionMs || null,
+    });
+  } else if (request.kind === 'elicitation') {
+    const questions = codexElicitationQuestions(params);
+    if (params.mode === 'url') {
+      wsSend(entry.ws, {
+        ...base,
+        interactiveKind: 'confirm',
+        title: `${params.serverName || 'MCP'} 需要网页授权`,
+        message: params.message || '请完成外部授权后确认。',
+        url: normalizeExternalHttpUrl(params.url),
+      });
+    } else {
+      wsSend(entry.ws, {
+        ...base,
+        interactiveKind: 'questions',
+        title: `${params.serverName || 'MCP'} 需要输入`,
+        message: params.message || '请填写以下信息。',
+        questions,
+      });
+    }
+  }
+}
+
+function handleCodexAppRequest(runtime, method, params, rpcId) {
+  if (!runtime || runtime.disposeReason) return Promise.reject(new Error('Codex runtime is no longer available'));
+  if (method === 'currentTime/read') {
+    return { currentTimeAt: Math.floor(Date.now() / 1000) };
+  }
+  if (method === 'item/tool/call' || method === 'item/dynamicTool/call') {
+    return {
+      success: false,
+      contentItems: [{
+        type: 'inputText',
+        text: `Webcoding 未注册动态工具：${String(params?.tool || 'unknown')}`,
+      }],
+    };
+  }
+  const kind = method === 'item/commandExecution/requestApproval' || method === 'execCommandApproval'
+    ? 'command-approval'
+    : method === 'item/fileChange/requestApproval' || method === 'applyPatchApproval'
+      ? 'file-approval'
+      : method === 'item/tool/requestUserInput'
+        ? 'questions'
+        : method === 'mcpServer/elicitation/request'
+          ? 'elicitation'
+          : method === 'item/permissions/requestApproval'
+            ? 'permissions'
+            : null;
+  if (!kind) {
+    return Promise.reject(Object.assign(new Error(`Webcoding 暂不支持 Codex 客户端请求：${method}`), { code: -32601 }));
+  }
+  const requestId = `codex-${rpcId}`;
+  const request = { requestId, rpcId, method, params, kind };
+  runtime.pendingUi.set(requestId, request);
+  if (kind === 'questions' && Number(params.autoResolutionMs) > 0) {
+    request.timeout = setTimeout(() => {
+      if (!runtime.pendingUi.has(requestId) || !runtime.client?.isAlive) return;
+      runtime.pendingUi.delete(requestId);
+      runtime.client.respond(rpcId, { answers: {} }).catch(() => {});
+      const entry = activeProcesses.get(runtime.sessionId);
+      if (entry?.ws) {
+        wsSend(entry.ws, {
+          type: 'interactive_response_result',
+          sessionId: runtime.sessionId,
+          requestId,
+          success: false,
+          retryable: false,
+          error: 'Codex 问答请求已自动超时。',
+        });
+      }
+    }, Number(params.autoResolutionMs));
+    request.timeout.unref?.();
+  }
+  sendCodexAppInteractiveRequest(runtime, request);
+  return undefined;
+}
+
+function resendCodexAppInteractiveRequests(entry) {
+  const runtime = entry?.appRuntime;
+  if (!runtime) return;
+  for (const request of runtime.pendingUi.values()) sendCodexAppInteractiveRequest(runtime, request);
+}
+
+function handleCodexAppExit(runtime, info) {
+  if (!runtime) return;
+  if (codexAppRuntimes.get(runtime.sessionId) === runtime) codexAppRuntimes.delete(runtime.sessionId);
+  plog(info.expected ? 'INFO' : 'WARN', 'codex_app_server_exit', {
+    sessionId: runtime.sessionId.slice(0, 8),
+    pid: runtime.client?.pid || null,
+    exitCode: info.code,
+    signal: info.signal,
+    expected: info.expected,
+    error: info.expected ? null : info.error?.message || null,
+  });
+  const entry = activeProcesses.get(runtime.sessionId);
+  if (!entry || entry.transport !== 'codex-app-server' || entry.appRuntime !== runtime) return;
+  if (!info.expected) entry.lastError = info.error?.message || 'Codex App Server 进程意外退出';
+  handleProcessComplete(runtime.sessionId, info.expected ? 0 : (info.code ?? 1), info.signal || null);
+}
+
+async function ensureCodexAppRuntime(session, spawnSpec) {
+  const sessionId = session.id;
+  const key = codexAppRuntimeKey(spawnSpec);
+  const existing = codexAppRuntimes.get(sessionId);
+  if (existing?.key === key && existing.client?.isAlive) {
+    existing.lastUsedAt = Date.now();
+    return existing;
+  }
+  if (existing) disposeCodexAppRuntime(sessionId, 'runtime_changed');
+  if (!ensureCodexAppCapacity(sessionId)) {
+    throw new Error(`Codex App Server 会话已达到上限（${MAX_CODEX_APP_RUNTIMES}），请先停止或关闭其他 Codex 会话。`);
+  }
+  const runtime = {
+    sessionId,
+    key,
+    client: null,
+    threadId: spawnSpec.runtimeId || null,
+    turnId: null,
+    collaborationModes: null,
+    collaborationModesPromise: null,
+    pendingUi: new Map(),
+    latestTokenUsage: null,
+    lastUsedAt: Date.now(),
+    disposeReason: null,
+  };
+  codexAppRuntimes.set(sessionId, runtime);
+  try {
+    runtime.client = await CodexAppServerClient.start({
+      command: spawnSpec.command,
+      args: spawnSpec.args,
+      env: spawnSpec.env,
+      cwd: spawnSpec.cwd,
+      useShell: spawnSpec.useShell,
+      clientVersion: PACKAGE_VERSION,
+      onNotification: (method, params) => handleCodexAppNotification(runtime, method, params),
+      onRequest: (method, params, id) => handleCodexAppRequest(runtime, method, params, id),
+      onProtocolError: (error) => plog('WARN', 'codex_app_server_protocol_error', {
+        sessionId: sessionId.slice(0, 8),
+        error: error.message,
+      }),
+      onExit: (info) => handleCodexAppExit(runtime, info),
+    });
+    if (codexAppRuntimes.get(sessionId) !== runtime || runtime.disposeReason) {
+      runtime.client.dispose();
+      throw new Error('Codex App Server runtime changed during startup');
+    }
+    return runtime;
+  } catch (error) {
+    if (codexAppRuntimes.get(sessionId) === runtime) codexAppRuntimes.delete(sessionId);
+    runtime.disposeReason = 'startup_failed';
+    runtime.client?.dispose();
+    throw error;
+  }
+}
+
+async function startCodexAppTurn(ws, session, spawnSpec, resolvedAttachments, runtimeInputText) {
+  const sessionId = session.id;
+  let runtime;
+  let entry;
+  try {
+    runtime = await ensureCodexAppRuntime(session, spawnSpec);
+    entry = createRuntimeEntry(session, ws, spawnSpec, resolvedAttachments, runtime.client.pid, 'codex-app-server');
+    entry.appRuntime = runtime;
+    runtime.entry = entry;
+    runtime.latestTokenUsage = null;
+    setActiveProcess(sessionId, entry);
+    sendSessionList(ws);
+
+    let threadResult;
+    const threadParams = {
+      cwd: spawnSpec.cwd,
+      model: session.model || null,
+      approvalPolicy: spawnSpec.approvalPolicy,
+      sandbox: spawnSpec.threadSandbox,
+    };
+    if (spawnSpec.runtimeId) {
+      try {
+        threadResult = await runtime.client.request('thread/resume', {
+          ...threadParams,
+          threadId: spawnSpec.runtimeId,
+        }, { timeoutMs: 30_000 });
+      } catch (error) {
+        runtime.threadId = null;
+        wsSend(ws, {
+          type: 'system_message',
+          sessionId,
+          message: `Codex 原线程无法恢复，已新建线程并补充当前 Web 会话上下文：${error.message}`,
+        });
+        const history = Array.isArray(session.messages) ? session.messages.slice(0, -1) : [];
+        const carryover = buildThreadCarryoverPayload(
+          session,
+          runtimeInputText,
+          resolvedAttachments,
+          history,
+          { agent: 'codex', reason: 'resume_failed', previousRuntimeId: spawnSpec.runtimeId },
+        );
+        runtimeInputText = carryover.prompt;
+        threadResult = await runtime.client.request('thread/start', threadParams, { timeoutMs: 30_000 });
+      }
+    } else {
+      threadResult = await runtime.client.request('thread/start', threadParams, { timeoutMs: 30_000 });
+    }
+
+    const threadId = threadResult?.thread?.id || runtime.threadId;
+    if (!threadId) throw new Error('Codex App Server 未返回 threadId');
+    runtime.threadId = threadId;
+    entry.resolvedModel = threadResult?.model || spawnSpec.effectiveModel || null;
+    processRuntimeEvent(entry, { type: 'thread.started', thread_id: threadId }, sessionId);
+
+    if (session.codexPersonality || spawnSpec.effort) {
+      try {
+        await runtime.client.request('thread/settings/update', {
+          threadId,
+          ...(session.codexPersonality ? { personality: session.codexPersonality } : {}),
+          ...(spawnSpec.effort ? { effort: spawnSpec.effort } : {}),
+        }, { timeoutMs: 15_000 });
+      } catch (error) {
+        plog('WARN', 'codex_thread_settings_restore_failed', { sessionId: sessionId.slice(0, 8), error: error.message });
+        if (entry.ws) {
+          wsSend(entry.ws, {
+            type: 'system_message',
+            sessionId,
+            message: `Codex 线程设置恢复失败，本轮继续使用默认值：${error.message}`,
+          });
+        }
+      }
+    }
+
+    const isCompactRequest = String(runtimeInputText || '').trim() === '/compact';
+    const collaborationMode = !isCompactRequest && !spawnSpec.reviewRequest
+      ? await buildCodexAppCollaborationMode(
+          runtime,
+          spawnSpec.mode,
+          threadResult?.model || entry.resolvedModel,
+          spawnSpec.effort,
+        )
+      : null;
+
+    plog('INFO', 'codex_app_turn_start', {
+      sessionId: sessionId.slice(0, 8),
+      pid: runtime.client.pid,
+      threadId,
+      mode: spawnSpec.mode,
+      collaborationMode: collaborationMode?.mode || null,
+      model: entry.resolvedModel || 'default',
+      effort: spawnSpec.effort || 'default',
+      resume: spawnSpec.resume,
+      review: !!spawnSpec.reviewRequest,
+      operation: spawnSpec.resume ? 'thread/resume' : 'thread/start',
+      transport: 'app-server',
+      attachmentCount: resolvedAttachments.length,
+      args: spawnSpec.args.join(' '),
+    });
+
+    if (isCompactRequest) {
+      await runtime.client.request('thread/compact/start', { threadId }, { timeoutMs: 30_000 });
+      return;
+    }
+    let turnResult;
+    if (spawnSpec.reviewRequest) {
+      const instructions = String(spawnSpec.reviewRequest.instructions || '').trim();
+      turnResult = await runtime.client.request('review/start', {
+        threadId,
+        delivery: 'inline',
+        target: instructions
+          ? { type: 'custom', instructions }
+          : { type: 'uncommittedChanges' },
+      }, { timeoutMs: 30_000 });
+    } else {
+      const input = codexAppInput(runtimeInputText, resolvedAttachments);
+      const turnParams = {
+        threadId,
+        input,
+        cwd: spawnSpec.cwd,
+        model: session.model || null,
+        approvalPolicy: spawnSpec.approvalPolicy,
+        sandboxPolicy: spawnSpec.sandboxPolicy,
+        effort: spawnSpec.effort || null,
+      };
+      if (collaborationMode) turnParams.collaborationMode = collaborationMode;
+      turnResult = await runtime.client.request('turn/start', turnParams, { timeoutMs: 30_000 });
+    }
+    runtime.turnId = turnResult?.turn?.id || runtime.turnId;
+  } catch (error) {
+    if (entry && activeProcesses.get(sessionId) === entry) {
+      entry.lastError = error.message || String(error);
+      handleProcessComplete(sessionId, 1, null);
+    } else {
+      const message = formatRuntimeError('codex', error.message || String(error), { exitCode: null, signal: null });
+      wsSend(ws, { type: 'error', sessionId, message });
+      wsSend(ws, { type: 'done', sessionId, costUsd: null });
+      sendSessionList(ws);
+    }
+  }
 }
 
 function piRpcRuntimeKey(spawnSpec) {
@@ -7138,8 +9624,47 @@ function handlePiRpcExit(runtime, info) {
 
 function sendPiRpcInteractiveRequest(runtime, event) {
   const entry = activeProcesses.get(runtime.sessionId);
-  if (!entry || entry.transport !== 'pi-rpc') return;
   const method = String(event.method || 'interactive');
+  const uiState = runtime.extensionUiState || (runtime.extensionUiState = {
+    statuses: new Map(),
+    widgets: new Map(),
+    title: '',
+  });
+  if (method === 'setStatus') {
+    const key = String(event.statusKey || 'status');
+    const text = event.statusText == null ? null : String(event.statusText);
+    if (text) uiState.statuses.set(key, text);
+    else uiState.statuses.delete(key);
+    if (entry?.ws) wsSend(entry.ws, {
+      type: 'pi_extension_ui', sessionId: runtime.sessionId, method, key, text,
+    });
+    return;
+  }
+  if (method === 'setWidget') {
+    const key = String(event.widgetKey || 'widget');
+    const lines = Array.isArray(event.widgetLines) ? event.widgetLines.map(String) : null;
+    if (lines?.length) uiState.widgets.set(key, { lines, placement: event.widgetPlacement || null });
+    else uiState.widgets.delete(key);
+    if (entry?.ws) wsSend(entry.ws, {
+      type: 'pi_extension_ui', sessionId: runtime.sessionId, method, key, lines,
+      placement: event.widgetPlacement || null,
+    });
+    return;
+  }
+  if (method === 'setTitle') {
+    uiState.title = String(event.title || '');
+    if (entry?.ws) wsSend(entry.ws, {
+      type: 'pi_extension_ui', sessionId: runtime.sessionId, method, title: uiState.title,
+    });
+    return;
+  }
+  if (method === 'set_editor_text') {
+    if (entry?.ws) wsSend(entry.ws, {
+      type: 'pi_extension_ui', sessionId: runtime.sessionId, method, text: String(event.text || ''),
+    });
+    return;
+  }
+  if (!entry || entry.transport !== 'pi-rpc') return;
   const dialogMethods = new Set(['select', 'confirm', 'input', 'editor']);
   if (!dialogMethods.has(method)) {
     if (method === 'notify' && entry.ws) {
@@ -7175,6 +9700,28 @@ function resendPiRpcInteractiveRequests(entry) {
   if (!runtime || !entry.ws) return;
   for (const event of runtime.pendingUi.values()) {
     sendPiRpcInteractiveRequest(runtime, event);
+  }
+  sendPiRpcExtensionUiState(entry.ws, runtime);
+}
+
+function sendPiRpcExtensionUiState(ws, runtime) {
+  if (!ws || !runtime) return;
+  const uiState = runtime.extensionUiState;
+  for (const [key, text] of uiState?.statuses || []) {
+    wsSend(ws, { type: 'pi_extension_ui', sessionId: runtime.sessionId, method: 'setStatus', key, text });
+  }
+  for (const [key, widget] of uiState?.widgets || []) {
+    wsSend(ws, {
+      type: 'pi_extension_ui',
+      sessionId: runtime.sessionId,
+      method: 'setWidget',
+      key,
+      lines: widget.lines,
+      placement: widget.placement || null,
+    });
+  }
+  if (uiState?.title) {
+    wsSend(ws, { type: 'pi_extension_ui', sessionId: runtime.sessionId, method: 'setTitle', title: uiState.title });
   }
 }
 
@@ -7401,6 +9948,7 @@ async function ensurePiRpcRuntime(session, spawnSpec) {
     models: [],
     commands: [],
     pendingUi: new Map(),
+    extensionUiState: { statuses: new Map(), widgets: new Map(), title: '' },
     queueState: { steering: [], followUp: [] },
     dequeuedQueueItems: [],
     lastUsedAt: Date.now(),
@@ -7590,6 +10138,318 @@ function handlePiRpcInteractiveResponse(ws, msg) {
   });
 }
 
+function normalizeCodexQuestionAnswers(request, msg) {
+  const answers = msg?.answers && typeof msg.answers === 'object' ? msg.answers : {};
+  const allowedIds = new Set((Array.isArray(request?.params?.questions) ? request.params.questions : [])
+    .map((question) => String(question?.id || ''))
+    .filter(Boolean));
+  const normalized = Object.create(null);
+  for (const [key, value] of Object.entries(answers)) {
+    if (!allowedIds.has(key)) continue;
+    normalized[key] = {
+      answers: Array.isArray(value) ? value.map(String) : [String(value ?? '')],
+    };
+  }
+  return normalized;
+}
+
+function handleClaudeStreamInteractiveResponse(ws, msg) {
+  const sessionId = sanitizeId(msg?.sessionId || '');
+  const requestId = String(msg?.requestId || '').trim();
+  const rejectResponse = (message, retryable = false) => {
+    wsSend(ws, {
+      type: 'interactive_response_result',
+      sessionId,
+      requestId,
+      success: false,
+      retryable,
+      error: message,
+    });
+    wsSend(ws, { type: 'error', sessionId, message });
+  };
+  if (!sessionId || wsSessionMap.get(ws) !== sessionId) {
+    return rejectResponse('当前页面不属于该 Claude 交互请求。');
+  }
+  const runtime = claudeStreamRuntimes.get(sessionId);
+  const request = runtime?.pendingUi?.get(requestId);
+  if (!runtime?.client?.isAlive || !request) {
+    return rejectResponse('该 Claude 交互请求已失效。');
+  }
+
+  let response;
+  try {
+    if (request.kind === 'can_use_tool') {
+      if (request.askUserQuestions instanceof Map) {
+        if (msg.cancelled === true) {
+          response = {
+            behavior: 'deny',
+            message: '用户取消了问题回答。',
+            interrupt: false,
+            ...(request.params.tool_use_id ? { toolUseID: request.params.tool_use_id } : {}),
+            decisionClassification: 'user_reject',
+          };
+        } else {
+          const submittedAnswers = msg.answers && typeof msg.answers === 'object' ? msg.answers : {};
+          const answers = Object.create(null);
+          for (const [questionId, question] of request.askUserQuestions) {
+            if (!Object.prototype.hasOwnProperty.call(submittedAnswers, questionId)) {
+              throw new Error(`请回答：${question.text}`);
+            }
+            const rawValue = submittedAnswers[questionId];
+            const values = (Array.isArray(rawValue) ? rawValue : [rawValue])
+              .map((value) => String(value ?? '').trim())
+              .filter(Boolean);
+            if (values.length === 0) throw new Error(`请回答：${question.text}`);
+            answers[question.text] = question.multiple ? values.join(', ') : values[0];
+          }
+          response = {
+            behavior: 'allow',
+            updatedInput: {
+              ...cloneJson(request.params.input || {}),
+              answers,
+            },
+            ...(request.params.tool_use_id ? { toolUseID: request.params.tool_use_id } : {}),
+            decisionClassification: 'user_temporary',
+          };
+        }
+      } else {
+        const value = msg.cancelled === true ? 'cancel' : String(msg.value || '');
+        if (value === 'allow-once' || request.permissionSuggestions?.has(value)) {
+          const suggestion = request.permissionSuggestions?.get(value) || null;
+          response = {
+            behavior: 'allow',
+            updatedInput: cloneJson(request.params.input || {}),
+            ...(suggestion ? { updatedPermissions: [cloneJson(suggestion)] } : {}),
+            ...(request.params.tool_use_id ? { toolUseID: request.params.tool_use_id } : {}),
+            decisionClassification: suggestion ? 'user_permanent' : 'user_temporary',
+          };
+        } else if (value === 'deny' || value === 'cancel') {
+          response = {
+            behavior: 'deny',
+            message: value === 'cancel' ? '用户拒绝并停止本轮。' : '用户拒绝了本次工具调用。',
+            interrupt: value === 'cancel',
+            ...(request.params.tool_use_id ? { toolUseID: request.params.tool_use_id } : {}),
+            decisionClassification: 'user_reject',
+          };
+        } else {
+          return rejectResponse('请选择一个有效的 Claude 审批选项。', true);
+        }
+      }
+    } else if (request.kind === 'elicitation') {
+      const normalized = request.normalizedParams;
+      if (msg.cancelled === true) response = { action: 'cancel' };
+      else if (msg.confirmed === false) response = { action: 'decline' };
+      else response = {
+        action: 'accept',
+        ...(normalized.mode === 'url'
+          ? {}
+          : { content: codexElicitationContent({ params: normalized }, msg) }),
+      };
+    } else {
+      return rejectResponse('该 Claude 原生对话框暂时无法在网页中回应。');
+    }
+  } catch (error) {
+    return rejectResponse(error.message || 'Claude 交互响应无效。', true);
+  }
+
+  runtime.client.writeLine({
+    type: 'control_response',
+    response: {
+      subtype: 'success',
+      request_id: request.controlRequestId,
+      response,
+    },
+  }).then(() => {
+    runtime.pendingUi.delete(requestId);
+    wsSend(ws, { type: 'interactive_response_result', sessionId, requestId, success: true });
+  }).catch((error) => {
+    wsSend(ws, {
+      type: 'interactive_response_result',
+      sessionId,
+      requestId,
+      success: false,
+      retryable: true,
+      error: error.message,
+    });
+    wsSend(ws, { type: 'error', sessionId, message: `Claude 交互响应失败：${error.message}` });
+  });
+}
+
+function codexElicitationContent(request, msg) {
+  const rawAnswers = msg?.answers && typeof msg.answers === 'object' ? msg.answers : {};
+  const properties = request.params?.requestedSchema?.properties || {};
+  const required = new Set(Array.isArray(request.params?.requestedSchema?.required)
+    ? request.params.requestedSchema.required
+    : []);
+  const content = Object.create(null);
+  for (const [key, schema] of Object.entries(properties)) {
+    if (!Object.prototype.hasOwnProperty.call(rawAnswers, key)) {
+      if (required.has(key)) throw new Error(`MCP 表单缺少必填项：${schema?.title || key}`);
+      continue;
+    }
+    const rawValue = rawAnswers[key];
+    const values = (Array.isArray(rawValue) ? rawValue : [rawValue]).map((value) => String(value ?? ''));
+    if (schema?.type === 'array') {
+      const selected = values.filter((value) => value !== '');
+      if (required.has(key) && selected.length === 0) throw new Error(`MCP 表单缺少必填项：${schema?.title || key}`);
+      if (Number.isFinite(schema?.minItems) && selected.length < schema.minItems) throw new Error(`${schema?.title || key} 至少选择 ${schema.minItems} 项`);
+      if (Number.isFinite(schema?.maxItems) && selected.length > schema.maxItems) throw new Error(`${schema?.title || key} 最多选择 ${schema.maxItems} 项`);
+      if (selected.length > 0 || required.has(key)) content[key] = selected;
+      continue;
+    }
+    const first = values[0] || '';
+    if (!first && !required.has(key)) continue;
+    if (!first) throw new Error(`MCP 表单缺少必填项：${schema?.title || key}`);
+    if (schema?.type === 'boolean') {
+      content[key] = first === 'true';
+    } else if (schema?.type === 'number' || schema?.type === 'integer') {
+      const numeric = Number(first);
+      if (!Number.isFinite(numeric) || (schema.type === 'integer' && !Number.isInteger(numeric))) {
+        throw new Error(`${schema?.title || key} 必须是有效数字`);
+      }
+      if (Number.isFinite(schema.minimum) && numeric < schema.minimum) throw new Error(`${schema?.title || key} 不能小于 ${schema.minimum}`);
+      if (Number.isFinite(schema.maximum) && numeric > schema.maximum) throw new Error(`${schema?.title || key} 不能大于 ${schema.maximum}`);
+      content[key] = numeric;
+    } else {
+      if (Number.isFinite(schema?.minLength) && first.length < schema.minLength) throw new Error(`${schema?.title || key} 长度不足`);
+      if (Number.isFinite(schema?.maxLength) && first.length > schema.maxLength) throw new Error(`${schema?.title || key} 长度超限`);
+      content[key] = first;
+    }
+  }
+  return content;
+}
+
+function handleCodexAppInteractiveResponse(ws, msg) {
+  const sessionId = sanitizeId(msg?.sessionId || '');
+  const requestId = String(msg?.requestId || '').trim();
+  const rejectResponse = (message, retryable = false) => {
+    wsSend(ws, {
+      type: 'interactive_response_result',
+      sessionId,
+      requestId,
+      success: false,
+      retryable,
+      error: message,
+    });
+    wsSend(ws, { type: 'error', sessionId, message });
+  };
+  if (!sessionId || wsSessionMap.get(ws) !== sessionId) {
+    return rejectResponse('当前页面不属于该 Codex 交互请求。');
+  }
+  const runtime = codexAppRuntimes.get(sessionId);
+  const request = runtime?.pendingUi.get(requestId);
+  if (!runtime?.client?.isAlive || !request) {
+    return rejectResponse('该 Codex 交互请求已失效。');
+  }
+
+  let result;
+  try {
+    if (request.kind === 'command-approval' || request.kind === 'file-approval') {
+      const fallback = request.approvalDecisions?.has('decline') ? 'decline' : 'cancel';
+      const selected = msg.cancelled === true
+        ? (request.approvalDecisions?.get('cancel') || request.approvalDecisions?.get('decline') || fallback)
+        : request.approvalDecisions?.get(String(msg.value || ''));
+      result = { decision: selected || fallback };
+    } else if (request.kind === 'permissions') {
+      const decision = msg.cancelled === true ? 'decline' : String(msg.value || 'decline');
+      result = decision === 'grant-turn' || decision === 'grant-session'
+        ? {
+            permissions: request.params.permissions || {},
+            scope: decision === 'grant-session' ? 'session' : 'turn',
+          }
+        : { permissions: {}, scope: 'turn' };
+    } else if (request.kind === 'questions') {
+      result = { answers: msg.cancelled === true ? {} : normalizeCodexQuestionAnswers(request, msg) };
+    } else if (request.kind === 'elicitation') {
+      if (msg.cancelled === true) result = { action: 'cancel', content: null };
+      else if (msg.confirmed === false) result = { action: 'decline', content: null };
+      else result = {
+        action: 'accept',
+        content: request.params.mode === 'url' ? null : codexElicitationContent(request, msg),
+      };
+    } else {
+      return rejectResponse('不支持的 Codex 交互响应。');
+    }
+  } catch (error) {
+    return rejectResponse(error.message || 'Codex 交互响应无效。', true);
+  }
+
+  runtime.client.respond(request.rpcId, result).then(() => {
+    if (request.timeout) clearTimeout(request.timeout);
+    runtime.pendingUi.delete(requestId);
+    wsSend(ws, { type: 'interactive_response_result', sessionId, requestId, success: true });
+  }).catch((error) => {
+    wsSend(ws, {
+      type: 'interactive_response_result',
+      sessionId,
+      requestId,
+      success: false,
+      retryable: true,
+      error: error.message,
+    });
+    wsSend(ws, { type: 'error', sessionId, message: `Codex 交互响应失败：${error.message}` });
+  });
+}
+
+function handleInteractiveResponse(ws, msg) {
+  const requestId = String(msg?.requestId || '');
+  if (requestId.startsWith('claude-')) handleClaudeStreamInteractiveResponse(ws, msg);
+  else if (requestId.startsWith('codex-')) handleCodexAppInteractiveResponse(ws, msg);
+  else handlePiRpcInteractiveResponse(ws, msg);
+}
+
+function sendCodexAppMessageRejected(ws, sessionId, clientMessageId, message, retryable = true) {
+  wsSend(ws, {
+    type: 'message_rejected',
+    sessionId,
+    clientMessageId: clientMessageId || null,
+    retryable,
+    error: message,
+  });
+}
+
+function handleActiveCodexAppMessage(ws, msg, session, entry, resolvedAttachments, savedAttachments, textValue) {
+  const sessionId = session.id;
+  const runtime = entry.appRuntime || codexAppRuntimes.get(sessionId);
+  const clientMessageId = normalizeClientMessageId(msg.clientMessageId);
+  if (msg.streamingBehavior !== 'steer') {
+    sendCodexAppMessageRejected(ws, sessionId, clientMessageId, 'Codex 正在生成；当前只支持“转向”输入。', false);
+    return;
+  }
+  if (!runtime?.client?.isAlive || !runtime.turnId) {
+    sendCodexAppMessageRejected(ws, sessionId, clientMessageId, 'Codex App Server 尚未准备好接收转向输入。');
+    return;
+  }
+  entry.ws = ws;
+  entry.wsDisconnectTime = null;
+  wsSessionMap.set(ws, sessionId);
+  runtime.client.request('turn/steer', {
+    threadId: runtime.threadId,
+    expectedTurnId: runtime.turnId,
+    input: codexAppInput(textValue, resolvedAttachments),
+    clientUserMessageId: clientMessageId || null,
+  }, { timeoutMs: 30_000 }).then(() => {
+    if (activeProcesses.get(sessionId) !== entry) {
+      sendCodexAppMessageRejected(ws, sessionId, clientMessageId, '当前 Codex 任务已经结束。', false);
+      return;
+    }
+    session.messages.push({
+      role: 'user',
+      content: textValue,
+      attachments: savedAttachments,
+      timestamp: new Date().toISOString(),
+      streamingBehavior: 'steer',
+    });
+    session.updated = new Date().toISOString();
+    saveSession(session);
+    const ack = { execution: 'codex-steer', streamingBehavior: 'steer' };
+    if (clientMessageId) rememberAcceptedClientMessage(sessionId, clientMessageId, ack);
+    sendMessageAccepted(ws, sessionId, clientMessageId, ack);
+  }).catch((error) => {
+    sendCodexAppMessageRejected(ws, sessionId, clientMessageId, `Codex 未接收转向输入：${error.message}`);
+  });
+}
+
 function sendPiRpcMessageRejected(ws, sessionId, clientMessageId, message, retryable = true) {
   wsSend(ws, {
     type: 'message_rejected',
@@ -7743,6 +10603,17 @@ function handleMessage(ws, msg, options = {}) {
     return;
   }
 
+  if (sessionId && (piForkOperations.has(sessionId) || codexForkOperations.has(sessionId))) {
+    wsSend(ws, {
+      type: 'message_rejected',
+      sessionId,
+      clientMessageId: clientMessageIdEarly || null,
+      retryable: true,
+      error: '当前会话正在创建分支，请稍候重试。',
+    });
+    return;
+  }
+
   if (sessionId && activeProcesses.has(sessionId)) {
     const runningSession = loadSession(sessionId);
     const runningEntry = activeProcesses.get(sessionId);
@@ -7763,40 +10634,21 @@ function handleMessage(ws, msg, options = {}) {
       );
       return;
     }
-    // Use the mode snapshotted at spawn — not session.permissionMode (may already be next-turn).
-    const activeTurnMode = runningEntry?.permissionMode || runningSession?.permissionMode || 'yolo';
     if (
-      runningSession &&
-      runningEntry &&
-      isClaudeSession(runningSession) &&
-      activeTurnMode === 'plan' &&
-      normalizedText &&
-      resolvedAttachments.length === 0
+      runningSession
+      && runningEntry
+      && getSessionAgent(runningSession) === 'codex'
+      && runningEntry.transport === 'codex-app-server'
     ) {
-      // Plan mode: best-effort forward user input via input.txt append.
-      // Not a reliable bidirectional interactive channel — ACK only after write succeeds.
-      const inputPath = path.join(runDir(sessionId), 'input.txt');
-      try {
-        fs.appendFileSync(inputPath, normalizedText + '\n');
-        if (clientMessageIdEarly) {
-          rememberAcceptedClientMessage(sessionId, clientMessageIdEarly);
-          sendMessageAccepted(ws, sessionId, clientMessageIdEarly, { execution: 'local' });
-        }
-        if (!hideInHistory) {
-          runningSession.messages.push({ role: 'user', content: textValue, attachments: [], timestamp: new Date().toISOString() });
-          runningSession.updated = new Date().toISOString();
-          saveSession(runningSession);
-          runningEntry.ws = ws;
-        }
-        wsSend(ws, {
-          type: 'system_message',
-          sessionId,
-          message: '已写入 Plan 模式确认输入（best-effort；非完整交互协议）。',
-        });
-      } catch (err) {
-        // Do not consume idempotency key on failure — client may retry.
-        wsSend(ws, { type: 'error', sessionId, message: '无法写入确认输入：' + err.message });
-      }
+      handleActiveCodexAppMessage(
+        ws,
+        msg,
+        runningSession,
+        runningEntry,
+        resolvedAttachments,
+        savedAttachments,
+        textValue,
+      );
       return;
     }
     return wsSend(ws, { type: 'error', sessionId, message: '正在处理中，请先点击停止按钮。' });
@@ -7829,7 +10681,8 @@ function handleMessage(ws, msg, options = {}) {
       agent,
       claudeSessionId: null,
       codexThreadId: null,
-      runtimeContexts: { claude: {}, codex: {} },
+      piSessionId: null,
+      runtimeContexts: { claude: {}, codex: {}, pi: {} },
       model: null,
       permissionMode: mode || 'yolo',
       totalCost: 0,
@@ -7910,6 +10763,7 @@ function handleMessage(ws, msg, options = {}) {
     ? buildCodexSpawnSpec(session, {
         attachments: resolvedAttachments,
         review: codexReviewMatch ? { instructions: codexReviewMatch[1] || '' } : null,
+        transport: CODEX_TRANSPORT,
       })
     : sessionAgent === 'pi'
       ? buildPiSpawnSpec(session, {
@@ -7942,6 +10796,14 @@ function handleMessage(ws, msg, options = {}) {
     startPiRpcTurn(ws, session, spawnSpec, resolvedAttachments, runtimeInputText);
     return;
   }
+  if (sessionAgent === 'codex' && spawnSpec.transport === 'app-server') {
+    startCodexAppTurn(ws, session, spawnSpec, resolvedAttachments, runtimeInputText);
+    return;
+  }
+  if (sessionAgent === 'claude' && CLAUDE_TRANSPORT === 'stream-json') {
+    startClaudeStreamTurn(ws, session, spawnSpec, resolvedAttachments, runtimeInputText);
+    return;
+  }
 
   // === Detached process with file-based I/O ===
   const dir = runDir(currentSessionId);
@@ -7951,20 +10813,8 @@ function handleMessage(ws, msg, options = {}) {
   const outputPath = path.join(dir, 'output.jsonl');
   const errorPath = path.join(dir, 'error.log');
 
-  if (isClaudeSession(session) && resolvedAttachments.length > 0) {
-    const content = [];
-    if (runtimeInputText) content.push({ type: 'text', text: runtimeInputText });
-    for (const attachment of resolvedAttachments) {
-      const data = fs.readFileSync(attachment.path).toString('base64');
-      content.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: attachment.mime,
-          data,
-        },
-      });
-    }
+  if (isClaudeSession(session)) {
+    const content = claudeStreamContent(runtimeInputText, resolvedAttachments);
     fs.writeFileSync(inputPath, `${JSON.stringify({
       type: 'user',
       message: {
@@ -7976,6 +10826,7 @@ function handleMessage(ws, msg, options = {}) {
     fs.writeFileSync(inputPath, runtimeInputText);
   }
 
+  const runId = crypto.randomUUID();
   const inputFd = fs.openSync(inputPath, 'r');
   const outputFd = fs.openSync(outputPath, 'w');
   const errorFd = fs.openSync(errorPath, 'w');
@@ -8029,6 +10880,7 @@ function handleMessage(ws, msg, options = {}) {
 
   fs.writeFileSync(path.join(dir, 'pid'), String(proc.pid));
   writeRunMeta(currentSessionId, {
+    runId,
     pid: proc.pid,
     permissionMode: spawnSpec.mode || session.permissionMode || 'yolo',
     agent: getSessionAgent(session),
@@ -8073,6 +10925,7 @@ function handleMessage(ws, msg, options = {}) {
   });
 
   entry = createRuntimeEntry(session, ws, spawnSpec, resolvedAttachments, proc.pid);
+  entry.runId = runId;
   setActiveProcess(currentSessionId, entry);
   sendSessionList(ws);
 
@@ -8117,6 +10970,8 @@ function sanitizeToolInput(toolName, input) {
 
 const {
   buildClaudeSpawnSpec,
+  buildClaudeEnv,
+  shouldUseShellForCommand,
   buildCodexSpawnSpec,
   buildPiSpawnSpec,
   processRuntimeEvent,
@@ -8154,15 +11009,7 @@ const {
 
 // === Check Update ===
 function handleCheckUpdate(ws) {
-  const localVersion = (() => {
-    try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || 'unknown'; } catch {}
-    try {
-      const cl = fs.readFileSync(path.join(__dirname, 'CHANGELOG.md'), 'utf8');
-      const m = cl.match(/##\s*v([\d.]+)/) || cl.match(/\*\*v([\d.]+)\*\*/);
-      if (m) return m[1];
-    } catch {}
-    return 'unknown';
-  })();
+  const localVersion = PACKAGE_VERSION;
 
   const https = require('https');
   const options = {
@@ -8211,6 +11058,9 @@ const CODEX_SESSIONS_DIR = path.join(getUserCodexHome(), 'sessions');
 const CODEX_RUNTIME_SESSIONS_DIR = path.join(CODEX_RUNTIME_HOME, 'sessions');
 const CODEX_STATE_DB_PATH = path.join(getUserCodexHome(), 'state_5.sqlite');
 const CODEX_LOG_DB_PATH = path.join(getUserCodexHome(), 'logs_1.sqlite');
+const CODEX_RUNTIME_STATE_DB_PATH = path.join(CODEX_RUNTIME_HOME, 'state_5.sqlite');
+const CODEX_RUNTIME_LOG_DB_PATH = path.join(CODEX_RUNTIME_HOME, 'logs_1.sqlite');
+const PI_NATIVE_SESSIONS_DIR = getUserPiSessionsDir();
 
 function resolveClaudeSessionLocalMeta(claudeSessionId) {
   if (!claudeSessionId) return null;
@@ -8658,6 +11508,189 @@ function handleImportCodexSession(ws, msg) {
     cwd: session.cwd,
     totalCost: session.totalCost || 0,
     totalUsage: session.totalUsage || null,
+    updated: session.updated,
+    hasUnread: false,
+    historyPending: false,
+    isRunning: false,
+    imported: true,
+    ...buildSessionRuntimeMeta(session),
+  });
+  sendSessionList(ws);
+}
+
+function getImportedPiSessionIds() {
+  const imported = new Set();
+  try {
+    const files = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'));
+    for (const file of files) {
+      try {
+        const session = normalizeSession(JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file.name), 'utf8')));
+        for (const runtimeId of getAllRuntimeSessionIds(session, 'pi')) imported.add(String(runtimeId));
+      } catch {}
+    }
+  } catch {}
+  return imported;
+}
+
+function handleListPiSessions(ws) {
+  const imported = getImportedPiSessionIds();
+  const cwdMap = new Map();
+  const seen = new Set();
+  for (const filePath of getPiSessionFiles(PI_NATIVE_SESSIONS_DIR)) {
+    const summary = summarizePiSessionFile(filePath);
+    if (!summary?.sessionId || seen.has(summary.sessionId)) continue;
+    seen.add(summary.sessionId);
+    const cwd = summary.cwd || '/unknown';
+    if (!cwdMap.has(cwd)) cwdMap.set(cwd, []);
+    cwdMap.get(cwd).push({
+      ...summary,
+      alreadyImported: imported.has(summary.sessionId),
+    });
+  }
+  const groups = [...cwdMap.entries()].map(([cwd, sessions]) => ({
+    cwd,
+    sessions: sessions.sort((left, right) => {
+      const leftTime = left.updatedAt ? Date.parse(left.updatedAt) : 0;
+      const rightTime = right.updatedAt ? Date.parse(right.updatedAt) : 0;
+      return rightTime - leftTime;
+    }),
+  }));
+  groups.sort((left, right) => {
+    const leftTime = left.sessions[0]?.updatedAt ? Date.parse(left.sessions[0].updatedAt) : 0;
+    const rightTime = right.sessions[0]?.updatedAt ? Date.parse(right.sessions[0].updatedAt) : 0;
+    return rightTime - leftTime;
+  });
+  wsSend(ws, { type: 'pi_sessions', groups });
+}
+
+function findPiNativeSessionFile(sessionId, requestedPath = '') {
+  const normalizedId = String(sessionId || '').trim();
+  if (!normalizedId) return null;
+  const candidate = requestedPath ? path.resolve(String(requestedPath)) : '';
+  if (
+    candidate
+    && isPathInside(candidate, PI_NATIVE_SESSIONS_DIR)
+    && candidate.endsWith('.jsonl')
+    && fs.existsSync(candidate)
+  ) {
+    const summary = summarizePiSessionFile(candidate);
+    if (summary?.sessionId === normalizedId) return candidate;
+  }
+  for (const filePath of getPiSessionFiles(PI_NATIVE_SESSIONS_DIR)) {
+    const summary = summarizePiSessionFile(filePath);
+    if (summary?.sessionId === normalizedId) return filePath;
+  }
+  return null;
+}
+
+function copyPiSessionIntoWebStorage(sourcePath, webSessionId, nativeSessionId) {
+  const targetDir = piSessionDir(webSessionId);
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const entry of fs.readdirSync(targetDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    const target = path.join(targetDir, entry.name);
+    const summary = summarizePiSessionFile(target);
+    if (summary?.sessionId === nativeSessionId) fs.unlinkSync(target);
+  }
+  const targetPath = path.join(targetDir, path.basename(sourcePath));
+  fs.copyFileSync(sourcePath, targetPath);
+  return targetPath;
+}
+
+function handleImportPiSession(ws, msg) {
+  const nativeSessionId = String(msg?.sessionId || '').trim();
+  if (!nativeSessionId) {
+    return wsSend(ws, { type: 'error', message: '缺少 Pi sessionId' });
+  }
+  const sourcePath = findPiNativeSessionFile(nativeSessionId, msg?.sessionPath || '');
+  if (!sourcePath) {
+    return wsSend(ws, { type: 'error', message: '未找到对应的 Pi 原生会话文件' });
+  }
+  const parsed = parsePiSessionFile(sourcePath);
+  if (!parsed || parsed.meta.sessionId !== nativeSessionId) {
+    return wsSend(ws, { type: 'error', message: 'Pi 会话文件无效或已损坏' });
+  }
+
+  let existingSession = null;
+  try {
+    for (const file of fs.readdirSync(SESSIONS_DIR).filter((name) => name.endsWith('.json'))) {
+      try {
+        const session = normalizeSession(JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf8')));
+        if (sessionHasRuntimeId(session, 'pi', nativeSessionId)) {
+          existingSession = session;
+          break;
+        }
+      } catch {}
+    }
+  } catch {}
+
+  if (existingSession && activeProcesses.has(existingSession.id)) {
+    return wsSend(ws, { type: 'error', message: '该 Pi 会话正在运行，请结束当前轮次后再重新导入' });
+  }
+  if (existingSession) disposePiRpcRuntime(existingSession.id, 'session_reimported');
+
+  const id = existingSession?.id || crypto.randomUUID();
+  let importedPath;
+  try {
+    importedPath = copyPiSessionIntoWebStorage(sourcePath, id, nativeSessionId);
+  } catch (error) {
+    return wsSend(ws, { type: 'error', message: `复制 Pi 会话失败：${error.message || error}` });
+  }
+
+  const now = new Date().toISOString();
+  const session = normalizeSession({
+    id,
+    title: parsed.meta.title || existingSession?.title || nativeSessionId.slice(0, 20),
+    created: existingSession?.created || parsed.meta.createdAt || now,
+    updated: now,
+    agent: 'pi',
+    claudeSessionId: null,
+    codexThreadId: null,
+    piSessionId: nativeSessionId,
+    runtimeContexts: existingSession?.runtimeContexts || { claude: {}, codex: {}, pi: {} },
+    importedFrom: 'pi',
+    importedPiSessionPath: importedPath,
+    importedPiSourcePath: sourcePath,
+    model: existingSession?.model || null,
+    thinking: existingSession?.thinking || parsed.meta.thinkingLevel || null,
+    permissionMode: existingSession?.permissionMode || 'yolo',
+    totalCost: parsed.totalCost || 0,
+    totalUsage: parsed.totalUsage,
+    messages: parsed.messages,
+    cwd: parsed.meta.cwd || existingSession?.cwd || null,
+    projectId: existingSession?.projectId || null,
+  });
+  const piConfig = loadPiConfig();
+  const descriptor = buildPiRuntimeChannelDescriptor(session, { piConfig });
+  const channelKey = buildRuntimeChannelKey('pi', descriptor);
+  setRuntimeSessionState(session, {
+    runtimeId: nativeSessionId,
+    runtimeFingerprint: getPiRuntimeFingerprint(piConfig),
+    channelDescriptor: descriptor,
+  }, {
+    agent: 'pi',
+    channelKey,
+    channelDescriptor: descriptor,
+  });
+  if (session.cwd && !session.projectId) {
+    const ensured = ensureProjectForPath(session.cwd);
+    if (ensured.project?.id) session.projectId = ensured.project.id;
+  }
+  saveSession(session);
+  wsSessionMap.set(ws, id);
+  wsSend(ws, {
+    type: 'session_info',
+    sessionId: id,
+    messages: session.messages,
+    title: session.title,
+    mode: session.permissionMode,
+    model: sessionModelLabel(session),
+    agent: 'pi',
+    cwd: session.cwd,
+    projectId: session.projectId,
+    totalCost: session.totalCost,
+    totalUsage: session.totalUsage,
     updated: session.updated,
     hasUnread: false,
     historyPending: false,
@@ -9229,6 +12262,12 @@ plog('INFO', 'server_start', {
   piTransport: PI_TRANSPORT,
   piRpcIdleTimeoutMinutes: PI_RPC_IDLE_TIMEOUT_MINUTES,
   maxPiRpcRuntimes: MAX_PI_RPC_RUNTIMES,
+  codexTransport: CODEX_TRANSPORT,
+  codexAppIdleTimeoutMinutes: CODEX_APP_IDLE_TIMEOUT_MINUTES,
+  maxCodexAppRuntimes: MAX_CODEX_APP_RUNTIMES,
+  claudeTransport: CLAUDE_TRANSPORT,
+  claudeStreamIdleTimeoutMinutes: CLAUDE_STREAM_IDLE_TIMEOUT_MINUTES,
+  maxClaudeStreamRuntimes: MAX_CLAUDE_STREAM_RUNTIMES,
 });
 
 server.listen(PORT, HOST, () => {
@@ -9238,7 +12277,8 @@ server.listen(PORT, HOST, () => {
     if (!envVal || envVal === resolved) return;
     // Only warn when an explicit path was broken (not when a bare name was expanded to absolute).
     const looksLikePath = path.isAbsolute(envVal) || envVal.includes('/') || envVal.includes('\\');
-    if (looksLikePath) {
+    const configuredPath = path.isAbsolute(envVal) ? envVal : path.resolve(__dirname, envVal);
+    if (looksLikePath && !isExecutablePath(configuredPath)) {
       console.warn(`[webcoding] ${name} env "${envVal}" is missing/unusable; using "${resolved}"`);
     }
   }
@@ -9259,3 +12299,19 @@ server.listen(PORT, HOST, () => {
     }
   }
 });
+
+let shutdownStarted = false;
+function shutdownServer(signal) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  plog('INFO', 'server_shutdown', { signal });
+  for (const runtime of [...piRpcRuntimes.values()]) disposePiRpcRuntime(runtime.sessionId, 'server_shutdown');
+  for (const runtime of [...codexAppRuntimes.values()]) disposeCodexAppRuntime(runtime.sessionId, 'server_shutdown');
+  for (const runtime of [...claudeStreamRuntimes.values()]) disposeClaudeStreamRuntime(runtime.sessionId, 'server_shutdown');
+  server.close(() => process.exit(0));
+  const forceTimer = setTimeout(() => process.exit(0), 2500);
+  forceTimer.unref?.();
+}
+
+process.on('SIGTERM', () => shutdownServer('SIGTERM'));
+process.on('SIGINT', () => shutdownServer('SIGINT'));

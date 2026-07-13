@@ -6,13 +6,13 @@
   const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   const RENDER_DEBOUNCE = 100;
 
-  // Claude Code model entries — matches real /model output
+  // Stable Claude aliases; concrete model ids come from the server/runtime config.
   const CLAUDE_MODEL_ENTRIES = [
-    { alias: 'default', value: 'default', label: '默认（推荐）', desc: '使用默认模型（当前为 Sonnet 4.6）', pricing: '输入/输出 $3 / $15 / 百万 Token' },
-    { alias: 'sonnet[1m]', value: 'sonnet[1m]', label: 'Sonnet（1M 上下文）', desc: 'Sonnet 4.6，适合长上下文会话', pricing: '输入/输出 $3 / $15 / 百万 Token' },
-    { alias: 'opus', value: 'opus', label: 'Opus', desc: 'Opus 4.6，复杂任务能力最强', pricing: '输入/输出 $5 / $25 / 百万 Token' },
-    { alias: 'opus[1m]', value: 'opus[1m]', label: 'Opus（1M 上下文）', desc: 'Opus 4.6，支持 1M 上下文，适合复杂任务', pricing: '输入/输出 $5 / $25 / 百万 Token' },
-    { alias: 'haiku', value: 'haiku', label: 'Haiku', desc: 'Haiku 4.5，响应最快，适合快速问答', pricing: '输入/输出 $1 / $5 / 百万 Token' },
+    { alias: 'default', value: 'default', label: '默认（推荐）', desc: '使用当前 Claude Code 或提供商配置的默认模型' },
+    { alias: 'sonnet[1m]', value: 'sonnet[1m]', label: 'Sonnet（1M 上下文）', desc: '使用当前 Sonnet 映射并启用 1M 上下文' },
+    { alias: 'opus', value: 'opus', label: 'Opus', desc: '使用当前 Opus 模型映射' },
+    { alias: 'opus[1m]', value: 'opus[1m]', label: 'Opus（1M 上下文）', desc: '使用当前 Opus 映射并启用 1M 上下文' },
+    { alias: 'haiku', value: 'haiku', label: 'Haiku', desc: '使用当前 Haiku 模型映射' },
   ];
 
   // Slash menu is populated from server discovery (platform + CLI + filesystem).
@@ -24,13 +24,6 @@
     default: '默认',
     plan: 'Plan',
     yolo: 'YOLO',
-  };
-
-  // Honest mode descriptions — must match server PERMISSION_MODE_META / CLI flags.
-  const MODE_TOOLTIPS = {
-    yolo: 'YOLO：跳过审批与沙箱限制（Claude bypassPermissions / Codex dangerously-bypass）',
-    default: '默认：CLI 默认自动策略（Codex --full-auto；非网页人工审批）',
-    plan: 'Plan：规划/只读向（Claude plan / Codex read-only；非完整计划确认 UI）',
   };
 
   const AGENT_LABELS = {
@@ -75,13 +68,6 @@
     default: '默认主题',
     localhost: '极简主题',
   };
-
-  const MODE_PICKER_OPTIONS = [
-    { value: 'yolo', label: 'YOLO', desc: '跳过审批与沙箱限制' },
-    { value: 'default', label: '默认', desc: 'CLI 默认自动策略（非网页审批）' },
-    { value: 'plan', label: 'Plan', desc: '规划/只读向（非完整计划确认 UI）' },
-  ];
-
 
   // --- State ---
   let ws = null;
@@ -2131,9 +2117,9 @@
   }
 
   function supportsPiNativeStreamingQueue() {
-    return sessionState.currentAgent === 'pi'
-      && currentRuntimeCapabilities?.protocol === 'pi-rpc'
-      && currentRuntimeCapabilities?.nativeStreamingQueue === true;
+    return currentRuntimeCapabilities?.nativeStreamingQueue === true
+      && Array.isArray(currentRuntimeCapabilities?.streamingBehaviors)
+      && currentRuntimeCapabilities.streamingBehaviors.length > 0;
   }
 
   function isPiNativeStreamingQueueActive() {
@@ -2145,7 +2131,12 @@
   }
 
   function syncPiQueueModeButtons() {
+    const supported = new Set(currentRuntimeCapabilities?.streamingBehaviors || []);
+    if (!supported.has(piStreamingBehavior) && supported.size > 0) {
+      piStreamingBehavior = supported.values().next().value;
+    }
     piQueueModeButtons.forEach((button) => {
+      button.hidden = supported.size > 0 && !supported.has(button.dataset.streamingBehavior);
       const active = button.dataset.streamingBehavior === piStreamingBehavior;
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -2468,11 +2459,7 @@
   }
 
   function isActivePlanTurn() {
-    // Only the spawn-time mode allows mid-turn Plan confirm input.
-    const turnMode = composeState.isGenerating
-      ? (composeState.activeTurnMode || sessionState.currentMode)
-      : sessionState.currentMode;
-    return turnMode === 'plan' && sessionState.currentAgent === 'claude';
+    return currentRuntimeCapabilities?.midTurnPlanInput === true;
   }
 
   function canDispatchQueueItem(item, options = {}) {
@@ -2482,7 +2469,7 @@
 
     const forCurrent = isQueueItemForCurrentView(item);
     const isCommand = String(item.text || '').startsWith('/');
-    const isPiNativeQueueItem = item.agent === 'pi'
+    const isPiNativeQueueItem = item.agent === sessionState.currentAgent
       && (item.streamingBehavior === 'steer' || item.streamingBehavior === 'followUp')
       && supportsPiNativeStreamingQueue();
     const allowWhileGenerating = options.allowWhileGenerating === true || isCommand || isPiNativeQueueItem;
@@ -2763,8 +2750,8 @@
         if (isUsableModelId(tpl?.sonnetModel)) return String(tpl.sonnetModel).trim();
         if (isUsableModelId(tpl?.opusModel)) return String(tpl.opusModel).trim();
       }
-      // Claude Code default when no override is configured.
-      return 'claude-sonnet-4-6';
+      // Local Claude resolves aliases at runtime; wait for the CLI's actual model id.
+      return '';
     }
     if (normalized === 'codex') {
       const cfg = codexConfigCache;
@@ -2913,13 +2900,13 @@
     // Sync mode tabs + honest tooltips
     document.querySelectorAll('.mode-tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.mode === sessionState.currentMode);
-      const tip = MODE_TOOLTIPS[btn.dataset.mode];
+      const tip = getModeTooltip(btn.dataset.mode);
       if (tip) btn.title = tip;
     });
     const mobileModeSelect = document.getElementById('mobile-mode-select');
     if (mobileModeSelect) {
       Array.from(mobileModeSelect.options || []).forEach((opt) => {
-        const tip = MODE_TOOLTIPS[opt.value];
+        const tip = getModeTooltip(opt.value);
         if (tip) opt.title = tip;
       });
     }
@@ -2936,6 +2923,37 @@
     if (chatAgentContext) {
       chatAgentContext.textContent = `当前对话：${currentAgentLabel} · 新建默认：${selectedAgentLabel}`;
     }
+  }
+
+  function getModeTooltip(mode) {
+    const agent = sessionState.currentSessionId ? sessionState.currentAgent : selectedAgent;
+    if (mode === 'yolo') {
+      if (agent === 'codex') return 'YOLO：Codex 跳过审批与沙箱限制';
+      if (agent === 'pi') return 'YOLO：Pi 信任项目本地扩展和技能（--approve），工具不受限';
+      return 'YOLO：Claude 跳过权限检查（bypassPermissions）';
+    }
+    if (mode === 'plan') {
+      if (agent === 'codex') return 'Plan：Codex 原生 Plan 协作模式 + 只读沙箱';
+      if (agent === 'pi') return 'Plan：Pi 仅启用 read、grep、find、ls 只读工具';
+      return 'Plan：Claude 原生 plan 权限模式';
+    }
+    if (agent === 'codex') {
+      return currentRuntimeCapabilities?.interactiveApproval === false
+        ? '默认：Codex exec 自动策略（兼容模式不支持网页审批）'
+        : '默认：Codex workspace-write；需要确认时在网页显示审批';
+    }
+    if (agent === 'pi') return '默认：Pi 使用完整工具，但忽略项目本地扩展和技能的自动信任（--no-approve）';
+    return currentRuntimeCapabilities?.interactiveApproval === false
+      ? '默认：Claude 使用兼容单轮模式，无法在网页回应权限请求'
+      : '默认：Claude 使用原生权限流程；审批和用户问题会在网页中显示';
+  }
+
+  function getModePickerOptions() {
+    return ['yolo', 'default', 'plan'].map((value) => ({
+      value,
+      label: MODE_LABELS[value],
+      desc: getModeTooltip(value),
+    }));
   }
 
   function getSavedModeForAgent(agent) {
@@ -3032,6 +3050,7 @@
     updateAgentScopedUI();
     syncComposerRuntimeControls();
     chatTitle.textContent = '新会话';
+    document.title = 'Webcoding';
     updateCwdBadge();
     messagesDiv.innerHTML = buildWelcomeMarkup(baseAgent);
     setStatsDisplay(null);
@@ -3089,6 +3108,7 @@
     sessionState.loadedHistorySessionId = snapshot.sessionId;
     setLastSessionForAgent(snapshot.agent, sessionState.currentSessionId);
     chatTitle.textContent = snapshot.title || '新会话';
+    document.title = `${snapshot.title || '新会话'} · Webcoding`;
     setCurrentAgent(snapshot.agent);
     requestSlashCommands(snapshot.agent);
     setCurrentSessionRunningState(snapshot.isRunning);
@@ -3177,6 +3197,7 @@
 
   function beginSessionSwitch(sessionId, options = {}) {
     if (!sessionId) return;
+    closePiForkPicker();
     const blocking = options.blocking !== false;
     const force = options.force === true;
     if (!force && sessionState.activeSessionLoad?.sessionId === sessionId) return;
@@ -3305,12 +3326,12 @@
     // Detect absolute local file paths (e.g. /Users/... or /home/...)
     const rawHref = String(href || '').trim();
     if (/^\/[A-Za-z]/.test(rawHref) && !rawHref.startsWith('//')) {
-      return `<a href="#" class="local-file-link" data-path="${escapeHtml(rawHref)}" onclick="ccCopyFilePath(this);return false;" title="点击复制路径">${text || escapeHtml(rawHref)}</a>`;
+      return `<a href="#" class="local-file-link" data-path="${escapeHtml(rawHref)}" data-markdown-action="copy-file" title="点击复制路径">${text || escapeHtml(rawHref)}</a>`;
     }
     // Detect relative local file paths with a known extension when cwd is available
     if (sessionState.currentCwd && /^[^/#?][^#?]*\.[a-zA-Z0-9]+$/.test(rawHref) && !/^https?:\/\//i.test(rawHref)) {
       const absPath = sessionState.currentCwd.replace(/\/$/, '') + '/' + rawHref;
-      return `<a href="#" class="local-file-link" data-path="${escapeHtml(absPath)}" onclick="ccCopyFilePath(this);return false;" title="点击复制路径">${text || escapeHtml(rawHref)}</a>`;
+      return `<a href="#" class="local-file-link" data-path="${escapeHtml(absPath)}" data-markdown-action="copy-file" title="点击复制路径">${text || escapeHtml(rawHref)}</a>`;
     }
     const safeHref = normalizeSafeHref(href, { externalOnly: false, allowRelative: true });
     if (!safeHref) return text || '';
@@ -3343,7 +3364,7 @@
     const btnLabel = canRender ? '查看' : '预览';
     const renderType = canPreview ? 'html' : ((['md','markdown'].includes(lang)) ? 'md' : lang);
     const actionBtn = hasAction
-      ? `<button class="code-preview-btn" onclick="ccTogglePreview(this)">${btnLabel}</button>`
+      ? `<button class="code-preview-btn" data-markdown-action="preview">${btnLabel}</button>`
       : '';
     const previewPane = canPreview
       ? `<div class="code-preview-pane"><iframe class="code-preview-iframe" sandbox="allow-same-origin" loading="lazy" referrerpolicy="no-referrer"></iframe></div>`
@@ -3355,7 +3376,7 @@
     return `<div class="code-block-wrapper${hasAction ? ' has-preview' : ''}"${hasAction ? ` data-cid="${cid}"` : ''}>
       <div class="code-block-header">
         <span>${escapeHtml(lang)}</span>
-        <div class="code-block-actions">${actionBtn}<button class="code-copy-btn" onclick="ccCopyCode(this)">复制</button></div>
+        <div class="code-block-actions">${actionBtn}<button class="code-copy-btn" data-markdown-action="copy-code">复制</button></div>
       </div>
       ${previewPane}<pre><code class="hljs language-${escapeHtml(lang)}">${highlighted}</code></pre>
     </div>`;
@@ -3466,6 +3487,22 @@
     copy(filePath);
   };
 
+  messagesDiv.addEventListener('click', (event) => {
+    const control = event.target instanceof Element
+      ? event.target.closest('[data-markdown-action]')
+      : null;
+    if (!control || !messagesDiv.contains(control)) return;
+    const action = control.dataset.markdownAction;
+    if (action === 'copy-file') {
+      event.preventDefault();
+      window.ccCopyFilePath(control);
+    } else if (action === 'preview') {
+      window.ccTogglePreview(control);
+    } else if (action === 'copy-code') {
+      window.ccCopyCode(control);
+    }
+  });
+
   // --- WebSocket ---
   function connect() {
     if (connectionState.ws && (connectionState.ws.readyState === WebSocket.CONNECTING || connectionState.ws.readyState === WebSocket.OPEN)) return;
@@ -3502,6 +3539,7 @@
     };
 
     connectionState.ws.onclose = () => {
+      closePiForkPicker();
       clearSessionLoading();
       scheduleReconnect();
     };
@@ -3669,6 +3707,19 @@
 
   function handleSessionInfoMessage(msg) {
     const snapshot = normalizeSessionSnapshot(msg);
+    if (msg.forked === true && msg.agent === 'pi') {
+      queueMicrotask(() => {
+        if (sessionState.currentSessionId !== msg.sessionId) return;
+        closePiForkPicker();
+        const draftText = String(msg.draftText || '');
+        if (draftText) {
+          msgInput.value = draftText;
+          autoResize();
+          msgInput.focus();
+        }
+        showToast(draftText ? 'Pi 分支已创建，原提示可修改后发送' : 'Pi 分支已创建');
+      });
+    }
 
     // Imported sessions bypass the stale-response guard so the user always
     // sees the result of a deliberate import action, regardless of whether
@@ -3917,6 +3968,250 @@
     }
   }
 
+  function handleEffortListMessage(msg) {
+    if (msg.sessionId && msg.sessionId !== sessionState.currentSessionId) return;
+    const agent = normalizeAgent(msg.agent || sessionState.currentAgent);
+    const options = Array.isArray(msg.entries) ? msg.entries : [];
+    if (options.length === 0) {
+      appendError('当前 CLI 没有返回可用的推理强度。');
+      return;
+    }
+    const command = msg.command === 'thinking' ? 'thinking' : 'effort';
+    const title = agent === 'pi' ? '选择 Pi 思考级别' : `选择 ${AGENT_LABELS[agent]} 推理强度`;
+    showOptionPicker(title, options, msg.current || 'default', (value) => {
+      send({
+        type: 'message',
+        text: `/${command} ${value}`,
+        sessionId: sessionState.currentSessionId,
+        mode: sessionState.currentMode,
+        agent,
+      });
+    });
+  }
+
+  function handlePiExtensionUiMessage(msg) {
+    if (!isEventForCurrentSession(msg)) return;
+    const method = String(msg.method || '');
+    if (method === 'set_editor_text') {
+      msgInput.value = String(msg.text || '');
+      autoResize();
+      msgInput.focus();
+      showToast('Pi 扩展已更新输入框');
+      return;
+    }
+    if (method === 'setTitle') {
+      const title = String(msg.title || '').trim();
+      document.title = title ? `${title} · Webcoding` : `${chatTitle.textContent || 'Webcoding'} · Webcoding`;
+      return;
+    }
+    if (method !== 'setStatus' && method !== 'setWidget') return;
+    const key = `${method}:${String(msg.key || method)}`;
+    const existing = Array.from(messagesDiv.querySelectorAll('.pi-extension-ui-msg'))
+      .find((element) => element.dataset.piUiKey === key);
+    const bodyText = method === 'setStatus'
+      ? String(msg.text || '')
+      : (Array.isArray(msg.lines) ? msg.lines.map(String).join('\n') : '');
+    if (!bodyText) {
+      existing?.remove();
+      return;
+    }
+    const host = existing || createMsgElement('system', '');
+    host.classList.add('pi-extension-ui-msg');
+    host.dataset.piUiKey = key;
+    const bubble = host.querySelector('.msg-bubble');
+    if (!bubble) return;
+    bubble.innerHTML = '';
+    const title = document.createElement('div');
+    title.className = 'pi-extension-ui-title';
+    title.textContent = method === 'setStatus'
+      ? `Pi 状态 · ${msg.key || 'status'}`
+      : `Pi 扩展 · ${msg.key || 'widget'}`;
+    const body = document.createElement('div');
+    body.className = 'pi-extension-ui-body';
+    body.textContent = bodyText;
+    bubble.append(title, body);
+    if (!existing) messagesDiv.appendChild(host);
+    maybeScrollToBottom();
+  }
+
+  function closePiForkPicker() {
+    const overlay = document.getElementById('pi-fork-overlay');
+    if (!overlay) return;
+    if (typeof overlay._closePiForkPicker === 'function') overlay._closePiForkPicker();
+    else overlay.remove();
+  }
+
+  function markPiForkPickerError(sessionId, message) {
+    const overlay = document.getElementById('pi-fork-overlay');
+    if (!overlay || (sessionId && overlay.dataset.sessionId !== String(sessionId))) return;
+    const submit = overlay.querySelector('#pi-fork-submit');
+    const status = overlay.querySelector('#pi-fork-status');
+    if (submit) {
+      submit.disabled = false;
+      submit.textContent = '创建分支';
+    }
+    if (status) {
+      status.textContent = String(message || '创建分支失败，请重试');
+      status.className = 'pi-fork-status error';
+    }
+  }
+
+  function showPiForkPicker(msg) {
+    if (!msg?.sessionId || msg.sessionId !== sessionState.currentSessionId) return;
+    closePiForkPicker();
+    const options = (Array.isArray(msg.options) ? msg.options : [])
+      .map((option, index) => ({
+        entryId: String(option?.entryId || '').trim(),
+        text: String(option?.text || '').trim(),
+        order: index + 1,
+      }))
+      .filter((option) => option.entryId && option.text)
+      .reverse();
+    if (options.length === 0) {
+      appendSystemMessage('当前 Pi 会话还没有可作为分支起点的用户消息。');
+      return;
+    }
+
+    const created = createOverlayPanel({
+      overlayClass: 'modal-overlay',
+      overlayId: 'pi-fork-overlay',
+      panelClass: 'modal-panel modal-panel-wide pi-fork-modal',
+      panelHtml: `
+        <div class="modal-header">
+          <span class="modal-title">选择 Pi 分支起点</span>
+          <button type="button" class="modal-close-btn" id="pi-fork-close" aria-label="关闭">×</button>
+        </div>
+        <div class="modal-body pi-fork-body">
+          <input type="search" id="pi-fork-search" class="modal-text-input pi-fork-search" placeholder="搜索历史用户消息…" autocomplete="off" spellcheck="false">
+          <div class="pi-fork-list-meta" id="pi-fork-list-meta"></div>
+          <div class="pi-fork-list" id="pi-fork-list" role="listbox" aria-label="历史用户消息"></div>
+          <div class="modal-empty" id="pi-fork-empty" hidden>没有匹配的历史消息</div>
+          <div class="pi-fork-status" id="pi-fork-status" aria-live="polite"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="modal-btn-secondary" id="pi-fork-cancel">取消</button>
+          <button type="button" class="modal-btn-primary" id="pi-fork-submit">创建分支</button>
+        </div>
+      `,
+    });
+    const { overlay, panel } = created;
+    overlay.dataset.sessionId = String(msg.sessionId);
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-labelledby', 'pi-fork-title');
+    panel.querySelector('.modal-title')?.setAttribute('id', 'pi-fork-title');
+
+    const search = panel.querySelector('#pi-fork-search');
+    const list = panel.querySelector('#pi-fork-list');
+    const empty = panel.querySelector('#pi-fork-empty');
+    const meta = panel.querySelector('#pi-fork-list-meta');
+    const submit = panel.querySelector('#pi-fork-submit');
+    const status = panel.querySelector('#pi-fork-status');
+    let selectedEntryId = options[0].entryId;
+    let visibleOptions = options.slice();
+
+    const close = () => {
+      document.removeEventListener('keydown', onDocumentKeydown);
+      overlay.remove();
+    };
+    overlay._closePiForkPicker = close;
+
+    function selectEntry(entryId, focus = false) {
+      selectedEntryId = entryId;
+      list.querySelectorAll('.pi-fork-option').forEach((button) => {
+        const selected = button._entryId === selectedEntryId;
+        button.classList.toggle('selected', selected);
+        button.setAttribute('aria-selected', selected ? 'true' : 'false');
+        if (selected && focus) {
+          button.focus({ preventScroll: true });
+          button.scrollIntoView({ block: 'nearest' });
+        }
+      });
+      submit.disabled = !selectedEntryId;
+    }
+
+    function submitSelection() {
+      if (!selectedEntryId || submit.disabled) return;
+      submit.disabled = true;
+      submit.textContent = '正在创建…';
+      status.textContent = '';
+      status.className = 'pi-fork-status';
+      if (!send({
+        type: 'fork_pi_session',
+        sessionId: msg.sessionId,
+        entryId: selectedEntryId,
+      })) {
+        submit.disabled = false;
+        submit.textContent = '创建分支';
+      }
+    }
+
+    function renderOptions() {
+      const query = String(search.value || '').trim().toLocaleLowerCase();
+      visibleOptions = options.filter((option) => !query || option.text.toLocaleLowerCase().includes(query));
+      if (!visibleOptions.some((option) => option.entryId === selectedEntryId)) {
+        selectedEntryId = visibleOptions[0]?.entryId || '';
+      }
+      list.innerHTML = '';
+      const fragment = document.createDocumentFragment();
+      visibleOptions.forEach((option) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'pi-fork-option';
+        button.setAttribute('role', 'option');
+        button._entryId = option.entryId;
+
+        const order = document.createElement('span');
+        order.className = 'pi-fork-option-order';
+        order.textContent = String(option.order);
+        const text = document.createElement('span');
+        text.className = 'pi-fork-option-text';
+        text.textContent = option.text;
+        button.append(order, text);
+        button.addEventListener('click', () => selectEntry(option.entryId));
+        button.addEventListener('dblclick', submitSelection);
+        fragment.appendChild(button);
+      });
+      list.appendChild(fragment);
+      empty.hidden = visibleOptions.length > 0;
+      list.hidden = visibleOptions.length === 0;
+      const total = Number.isFinite(Number(msg.total)) ? Number(msg.total) : options.length;
+      meta.textContent = msg.truncated
+        ? `显示最近 ${options.length} 条，共 ${total} 条`
+        : `共 ${total} 条`;
+      selectEntry(selectedEntryId);
+    }
+
+    function onDocumentKeydown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.isComposing || !['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return;
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submitSelection();
+        return;
+      }
+      if (visibleOptions.length === 0) return;
+      event.preventDefault();
+      let index = visibleOptions.findIndex((option) => option.entryId === selectedEntryId);
+      if (index < 0) index = 0;
+      else index = (index + (event.key === 'ArrowDown' ? 1 : -1) + visibleOptions.length) % visibleOptions.length;
+      selectEntry(visibleOptions[index].entryId, true);
+    }
+
+    search.addEventListener('input', renderOptions);
+    submit.addEventListener('click', submitSelection);
+    panel.querySelector('#pi-fork-close')?.addEventListener('click', close);
+    panel.querySelector('#pi-fork-cancel')?.addEventListener('click', close);
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+    document.addEventListener('keydown', onDocumentKeydown);
+    renderOptions();
+    requestAnimationFrame(() => search.focus());
+  }
+
   function handleResumeGeneratingMessage(msg) {
     if (!isEventForCurrentSession(msg)) return;
     setCurrentSessionRunningState(true);
@@ -4006,6 +4301,7 @@
     // Do not wait for ack timeout when the server already rejected the turn.
     failInflightAcksForSession(msg.sessionId || sessionState.currentSessionId, 'failed');
     const errorMsg = msg.message || '发生未知错误';
+    markPiForkPickerError(msg.sessionId, errorMsg);
     appendError(errorMsg);
     // Surface important failures in the persistent top banner.
     const lower = errorMsg.toLowerCase();
@@ -4144,6 +4440,8 @@
     mode_changed: handleModeChangedMessage,
     model_changed: handleModelChangedMessage,
     model_list: handleModelListMessage,
+    effort_list: handleEffortListMessage,
+    pi_extension_ui: handlePiExtensionUiMessage,
     resume_generating: handleResumeGeneratingMessage,
     error: handleErrorMessage,
     notify_config: (msg) => {
@@ -4169,6 +4467,8 @@
     force_logout: handleForcedLogout,
     native_sessions: (msg) => { if (typeof _onNativeSessions === 'function') _onNativeSessions(msg.groups || []); },
     codex_sessions: (msg) => { if (typeof _onCodexSessions === 'function') _onCodexSessions(msg.groups || []); },
+    pi_sessions: (msg) => { if (typeof _onPiSessions === 'function') _onPiSessions(msg.groups || []); },
+    pi_fork_options: showPiForkPicker,
     cwd_suggestions: (msg) => { if (typeof _onCwdSuggestions === 'function') _onCwdSuggestions(msg.paths || []); },
     directory_listing: (msg) => { if (typeof _onDirectoryListing === 'function') _onDirectoryListing(msg); },
     update_info: (msg) => { if (typeof window._ccOnUpdateInfo === 'function') window._ccOnUpdateInfo(msg); },
@@ -4196,6 +4496,7 @@
     currentRuntimeCapabilities = msg.capabilities && typeof msg.capabilities === 'object'
       ? { ...msg.capabilities }
       : null;
+    updateAgentScopedUI();
     syncComposerRuntimeControls();
     updateSendQueueIndicator();
     scheduleFlushSendQueue(0);
@@ -5577,6 +5878,11 @@
 
   function handleInteractiveRequestMessage(msg) {
     if (!isEventForCurrentSession(msg)) return;
+    if (msg.requestId) {
+      const duplicate = Array.from(messagesDiv.querySelectorAll('.interactive-request-msg'))
+        .find((item) => item.dataset.requestId === String(msg.requestId));
+      if (duplicate && !duplicate.querySelector('.interactive-request-card.is-resolved')) return;
+    }
     const host = document.createElement('div');
     host.className = 'msg system interactive-request-msg';
     if (msg.requestId) host.dataset.requestId = msg.requestId;
@@ -5584,16 +5890,17 @@
     bubble.className = 'msg-bubble interactive-request-card';
     const kind = msg.interactiveKind || 'interactive';
     const respondable = msg.respondable === true && msg.requestId;
+    const agentLabel = AGENT_LABELS[normalizeAgent(msg.agent || sessionState.currentAgent)] || 'Agent';
     const title = document.createElement('div');
     title.className = 'interactive-request-title';
     title.textContent = respondable
-      ? (msg.title || `Pi 需要交互（${kind}）`)
+      ? (msg.title || `${agentLabel} 需要交互（${kind}）`)
       : `需要交互（${kind}）· 网页暂无法回应`;
     const body = document.createElement('div');
     body.className = 'interactive-request-body';
     body.textContent = msg.message || msg.summary || (respondable
       ? '请选择或输入回复。'
-      : 'CLI 发出了交互请求，headless 模式无法双向回应。');
+      : 'CLI 发出了交互请求，当前协议无法双向回应。');
     const actions = document.createElement('div');
     actions.className = 'interactive-request-actions';
 
@@ -5655,13 +5962,26 @@
 
     bubble.appendChild(title);
     bubble.appendChild(body);
+    if (respondable && msg.url) {
+      const safeUrl = normalizeSafeHref(msg.url, { externalOnly: true, allowRelative: false });
+      if (safeUrl) {
+        const link = document.createElement('a');
+        link.className = 'interactive-request-link';
+        link.href = safeUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = '打开授权页面';
+        bubble.appendChild(link);
+      }
+    }
 
     if (respondable && kind === 'select') {
       actions.classList.add('interactive-request-options');
       for (const option of Array.isArray(msg.options) ? msg.options : []) {
         const value = typeof option === 'string' ? option : String(option?.value ?? option?.label ?? '');
+        const label = typeof option === 'string' ? option : String(option?.label ?? option?.value ?? '');
         if (!value) continue;
-        addAction(value, 'interactive-request-action', () => finish({ value }, `已选择：${value}`));
+        addAction(label || value, 'interactive-request-action', () => finish({ value }, `已选择：${label || value}`));
       }
       addAction('取消', 'interactive-request-action secondary', () => finish({ cancelled: true }, '已取消'));
     } else if (respondable && kind === 'confirm') {
@@ -5684,6 +6004,151 @@
         }
       });
       requestAnimationFrame(() => input.focus());
+    } else if (respondable && kind === 'questions') {
+      const questions = Array.isArray(msg.questions) ? msg.questions : [];
+      const form = document.createElement('div');
+      form.className = 'interactive-request-questions';
+      const controls = new Map();
+      questions.forEach((question, questionIndex) => {
+        const questionId = String(question.id ?? `question-${questionIndex + 1}`);
+        const field = document.createElement('fieldset');
+        field.className = 'interactive-request-question';
+        const legend = document.createElement('legend');
+        legend.textContent = question.header || question.question || `问题 ${questionIndex + 1}`;
+        field.appendChild(legend);
+        if (question.question && question.question !== legend.textContent) {
+          const prompt = document.createElement('div');
+          prompt.className = 'interactive-request-question-text';
+          prompt.textContent = question.question;
+          field.appendChild(prompt);
+        }
+        const options = Array.isArray(question.options) ? question.options : [];
+        if (options.length > 0) {
+          const multiple = question.multiple === true;
+          const defaultValues = new Set((Array.isArray(question.defaultValue)
+            ? question.defaultValue
+            : [question.defaultValue])
+            .filter((value) => value !== undefined && value !== null && value !== '')
+            .map(String));
+          const group = [];
+          options.forEach((option, optionIndex) => {
+            const value = typeof option === 'string' ? option : String(option?.value ?? option?.label ?? '');
+            const labelText = typeof option === 'string' ? option : String(option?.label ?? option?.value ?? '');
+            const description = typeof option === 'string' ? '' : String(option?.description || '');
+            const label = document.createElement('label');
+            label.className = 'interactive-request-choice';
+            const choice = document.createElement('input');
+            choice.type = multiple ? 'checkbox' : 'radio';
+            if (!multiple) choice.name = `${msg.requestId}-${questionIndex}`;
+            choice.value = value;
+            choice.checked = defaultValues.has(value);
+            const textNode = document.createElement('span');
+            textNode.className = 'interactive-request-choice-copy';
+            const optionLabel = document.createElement('span');
+            optionLabel.className = 'interactive-request-choice-label';
+            optionLabel.textContent = labelText || value;
+            textNode.appendChild(optionLabel);
+            if (description) {
+              const optionDescription = document.createElement('span');
+              optionDescription.className = 'interactive-request-choice-description';
+              optionDescription.textContent = description;
+              textNode.appendChild(optionDescription);
+            }
+            label.append(choice, textNode);
+            field.appendChild(label);
+            group.push(choice);
+          });
+          let otherChoice = null;
+          let otherInput = null;
+          if (question.isOther === true) {
+            const other = document.createElement('div');
+            other.className = 'interactive-request-other';
+            const otherLabel = document.createElement('label');
+            otherLabel.className = 'interactive-request-choice';
+            otherChoice = document.createElement('input');
+            otherChoice.type = multiple ? 'checkbox' : 'radio';
+            if (!multiple) otherChoice.name = `${msg.requestId}-${questionIndex}`;
+            const otherText = document.createElement('span');
+            otherText.className = 'interactive-request-choice-label';
+            otherText.textContent = '其他';
+            otherLabel.append(otherChoice, otherText);
+            otherInput = document.createElement('input');
+            otherInput.type = question.isSecret ? 'password' : 'text';
+            otherInput.className = 'interactive-request-input';
+            otherInput.placeholder = '请输入其他答案';
+            otherInput.addEventListener('focus', () => { otherChoice.checked = true; });
+            otherInput.addEventListener('input', () => { otherChoice.checked = true; });
+            other.append(otherLabel, otherInput);
+            field.appendChild(other);
+          }
+          controls.set(questionId, {
+            type: 'choice',
+            controls: group,
+            otherChoice,
+            otherInput,
+            required: question.required !== false,
+            minItems: question.minItems != null && Number.isFinite(Number(question.minItems)) ? Number(question.minItems) : null,
+            maxItems: question.maxItems != null && Number.isFinite(Number(question.maxItems)) ? Number(question.maxItems) : null,
+          });
+        } else {
+          const input = document.createElement('input');
+          input.className = 'interactive-request-input';
+          const supportedTypes = new Set(['number', 'email', 'url', 'date', 'datetime-local']);
+          input.type = question.isSecret
+            ? 'password'
+            : (supportedTypes.has(question.inputType) ? question.inputType : 'text');
+          input.placeholder = question.placeholder || '';
+          input.value = question.defaultValue == null ? '' : String(question.defaultValue);
+          if (question.min != null && Number.isFinite(Number(question.min))) input.min = String(question.min);
+          if (question.max != null && Number.isFinite(Number(question.max))) input.max = String(question.max);
+          if (question.step != null && Number.isFinite(Number(question.step))) input.step = String(question.step);
+          if (question.minLength != null && Number.isInteger(Number(question.minLength)) && Number(question.minLength) >= 0) input.minLength = Number(question.minLength);
+          if (question.maxLength != null && Number.isInteger(Number(question.maxLength)) && Number(question.maxLength) >= 0) input.maxLength = Number(question.maxLength);
+          field.appendChild(input);
+          controls.set(questionId, { type: 'input', control: input, required: question.required !== false });
+        }
+        form.appendChild(field);
+      });
+      bubble.appendChild(form);
+      addAction('提交', 'interactive-request-action primary', () => {
+        const answers = Object.create(null);
+        for (const [id, control] of controls) {
+          let values;
+          if (control.type === 'choice') {
+            values = control.controls.filter((item) => item.checked).map((item) => item.value);
+            if (control.otherChoice?.checked) {
+              const otherValue = String(control.otherInput?.value || '').trim();
+              if (!otherValue) {
+                setStatus('请填写“其他”答案', 'error');
+                control.otherInput?.focus();
+                return;
+              }
+              values.push(otherValue);
+            }
+            if (control.minItems !== null && values.length < control.minItems) {
+              setStatus(`至少选择 ${control.minItems} 项`, 'error');
+              return;
+            }
+            if (control.maxItems !== null && values.length > control.maxItems) {
+              setStatus(`最多选择 ${control.maxItems} 项`, 'error');
+              return;
+            }
+          } else {
+            values = [control.control.value];
+            if (!control.control.checkValidity()) {
+              control.control.reportValidity();
+              return;
+            }
+          }
+          if (control.required && (!values.length || !String(values[0] || '').trim())) {
+            setStatus('请完成所有必填问题', 'error');
+            return;
+          }
+          answers[id] = values;
+        }
+        finish({ answers }, '已提交');
+      });
+      addAction('取消', 'interactive-request-action secondary', () => finish({ cancelled: true }, '已取消'));
     }
 
     if (!respondable) {
@@ -6906,7 +7371,7 @@
       <div class="option-picker-title">${escapeHtml(title)}</div>
       <div class="option-picker-list">
         ${options.map(opt => `
-          <div class="option-picker-item${opt.value === currentValue ? ' active' : ''}" data-value="${opt.value}">
+          <div class="option-picker-item${opt.value === currentValue ? ' active' : ''}" data-value="${escapeHtml(opt.value)}">
             <div class="option-picker-item-info">
               <div class="option-picker-item-label">${escapeHtml(opt.label)}</div>
               <div class="option-picker-item-desc">${escapeHtml(opt.desc)}</div>
@@ -7036,7 +7501,7 @@
       </div>
       <div class="mp-items">${itemsHtml}</div>
       <div class="mp-custom">
-        <input type="text" id="model-custom-input" class="mp-custom-input" placeholder="输入自定义模型 ID，例如 claude-sonnet-4-6">
+        <input type="text" id="model-custom-input" class="mp-custom-input" placeholder="输入模型别名或提供商返回的模型 ID">
       </div>
       <div class="mp-hint">回车确认 \u00b7 Esc 关闭</div>
     `;
@@ -7120,7 +7585,7 @@
   }
 
   function showModePicker() {
-    showOptionPicker('选择权限模式', MODE_PICKER_OPTIONS, sessionState.currentMode, (value) => {
+    showOptionPicker('选择权限模式', getModePickerOptions(), sessionState.currentMode, (value) => {
       sessionState.currentMode = value;
       modeSelect.value = sessionState.currentMode;
       localStorage.setItem(getAgentModeStorageKey(sessionState.currentAgent), sessionState.currentMode);
@@ -7316,7 +7781,7 @@
       if (selectedAgent === 'codex') {
         showImportCodexSessionModal();
       } else if (selectedAgent === 'pi') {
-        appendSystemMessage('Pi 会话导入尚未支持。请新建 Pi 会话，或在终端使用 `pi --resume` 继续本地会话。');
+        showImportPiSessionModal();
       } else {
         showImportSessionModal();
       }
@@ -7460,7 +7925,7 @@
     if (selectedAgent === 'codex') {
       showImportCodexSessionModal();
     } else if (selectedAgent === 'pi') {
-      appendSystemMessage('Pi 会话导入尚未支持。请新建 Pi 会话，或在终端使用 `pi --resume` 继续本地会话。');
+      showImportPiSessionModal();
     } else {
       showImportSessionModal();
     }
@@ -7718,6 +8183,7 @@
 
   // --- Settings Panel ---
   let _onCodexSessions = null;
+  let _onPiSessions = null;
 
   function renderFetchModelsResult(fetchStatus, datalist, result) {
     if (result.success) {
@@ -7947,19 +8413,19 @@
 
       <div class="settings-field">
         <label>默认模型</label>
-        <input type="text" id="unified-template-default" list="unified-template-models" placeholder="例如 claude-sonnet-4-6 / gpt-5.4 / gemini-2.5-pro" value="${escapeHtml(draft.defaultModel || '')}" autocomplete="off">
+        <input type="text" id="unified-template-default" list="unified-template-models" placeholder="输入提供商返回的默认模型 ID" value="${escapeHtml(draft.defaultModel || '')}" autocomplete="off">
       </div>
       <div class="settings-field">
         <label>Opus 模型名</label>
-        <input type="text" id="unified-template-opus" list="unified-template-models" placeholder="claude-opus-4-6" value="${escapeHtml(draft.opusModel || '')}" autocomplete="off">
+        <input type="text" id="unified-template-opus" list="unified-template-models" placeholder="可选：Opus 对应模型 ID" value="${escapeHtml(draft.opusModel || '')}" autocomplete="off">
       </div>
       <div class="settings-field">
         <label>Sonnet 模型名</label>
-        <input type="text" id="unified-template-sonnet" list="unified-template-models" placeholder="claude-sonnet-4-6" value="${escapeHtml(draft.sonnetModel || '')}" autocomplete="off">
+        <input type="text" id="unified-template-sonnet" list="unified-template-models" placeholder="可选：Sonnet 对应模型 ID" value="${escapeHtml(draft.sonnetModel || '')}" autocomplete="off">
       </div>
       <div class="settings-field">
         <label>Haiku 模型名</label>
-        <input type="text" id="unified-template-haiku" list="unified-template-models" placeholder="claude-haiku-4-5" value="${escapeHtml(draft.haikuModel || '')}" autocomplete="off">
+        <input type="text" id="unified-template-haiku" list="unified-template-models" placeholder="可选：Haiku 对应模型 ID" value="${escapeHtml(draft.haikuModel || '')}" autocomplete="off">
       </div>
       <datalist id="unified-template-models"></datalist>
       <div class="settings-inline-note">
@@ -9763,6 +10229,113 @@
     };
 
     send({ type: 'list_codex_sessions' });
+  }
+
+  function showImportPiSessionModal() {
+    if (selectedAgent !== 'pi') return;
+    const modal = createImportSessionsModal({
+      overlayId: 'import-pi-session-overlay',
+      title: '导入本地 Pi 会话',
+      closeBtnId: 'ips-close-btn',
+      bodyId: 'ips-body',
+      agent: 'pi',
+      cardTitle: '从 Pi 原生 JSONL 历史导入',
+      cardCopy: '恢复当前分支的对话、思考过程、工具调用、token 与费用统计，并保留 Pi 原生上下文供下一轮继续。',
+      loadingText: '正在加载 Pi 本地历史…',
+      onClose: () => {
+        _onPiSessions = null;
+      },
+    });
+
+    _onPiSessions = (groups) => {
+      const body = modal.body;
+      if (!body) return;
+      if (!groups || groups.length === 0) {
+        modal.renderEmpty('未找到本地 Pi 会话');
+        return;
+      }
+
+      modal.renderBody();
+      for (const group of groups) {
+        const groupEl = document.createElement('div');
+        groupEl.className = 'import-group import-group-collapsed';
+
+        const groupTitle = document.createElement('div');
+        groupTitle.className = 'import-group-title import-group-title-toggle';
+        groupTitle.textContent = group.cwd || '/unknown';
+        const arrow = document.createElement('span');
+        arrow.className = 'import-group-arrow';
+        arrow.textContent = '▶';
+        groupTitle.prepend(arrow);
+
+        const sessionList = document.createElement('div');
+        sessionList.className = 'import-group-sessions';
+        let sessionsRendered = false;
+        const renderSessions = () => {
+          if (sessionsRendered) return;
+          sessionsRendered = true;
+          for (const sess of group.sessions || []) {
+            const item = document.createElement('div');
+            item.className = 'import-item';
+            const info = document.createElement('div');
+            info.className = 'import-item-info';
+            const titleEl = document.createElement('div');
+            titleEl.className = 'import-item-title';
+            titleEl.textContent = sess.title || sess.sessionId;
+            const meta = document.createElement('div');
+            meta.className = 'import-item-meta';
+            meta.textContent = [
+              Number.isFinite(sess.messageCount) ? `${sess.messageCount} 条记录` : '',
+              sess.updatedAt ? timeAgo(sess.updatedAt) : '',
+            ].filter(Boolean).join(' · ');
+            const tags = document.createElement('div');
+            tags.className = 'import-item-tags';
+            if (sess.modelId) {
+              const model = document.createElement('span');
+              model.className = 'import-item-tag';
+              model.textContent = sess.provider ? `${sess.provider}/${sess.modelId}` : sess.modelId;
+              tags.appendChild(model);
+            }
+            if (sess.thinkingLevel) {
+              const thinking = document.createElement('span');
+              thinking.className = 'import-item-tag';
+              thinking.textContent = `thinking:${sess.thinkingLevel}`;
+              tags.appendChild(thinking);
+            }
+            info.appendChild(titleEl);
+            info.appendChild(meta);
+            if (tags.children.length > 0) info.appendChild(tags);
+
+            const btn = document.createElement('button');
+            btn.className = 'import-item-btn';
+            btn.textContent = sess.alreadyImported ? '重新导入' : '导入';
+            btn.addEventListener('click', () => {
+              const confirmed = sess.alreadyImported
+                ? confirm('已导入过此 Pi 会话，重新导入将覆盖 Web 侧历史。确认继续？')
+                : confirm('将复制并解析此 Pi 会话，之后可在 Web 中继续原生上下文。确认继续？');
+              if (!confirmed) return;
+              modal.close();
+              send({ type: 'import_pi_session', sessionId: sess.sessionId, sessionPath: sess.filePath });
+            });
+
+            item.appendChild(info);
+            item.appendChild(btn);
+            sessionList.appendChild(item);
+          }
+        };
+
+        groupTitle.addEventListener('click', () => {
+          const collapsed = groupEl.classList.toggle('import-group-collapsed');
+          arrow.textContent = collapsed ? '▶' : '▼';
+          if (!collapsed) renderSessions();
+        });
+        groupEl.appendChild(groupTitle);
+        groupEl.appendChild(sessionList);
+        body.appendChild(groupEl);
+      }
+    };
+
+    send({ type: 'list_pi_sessions' });
   }
 
   // --- Helpers ---
