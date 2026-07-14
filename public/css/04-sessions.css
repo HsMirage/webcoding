@@ -631,7 +631,7 @@
   white-space: nowrap;
 }
 .import-item-btn {
-  --nb-btn-bg: var(--blue);
+  --nb-btn-bg: var(--btn-primary-bg);
 
   flex-shrink: 0;
   padding: 6px 14px;
@@ -790,11 +790,14 @@
   touch-action: manipulation;
 }
 .project-picker-action-btn.primary {
-  --nb-btn-bg: var(--blue);
-  color: var(--text-primary);
+  --nb-btn-bg: var(--btn-primary-bg);
+  color: var(--button-primary-text);
 }
 .project-picker-action-btn.secondary {
   --nb-btn-bg: var(--bg-secondary);
+  --nb-btn-color: var(--button-secondary-text);
+  --nb-btn-hover-bg: var(--button-secondary-hover);
+  --nb-btn-hover-color: var(--button-secondary-text);
   color: var(--text-primary);
 }
 .project-picker-action-btn:hover {

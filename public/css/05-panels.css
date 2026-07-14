@@ -557,6 +557,9 @@
 }
 .settings-actions .btn-test {
   --nb-btn-bg: var(--bg-secondary);
+  --nb-btn-color: var(--button-secondary-text);
+  --nb-btn-hover-bg: var(--button-secondary-hover);
+  --nb-btn-hover-color: var(--button-secondary-text);
 }
 .settings-actions .btn-test:hover {
   /* keep explicit block for readability with shared button base */
@@ -633,7 +636,7 @@
   margin-bottom: 10px;
 }
 .fc-submit-btn {
-  --nb-btn-bg: var(--blue);
+  --nb-btn-bg: var(--btn-primary-bg);
   --nb-btn-font-size: 12px;
   --nb-btn-shadow: 3px 3px 0 var(--line);
 
@@ -642,7 +645,8 @@
   margin-top: 6px;
 }
 .fc-submit-btn:hover:not(:disabled) {
-  background: var(--yellow);
+  background: var(--btn-primary-hover);
+  color: var(--button-primary-text);
   box-shadow: none;
 }
 .fc-submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -2048,6 +2052,9 @@ body.git-panel-resizing * {
 
 #tunnel-copy-btn {
   --nb-btn-bg: var(--bg-secondary);
+  --nb-btn-color: var(--button-secondary-text);
+  --nb-btn-hover-bg: var(--button-secondary-hover);
+  --nb-btn-hover-color: var(--button-secondary-text);
   border-left: 1px solid var(--line) !important;
   border-top: none !important;
   border-right: none !important;

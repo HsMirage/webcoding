@@ -36,15 +36,17 @@ body {
   .import-item-btn,
   #tunnel-copy-btn
 ) {
-  --nb-btn-bg: var(--blue);
-  --nb-btn-hover-bg: var(--yellow);
+  --nb-btn-bg: var(--btn-primary-bg);
+  --nb-btn-color: var(--button-primary-text);
+  --nb-btn-hover-bg: var(--btn-primary-hover);
+  --nb-btn-hover-color: var(--button-primary-text);
   --nb-btn-font-size: var(--btn-md-font);
   --nb-btn-shadow: var(--button-shadow-soft);
   --nb-btn-hover-shadow: var(--button-shadow-soft);
   --nb-btn-hover-shift: 0;
 
   background: var(--nb-btn-bg);
-  color: var(--text-primary);
+  color: var(--nb-btn-color);
   border: 1px solid var(--button-border);
   border-radius: var(--button-radius);
   font-family: var(--font-ui);
@@ -57,7 +59,7 @@ body {
   padding: var(--btn-md-pad-y) var(--btn-md-pad-x);
   line-height: 1.2;
   white-space: nowrap;
-  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease, border-color 140ms ease;
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
 :where(
@@ -72,6 +74,7 @@ body {
   #tunnel-copy-btn
 ):hover {
   background: var(--nb-btn-hover-bg);
+  color: var(--nb-btn-hover-color);
   transform: translate(var(--nb-btn-hover-shift), var(--nb-btn-hover-shift));
   box-shadow: none;
 }

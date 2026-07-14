@@ -357,9 +357,9 @@
 /* Collapsed thinking / process group (Claude Code / Codex style) */
 .msg-process-group {
   margin: 2px 0 8px;
-  border: 1px solid rgba(56, 56, 56, 0.16);
+  border: 1px solid var(--color-hairline);
   border-radius: var(--radius-nav);
-  background: rgba(248, 248, 247, 0.72);
+  background: var(--bg-secondary);
   overflow: hidden;
 }
 .msg-process-group-summary {
@@ -373,8 +373,9 @@
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   background: transparent;
+  transition: background 120ms ease;
 }
 .msg-process-group-summary::-webkit-details-marker { display: none; }
 .msg-process-group-summary::marker { content: ''; }
@@ -382,13 +383,13 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--text-muted);
-  opacity: 0.55;
+  background: var(--text-secondary);
+  opacity: 1;
   flex-shrink: 0;
 }
 .msg-process-group[open] .msg-process-group-icon {
-  background: var(--blue-strong);
-  opacity: 0.85;
+  background: var(--text-primary);
+  opacity: 1;
 }
 .msg-process-group-title {
   flex: 1;
@@ -397,15 +398,15 @@
 .msg-process-group-hint {
   font-size: 12px;
   font-weight: 500;
-  color: var(--color-mid-ash);
-  opacity: 0.85;
+  color: var(--text-secondary);
+  opacity: 1;
 }
 .msg-process-group-summary:hover {
-  background: rgba(56, 56, 56, 0.04);
+  background: var(--color-hover-veil);
 }
 .msg-process-group-body {
   padding: 4px 10px 10px;
-  border-top: 1px dashed rgba(56, 56, 56, 0.12);
+  border-top: 1px dashed var(--color-hairline);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -932,6 +933,7 @@
 }
 .ask-confirm-btn:active {
   background: var(--blue);
+  color: var(--button-primary-text);
 }
 
 .ask-option-item {
@@ -951,6 +953,9 @@
   background: var(--blue);
   border-color: var(--line);
   box-shadow: none;
+}
+.ask-option-item.ask-option-selected .ask-option-label {
+  color: var(--button-primary-text);
 }
 .ask-option-label {
   font-size: 11px;
@@ -1283,6 +1288,14 @@
   font-weight: 700;
   flex-shrink: 0;
 }
+.option-picker-item.active .option-picker-item-label,
+.option-picker-item.active .option-picker-item-desc,
+.option-picker-item.active .option-picker-item-check,
+.option-picker-item.active .mp-cursor,
+.option-picker-item.active .mp-num,
+.option-picker-item.active .mp-check {
+  color: var(--button-primary-text);
+}
 
 /* === Model Picker (Claude Code style) === */
 .model-picker-claude {
@@ -1320,7 +1333,7 @@
   font-weight: 700;
   margin-left: 4px;
 }
-.option-picker-item.focused {
+.option-picker-item.focused:not(.active) {
   background: var(--accent-light);
 }
 .mp-items {

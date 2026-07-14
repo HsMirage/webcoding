@@ -212,7 +212,7 @@
   --button-surface-hover: var(--color-hover-veil);
   --button-secondary-surface: transparent;
   --button-secondary-hover: var(--color-hover-veil);
-  --button-primary-text: var(--text-primary);
+  --button-primary-text: var(--surface-inverse-text);
   --button-secondary-text: var(--text-primary);
   --button-border: var(--color-hairline);
   --button-shadow-soft: none;

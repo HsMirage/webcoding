@@ -1,23 +1,23 @@
 /* 11-color-scheme.css — dark mode token overrides */
 
 html[data-color-scheme="dark"] {
-  --color-sidebar-mist: #141414;
-  --color-pure-white: #0d0d0d;
-  --color-graphite-ink: #f5f5f5;
-  --color-mid-ash: #a3a3a3;
-  --color-hollow: #737373;
-  --color-hairline: #ffffff1a;
-  --color-hover-veil: #ffffff0d;
+  --color-sidebar-mist: #343434;
+  --color-pure-white: #2c2c2c;
+  --color-graphite-ink: #f3f3f3;
+  --color-mid-ash: #b8b8b8;
+  --color-hollow: #a0a0a0;
+  --color-hairline: #ffffff24;
+  --color-hover-veil: #ffffff12;
   --color-ink-press: #ffffff;
   --color-deep-charcoal: #000000b3;
-  --color-edge-gray: #2e2e2e;
+  --color-edge-gray: #4e4e4e;
 
-  --bg-tertiary: #1a1a1a;
-  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
-  --surface-muted: rgba(13, 13, 13, 0.92);
+  --bg-tertiary: #373737;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.24);
+  --surface-muted: rgba(44, 44, 44, 0.94);
   --surface-overlay-strong: rgba(0, 0, 0, 0.75);
   --force-overlay-background: rgba(0, 0, 0, 0.72);
-  --select-caret-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23737373'/%3E%3C/svg%3E");
+  --select-caret-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23a0a0a0'/%3E%3C/svg%3E");
 }
 
 /* === Color scheme toggle === */
