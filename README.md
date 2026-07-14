@@ -6,7 +6,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)
 ![Agents](https://img.shields.io/badge/Agents-Claude%20%7C%20Codex%20%7C%20Pi-111111)
 
-[简体中文](./README.md) | [English](./README.en.md) | [v2.0.2 发布说明](https://github.com/HsMirage/webcoding/releases/tag/v2.0.2) | [更新日志](./CHANGELOG.md)
+[简体中文](./README.md) | [English](./README.en.md) | [v2.0.3 发布说明](https://github.com/HsMirage/webcoding/releases/tag/v2.0.3) | [更新日志](./CHANGELOG.md)
 
 <p align="center">
   <a href="https://ai.hsnb.fun/"><strong>幻境MirageAI欢迎你</strong></a>
@@ -16,7 +16,7 @@
 
 Webcoding 是一个轻量级浏览器工作台。它在本机启动并连接你已经安装、登录的 CLI Agent，让电脑、手机或平板通过同一个网页管理会话、处理中途交互、查看工具执行，并在浏览器断开后继续完成任务。
 
-> `v2.0.2` 默认使用三套原生双向协议：Claude `stream-json`、Codex App Server、Pi RPC，并进一步优化了手机版顶栏、Agent / 权限模式菜单和紧凑 Git 工作区。旧的单轮执行方式仍可通过环境变量启用。
+> `v2.0.3` 默认使用三套原生双向协议：Claude `stream-json`、Codex App Server、Pi RPC，并进一步改善了深色主题、按钮和思考过程折叠栏的可读性。旧的单轮执行方式仍可通过环境变量启用。
 
 <p align="center">
   <img src="./webcoding-refactored-ui.png" alt="Webcoding v2 工作台" width="100%" />
@@ -307,6 +307,6 @@ webcoding/
 
 ## 版本与文档
 
-- [v2.0.2 发布说明](https://github.com/HsMirage/webcoding/releases/tag/v2.0.2)
+- [v2.0.3 发布说明](https://github.com/HsMirage/webcoding/releases/tag/v2.0.3)
 - [完整更新日志](./CHANGELOG.md)
 - [English README](./README.en.md)

@@ -6,7 +6,7 @@ Control local Claude Code, Codex, and Pi CLI agents from a browser.
 ![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)
 ![Agents](https://img.shields.io/badge/Agents-Claude%20%7C%20Codex%20%7C%20Pi-111111)
 
-[简体中文](./README.md) | [English](./README.en.md) | [v2.0.2 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.2) | [Changelog](./CHANGELOG.md)
+[简体中文](./README.md) | [English](./README.en.md) | [v2.0.3 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.3) | [Changelog](./CHANGELOG.md)
 
 <p align="center">
   <a href="https://ai.hsnb.fun/"><strong>Welcome to MirageAI</strong></a>
@@ -16,7 +16,7 @@ Control local Claude Code, Codex, and Pi CLI agents from a browser.
 
 Webcoding is a lightweight local browser workspace. It connects to CLI agents that are already installed and authenticated on your machine, then lets a desktop, phone, or tablet manage sessions, answer runtime interactions, inspect tool activity, and reconnect to tasks that continued after the browser closed.
 
-> `v2.0.2` uses three native bidirectional transports by default: Claude `stream-json`, Codex App Server, and Pi RPC, with a compact mobile header, redesigned Agent / permission-mode menus, and a denser mobile Git workspace. Legacy one-shot transports remain available through environment variables.
+> `v2.0.3` uses three native bidirectional transports by default: Claude `stream-json`, Codex App Server, and Pi RPC, with improved readability for dark mode, buttons, and collapsed thinking / process groups. Legacy one-shot transports remain available through environment variables.
 
 <p align="center">
   <img src="./webcoding-refactored-ui.png" alt="Webcoding v2 workspace" width="100%" />
@@ -307,6 +307,6 @@ webcoding/
 
 ## Releases and Documentation
 
-- [v2.0.2 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.2)
+- [v2.0.3 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.3)
 - [Full changelog](./CHANGELOG.md)
 - [简体中文 README](./README.md)
