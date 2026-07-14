@@ -3187,11 +3187,12 @@ function getPublicAssetVersion(name) {
 function renderIndexHtml() {
   const indexPath = path.join(PUBLIC_ROOT, 'index.html');
   const html = fs.readFileSync(indexPath, 'utf8');
-  const styleVersion = getPublicAssetVersion('style.css');
-  const appVersion = getPublicAssetVersion('app.js');
-  return html
-    .replace('href="style.css"', `href="style.css?v=${styleVersion}"`)
-    .replace('src="app.js"', `src="app.js?v=${appVersion}"`);
+  return html.replace(/\b(href|src)="([^"?#]+\.(?:css|js))(?:\?[^"#]*)?(#[^"]*)?"/gi, (match, attribute, assetPath, fragment = '') => {
+    if (/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(assetPath)) return match;
+    const publicName = assetPath.replace(/^\/+/, '');
+    if (!publicName || publicName.split('/').includes('..')) return match;
+    return `${attribute}="${assetPath}?v=${getPublicAssetVersion(publicName)}${fragment}"`;
+  });
 }
 
 // === Utility Functions ===

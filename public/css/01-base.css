@@ -1,0 +1,127 @@
+/* 01-base.css — reset, typography, shared inputs & buttons */
+/* === Reset === */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  height: 100%;
+  height: -webkit-fill-available;
+}
+
+body {
+  height: 100%;
+  height: 100dvh;
+  min-height: -webkit-fill-available;
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  letter-spacing: normal;
+  color: var(--text-primary);
+  background: var(--page-background);
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Native scrollbar hiding is scoped to message containers only (see .messages below). */
+
+/* === Shared Button Base === */
+:where(
+  .login-submit-btn,
+  .settings-actions button,
+  .modal-btn-primary,
+  .modal-btn-secondary,
+  .modal-btn-danger,
+  .project-picker-action-btn,
+  .fc-submit-btn,
+  .import-item-btn,
+  #tunnel-copy-btn
+) {
+  --nb-btn-bg: var(--blue);
+  --nb-btn-hover-bg: var(--yellow);
+  --nb-btn-font-size: var(--btn-md-font);
+  --nb-btn-shadow: var(--button-shadow-soft);
+  --nb-btn-hover-shadow: var(--button-shadow-soft);
+  --nb-btn-hover-shift: 0;
+
+  background: var(--nb-btn-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--button-border);
+  border-radius: var(--button-radius);
+  font-family: var(--font-ui);
+  font-size: var(--nb-btn-font-size);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: none;
+  min-height: var(--btn-md-min-h);
+  padding: var(--btn-md-pad-y) var(--btn-md-pad-x);
+  line-height: 1.2;
+  white-space: nowrap;
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+:where(
+  .login-submit-btn,
+  .settings-actions .btn-test,
+  .settings-actions .btn-save,
+  .modal-btn-primary,
+  .modal-btn-secondary,
+  .modal-btn-danger,
+  .project-picker-action-btn,
+  .import-item-btn,
+  #tunnel-copy-btn
+):hover {
+  background: var(--nb-btn-hover-bg);
+  transform: translate(var(--nb-btn-hover-shift), var(--nb-btn-hover-shift));
+  box-shadow: none;
+}
+
+:where(
+  .login-submit-btn,
+  .settings-actions button,
+  .modal-btn-primary,
+  .modal-btn-secondary,
+  .modal-btn-danger,
+  .project-picker-action-btn,
+  .fc-submit-btn,
+  .import-item-btn,
+  #tunnel-copy-btn
+):active {
+  box-shadow: none;
+}
+
+/* === Utility === */
+[hidden] { display: none !important; }
+
+/* Shared compact control base (close/back/icon/small controls) */
+:where(
+  .topbar-icon-btn,
+  .settings-back,
+  .settings-panel h3 .settings-close,
+  .settings-header .settings-close,
+  .modal-close-btn,
+  .attachment-chip-remove
+) {
+  appearance: none;
+  border: var(--compact-control-border);
+  border-radius: var(--compact-control-radius);
+  background: var(--compact-control-background);
+  color: var(--compact-control-color);
+  cursor: pointer;
+  line-height: 1;
+  transition: background 140ms, color 140ms, transform 140ms, box-shadow 140ms, border-color 140ms;
+}
+
+:where(
+  .topbar-icon-btn,
+  .settings-back,
+  .settings-panel h3 .settings-close,
+  .settings-header .settings-close,
+  .modal-close-btn,
+  .attachment-chip-remove
+):hover {
+  background: var(--compact-control-hover-background);
+  color: var(--compact-control-hover-color);
+  transform: translate(var(--compact-control-hover-shift, 0), var(--compact-control-hover-shift, 0));
+  box-shadow: none;
+}

@@ -1,0 +1,482 @@
+/* 08-mobile.css — responsive rules */
+@media (pointer: coarse) {
+  .messages-wrap:hover .custom-scrollbar {
+    opacity: 0;
+  }
+  .custom-scrollbar.scrolling {
+    opacity: 1;
+  }
+}
+
+@media (pointer: coarse) {
+  .custom-scrollbar {
+    width: 18px;
+    right: 0;
+    opacity: 0;
+  }
+  .custom-scrollbar.active {
+    opacity: 1;
+  }
+  .custom-scrollbar-thumb {
+    width: 8px;
+    right: 5px;
+    min-height: 40px;
+    border-radius: var(--radius-nav);
+  }
+  .custom-scrollbar-thumb:hover,
+  .custom-scrollbar-thumb.dragging {
+    width: 14px;
+    right: 2px;
+  }
+}
+
+@media (pointer: coarse) {
+  .ask-confirm-btn { display: block; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (max-width: 728px) {
+  .sidebar-resizer {
+    display: none;
+  }
+
+  .sidebar {
+    position: fixed;
+    left: 0; top: 0; bottom: 0;
+    width: min(85vw, 280px);
+    min-width: min(85vw, 280px);
+    max-width: 280px;
+    z-index: 100;
+    transform: translateX(-100%);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-overlay {
+    position: fixed; inset: 0;
+    background: var(--mobile-sidebar-overlay-background);
+    z-index: 99;
+  }
+  .menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .color-scheme-btn-mobile {
+    width: 44px;
+    height: 44px;
+  }
+  .msg { max-width: 100%; }
+  .msg.assistant { width: 100%; }
+  .input-area { padding: var(--space-lg) var(--space-md); padding-bottom: max(var(--space-lg), var(--safe-bottom)); }
+  .messages { padding: var(--space-lg) var(--space-md); gap: var(--space-lg); }
+  .session-item-actions { display: flex; }
+  .session-item-btn { opacity: 1; }
+  .project-group-actions { opacity: 1; }
+  .app-topbar {
+    padding: 0 var(--space-md);
+    gap: var(--space-sm);
+  }
+  .app-topbar-brand {
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  .app-topbar-brand strong {
+    font-size: 12px;
+  }
+  .app-topbar-actions {
+    gap: var(--space-xs);
+    flex-shrink: 0;
+  }
+  .agent-tabs, .mode-tabs {
+    display: none;
+  }
+  .mobile-topbar-bar {
+    display: none;
+  }
+  .mobile-topbar-select {
+    display: block;
+    width: auto;
+    min-height: 44px;
+    font-family: var(--font-ui);
+    font-size: 14px;
+  }
+  .session-search-input {
+    min-height: 44px;
+  }
+  .cmd-menu { left: var(--space-md); right: var(--space-md); transform: none; min-width: auto; bottom: 72px; }
+  .option-picker { left: var(--space-md); right: var(--space-md); transform: none; min-width: auto; max-width: none; bottom: 72px; }
+  .chat-title {
+    font-size: 14px;
+  }
+  .chat-agent-context {
+    font-family: var(--font-ui);
+    font-size: 12px;
+    letter-spacing: normal;
+  }
+  .chat-agent-menu {
+    right: var(--space-md);
+    min-width: 138px;
+  }
+  .chat-cwd {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .chat-header {
+    display: grid;
+    grid-template-columns: 44px 44px minmax(0, 1fr);
+    grid-template-areas:
+      "scheme menu title"
+      "controls controls controls";
+    align-items: center;
+    gap: 6px 8px;
+    min-height: 0;
+    padding: 8px 12px 10px;
+  }
+  .color-scheme-btn-mobile { grid-area: scheme; }
+  .menu-btn { grid-area: menu; }
+  .chat-header-copy {
+    grid-area: title;
+    width: 100%;
+  }
+  .chat-title {
+    padding: 0;
+    line-height: 1.43;
+  }
+  .chat-agent-context,
+  .chat-session-meta {
+    display: none;
+  }
+  .chat-toolbar {
+    grid-area: controls;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+  .mobile-topbar-select {
+    width: 100%;
+    min-width: 0;
+  }
+  .chat-runtime-state {
+    grid-column: 1 / -1;
+    min-height: 36px;
+    justify-content: center;
+  }
+  .msg-avatar-col {
+    width: 36px;
+  }
+  .msg.user .msg-avatar-col {
+    width: 28px;
+  }
+  .msg-avatar {
+    width: 28px;
+    height: 28px;
+  }
+  .msg-avatar svg { width: 14px; height: 14px; }
+  .msg-avatar-model { display: none; }
+  .msg-bubble {
+    padding: 9px 10px;
+    font-size: 14px;
+  }
+  .msg.assistant .msg-bubble {
+    flex: 1;
+  }
+  .msg-segment-text,
+  .msg-segment-text.msg-segment-final { font-size: 14px; }
+  .msg-segment-text.msg-segment-process,
+  .msg-segment-text.msg-segment-thinking { font-size: 13px; }
+  .code-block-wrapper pre code { font-size: 12px; }
+  .input-wrapper {
+    gap: 6px;
+    padding: 6px 8px;
+    box-shadow: none;
+  }
+  #msg-input {
+    min-height: 44px;
+    padding: 11px 0;
+  }
+  .attach-btn,
+  .send-btn,
+  .abort-btn {
+    width: 44px;
+    height: 44px;
+  }
+  .new-chat-btn,
+  .new-chat-arrow { min-height: 44px; }
+  .new-chat-arrow { width: 44px; }
+  /* Mobile tool content overflow fix */
+  .msg-process-group-summary,
+  .tool-call summary,
+  .tool-group-summary {
+    min-height: 44px;
+  }
+  .tool-call-content {
+    max-height: 180px;
+    font-size: 12px;
+    padding: var(--space-md) var(--space-sm);
+  }
+  .tool-call-code {
+    font-size: 12px;
+    padding: var(--space-md) 10px;
+  }
+  .code-block-wrapper {
+    margin: var(--space-sm) 0;
+  }
+  .code-block-wrapper pre {
+    padding: var(--space-md) 10px;
+  }
+}
+
+@media (max-width: 728px) {
+  .settings-panel { padding: 24px 20px; }
+}
+
+@media (max-width: 480px) {
+  .settings-panel { width: 95%; padding: 20px 16px; }
+  .settings-nav-card { padding: 13px 14px; }
+  .settings-back,
+  .settings-panel h3 .settings-close,
+  .settings-header .settings-close {
+    width: 44px;
+    height: 44px;
+  }
+  .settings-actions button { min-height: 44px; }
+  .modal-close-btn,
+  .modal-btn-primary,
+  .modal-btn-secondary,
+  .modal-btn-danger {
+    min-height: 44px;
+  }
+  .modal-close-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (max-width: 728px) {
+  .modal-panel-project {
+    max-width: none;
+  }
+  .project-picker-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .project-picker-actions {
+    grid-template-columns: 1fr;
+  }
+  .dir-browser-manual {
+    flex-direction: column;
+  }
+  .dir-browser-manual .modal-text-input,
+  .dir-browser-go-btn {
+    width: 100%;
+  }
+  .dir-browser-list {
+    min-height: 240px;
+    max-height: 44vh;
+  }
+  .dir-browser-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .dir-browser-selection-hint {
+    max-width: none;
+    width: 100%;
+  }
+  .dir-browser-crumb,
+  .dir-browser-crumb-current,
+  .dir-browser-edit-btn,
+  .dir-browser-go-btn {
+    min-height: 44px;
+  }
+  .dir-browser-crumb,
+  .dir-browser-crumb-current {
+    min-width: 44px;
+  }
+}
+
+@media (max-width: 480px) {
+  .modal-body-project {
+    gap: 16px;
+  }
+  .project-picker-item {
+    padding: 14px 42px 14px 14px;
+  }
+  .project-picker-item-name,
+  .dir-browser-current-name {
+    font-size: 14px;
+  }
+  .dir-browser-pathbar {
+    padding: 8px;
+  }
+}
+
+@media (max-width: 768px), (pointer: coarse) {
+  .git-panel-resizer {
+    display: none !important;
+  }
+
+  .git-panel:not(.visible) {
+    display: none !important;
+  }
+
+  #git-panel.visible {
+    display: flex !important;
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    z-index: 200;
+    border-left: none;
+    border-top: 1px solid var(--color-hairline);
+  }
+
+  .git-panel-scroll {
+    padding: 10px 10px calc(14px + var(--safe-bottom));
+  }
+
+  .git-tree-list {
+    gap: 6px;
+  }
+
+  .git-tree-folder-header,
+  .git-tree-file-row {
+    gap: 7px;
+    padding: 8px 8px 8px calc(8px + var(--git-tree-depth, 0) * var(--git-tree-indent-step-mobile));
+  }
+
+  .git-tree-folder-leading,
+  .git-tree-file-main,
+  .git-tree-file-trailing {
+    width: 100%;
+  }
+
+  .git-tree-folder-trailing,
+  .git-tree-folder-badges,
+  .git-tree-file-trailing,
+  .git-tree-file-actions {
+    justify-content: flex-start;
+  }
+
+  .git-panel-status-summary {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .git-panel-status-badges,
+  .git-tree-folder-trailing,
+  .git-tree-badges {
+    justify-content: flex-start;
+  }
+
+  .git-tree-children {
+    gap: 5px;
+    margin-left: 6px;
+    padding-left: 8px;
+  }
+
+  .git-tree-folder-rail,
+  .git-tree-file-leading {
+    flex-basis: 16px;
+    width: 16px;
+  }
+
+  .git-tree-file-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .git-tree-file-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .git-tree-file-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .git-tree-file-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .git-tree-action-btn,
+  .git-tree-stage-btn {
+    min-height: 44px;
+  }
+
+  .git-panel-tab,
+  .git-toolbar-btn,
+  .git-panel-close {
+    min-height: 44px;
+  }
+}
+@media (max-width: 728px) {
+  .sidebar-top-strip {
+    display: flex;
+    min-height: 60px;
+    padding: var(--spacing-8) var(--spacing-12);
+  }
+
+  .sidebar .color-scheme-btn {
+    display: none !important;
+  }
+
+  .sidebar .git-topbar-btn,
+  .sidebar .settings-btn {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .sidebar-footer {
+    display: none;
+  }
+
+  .chat-header {
+    padding: var(--spacing-8) var(--spacing-12);
+  }
+
+  .messages {
+    padding: var(--spacing-16) var(--spacing-12);
+  }
+
+  .input-area {
+    padding: var(--spacing-12);
+    padding-bottom: max(var(--spacing-12), var(--safe-bottom));
+  }
+
+  .mobile-topbar-select {
+    display: block;
+  }
+
+  .welcome-actions .workspace-action-btn {
+    min-height: 44px;
+  }
+}
+
+@media (min-width: 729px) {
+  .menu-btn {
+    display: none !important;
+  }
+
+  .mobile-topbar-select {
+    display: none !important;
+  }
+}

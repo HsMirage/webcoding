@@ -14,6 +14,7 @@
     { alias: 'opus[1m]', value: 'opus[1m]', label: 'Opus（1M 上下文）', desc: '使用当前 Opus 映射并启用 1M 上下文' },
     { alias: 'haiku', value: 'haiku', label: 'Haiku', desc: '使用当前 Haiku 模型映射' },
   ];
+  const SHOW_SIDEBAR_COST = false;
 
   // Slash menu is populated from server discovery (platform + CLI + filesystem).
   // Empty until the server responds with slash_commands_list.
@@ -43,9 +44,9 @@
   // do not open the project list (GitHub issue #4).
   const SIDEBAR_SWIPE_EDGE_PX = 36;
   const SIDEBAR_WIDTH_STORAGE_KEY = 'webcoding-sidebar-width';
-  const SIDEBAR_DEFAULT_WIDTH = 320;
-  const SIDEBAR_MIN_WIDTH = 280;
-  const SIDEBAR_MAX_WIDTH = 560;
+  const SIDEBAR_DEFAULT_WIDTH = 270;
+  const SIDEBAR_MIN_WIDTH = 260;
+  const SIDEBAR_MAX_WIDTH = 280;
   const GIT_PANEL_WIDTH_STORAGE_KEY = 'webcoding-git-panel-width';
   const GIT_PANEL_DEFAULT_WIDTH = 360;
   const GIT_PANEL_MIN_WIDTH = 280;
@@ -60,14 +61,13 @@
   const MESSAGE_ACK_TIMEOUT_MS = 12000;
   const THINKING_RENDER_DEBOUNCE = 80;
   const REMEMBERED_PASSWORD_STORAGE_KEY = 'webcoding-remembered-password';
-  const THEME_STORAGE_KEY = 'webcoding-theme';
+  const COLOR_SCHEME_STORAGE_KEY = 'webcoding-color-scheme';
+  const LEGACY_THEME_STORAGE_KEY = 'webcoding-theme';
   const SEND_ON_ENTER_STORAGE_KEY = 'webcoding-send-on-enter';
   const PI_STREAMING_BEHAVIOR_STORAGE_KEY = 'webcoding-pi-streaming-behavior';
-  const DEFAULT_THEME = 'default';
-  const THEME_LABELS = {
-    default: '默认主题',
-    localhost: '极简主题',
-  };
+  const DEFAULT_COLOR_SCHEME = 'light';
+  const HLJS_THEME_LIGHT = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+  const HLJS_THEME_DARK = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css';
 
   // --- State ---
   let ws = null;
@@ -241,7 +241,7 @@
   const chatTitle = $('#chat-title');
   const chatAgentContext = $('#chat-agent-context');
   const chatRuntimeState = $('#chat-runtime-state');
-  const chatCwd = $('#topbar-chat-cwd');
+
   const costDisplay = $('#topbar-cost-display');
   const appStatusBanner = $('#app-status-banner');
   const appStatusBannerText = $('#app-status-banner-text');
@@ -289,21 +289,50 @@
     loginPassword.value = rememberedPassword;
   }
 
-  function getStoredTheme() {
-    const raw = localStorage.getItem(THEME_STORAGE_KEY);
-    return THEME_LABELS[raw] ? raw : DEFAULT_THEME;
+  function getStoredColorScheme() {
+    const raw = localStorage.getItem(COLOR_SCHEME_STORAGE_KEY);
+    if (raw === 'light' || raw === 'dark') return raw;
+    if (localStorage.getItem(LEGACY_THEME_STORAGE_KEY)) {
+      localStorage.removeItem(LEGACY_THEME_STORAGE_KEY);
+    }
+    return DEFAULT_COLOR_SCHEME;
   }
 
-  function applyTheme(theme, options = {}) {
-    const nextTheme = THEME_LABELS[theme] ? theme : DEFAULT_THEME;
-    document.documentElement.dataset.theme = nextTheme;
+  function updateColorSchemeButtons(scheme) {
+    const isDark = scheme === 'dark';
+    document.querySelectorAll('.color-scheme-btn, .color-scheme-btn-mobile').forEach((btn) => {
+      const moon = btn.querySelector('.color-scheme-icon-moon');
+      const sun = btn.querySelector('.color-scheme-icon-sun');
+      if (moon) moon.hidden = isDark;
+      if (sun) sun.hidden = !isDark;
+      btn.title = isDark ? '切换亮色模式' : '切换深色模式';
+      btn.setAttribute('aria-label', btn.title);
+      btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+    });
+  }
+
+  function applyColorScheme(scheme, options = {}) {
+    const nextScheme = scheme === 'dark' ? 'dark' : DEFAULT_COLOR_SCHEME;
+    document.documentElement.dataset.colorScheme = nextScheme;
+    delete document.documentElement.dataset.theme;
     if (document.body) {
-      document.body.dataset.theme = nextTheme;
+      document.body.dataset.colorScheme = nextScheme;
+      delete document.body.dataset.theme;
     }
+    const hljsTheme = document.getElementById('hljs-theme');
+    if (hljsTheme) {
+      hljsTheme.href = nextScheme === 'dark' ? HLJS_THEME_DARK : HLJS_THEME_LIGHT;
+    }
+    updateColorSchemeButtons(nextScheme);
     if (!options.skipPersist) {
-      localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+      localStorage.setItem(COLOR_SCHEME_STORAGE_KEY, nextScheme);
     }
-    return nextTheme;
+    return nextScheme;
+  }
+
+  function toggleColorScheme() {
+    const nextScheme = getStoredColorScheme() === 'dark' ? 'light' : 'dark';
+    return applyColorScheme(nextScheme);
   }
 
   function getSendOnEnterMode() {
@@ -322,9 +351,7 @@
     const mode = getSendOnEnterMode();
     const isEnter = mode === 'enter';
     if (msgInput) {
-      msgInput.placeholder = isEnter
-        ? '输入消息… 输入 / 查看指令 · Enter 发送 · Shift+Enter 换行'
-        : '输入消息… 输入 / 查看指令 · ⌘/Ctrl+Enter 发送';
+      msgInput.placeholder = '输入消息…';
     }
     if (sendBtn) {
       sendBtn.title = isEnter ? '发送（Enter）' : '发送（⌘/Ctrl+Enter）';
@@ -479,7 +506,7 @@
 
   setVH();
   refreshInputMaxHeightCache();
-  applyTheme(getStoredTheme(), { skipPersist: true });
+  applyColorScheme(getStoredColorScheme(), { skipPersist: true });
   window.addEventListener('resize', setVH);
   window.addEventListener('orientationchange', () => setTimeout(setVH, 100));
   window.addEventListener('resize', refreshInputMaxHeightCache);
@@ -541,8 +568,9 @@
     const activeProject = getCurrentProjectContext();
     const runningCount = visibleSessions.filter((session) => session.isRunning).length;
     const currentMessageCount = getCurrentMessageCount();
-    const usageText = costDisplay?.textContent
-      || (sessionState.currentAgent === 'codex' || sessionState.currentAgent === 'pi'
+    const usageText = SHOW_SIDEBAR_COST && costDisplay?.textContent
+      ? costDisplay.textContent
+      : (sessionState.currentAgent === 'codex' || sessionState.currentAgent === 'pi'
         ? '暂无 token 统计'
         : '暂无费用统计');
     const modeLabel = MODE_LABELS[sessionState.currentMode] || sessionState.currentMode;
@@ -1210,7 +1238,7 @@
       panelHtml: `
         <div class="modal-header">
           <span class="modal-title">${escapeHtml(title)}</span>
-          <button class="modal-close-btn" id="git-modal-close">✕</button>
+          <button class="modal-close-btn" id="git-modal-close" aria-label="关闭">✕</button>
         </div>
         <div class="modal-body">
           <pre style="margin:0;max-height:60vh;overflow:auto;background:#101828;color:#f8fafc;padding:16px;border-radius:8px;"><code class="${escapeHtml(options.language ? `language-${options.language}` : '')}">${escapeHtml(text || '暂无内容')}</code></pre>
@@ -1290,7 +1318,7 @@
         panelHtml: `
           <div class="modal-header">
             <span class="modal-title">${escapeHtml(title)}</span>
-            <button class="modal-close-btn" id="git-confirm-close">✕</button>
+            <button class="modal-close-btn" id="git-confirm-close" aria-label="关闭">✕</button>
           </div>
           <div class="modal-body" style="padding:16px 20px;display:flex;flex-direction:column;gap:10px">
             <p style="margin:0;color:var(--text-primary)">${escapeHtml(message)}</p>
@@ -1382,7 +1410,7 @@
         panelHtml: `
           <div class="modal-header">
             <span class="modal-title">新建分支</span>
-            <button class="modal-close-btn" id="git-branch-close">✕</button>
+            <button class="modal-close-btn" id="git-branch-close" aria-label="关闭">✕</button>
           </div>
           <div class="modal-body" style="padding:16px 20px;display:flex;flex-direction:column;gap:12px">
             <label class="modal-field-label" for="git-branch-name">分支名称</label>
@@ -1436,46 +1464,15 @@
     const projectCount = Array.isArray(projects) ? projects.length : 0;
     return `
       <div class="welcome-msg">
-        <div class="welcome-header">
-          <div class="welcome-icon">✦</div>
-          <h3>${label} 工作区</h3>
-        </div>
-        <div class="welcome-stats">
-          <div class="welcome-stat">
-            <strong>${sessionCount}</strong>
-            <span>会话数</span>
-          </div>
-          <div class="welcome-stat">
-            <strong>${projectCount}</strong>
-            <span>项目数</span>
-          </div>
-          <div class="welcome-stat">
-            <strong>${MODE_LABELS[sessionState.currentMode] || sessionState.currentMode}</strong>
-            <span>模式</span>
-          </div>
-        </div>
+        <h3>${label}</h3>
+        <p>开始对话，或从侧边栏选择已有会话。</p>
+        <p class="welcome-meta">${sessionCount} 个会话 · ${projectCount} 个项目 · ${MODE_LABELS[sessionState.currentMode] || sessionState.currentMode} 模式</p>
         <div class="welcome-actions">
           ${buildWorkspaceActionButtons([
             { action: 'new-session', label: '新建会话', primary: true },
             { action: 'import-session', label: '导入历史' },
             { action: 'switch-model', label: '切换模型' },
           ], { compact: true })}
-        </div>
-        <div class="welcome-panels">
-          <section class="welcome-panel">
-            <div class="welcome-panel-kicker">常用指令</div>
-            <ul class="welcome-list">
-              <li><code>/model</code> 查看或切换模型</li>
-              <li><code>/mode</code> 切换权限模式</li>
-              <li><code>/compact</code> 压缩上下文</li>
-            </ul>
-          </section>
-          <section class="welcome-panel">
-            <div class="welcome-panel-kicker">多模态协作</div>
-            <ul class="welcome-list">
-              <li>支持随消息附带图片，适合 UI、截图和报错定位。</li>
-            </ul>
-          </section>
         </div>
       </div>
     `;
@@ -2830,22 +2827,13 @@
       short = '~/' + (parts.slice(-2).join('/') || sessionState.currentCwd);
     }
     const hideForOverlay = sessionState.currentSessionRunning && shouldOverlayRuntimeBadge();
-    if (chatCwd) {
-      if (sessionState.currentCwd) {
-        chatCwd.textContent = short;
-        chatCwd.title = sessionState.currentCwd;
-      } else {
-        chatCwd.textContent = '';
-        chatCwd.title = '';
-      }
-      chatCwd.hidden = !sessionState.currentCwd || hideForOverlay;
-    }
+    const showCwd = !!(sessionState.currentCwd && !hideForOverlay);
     if (headerCwd) {
-      headerCwd.textContent = short;
+      headerCwd.textContent = showCwd ? short : '';
       headerCwd.title = sessionState.currentCwd || '';
     }
     if (headerMeta) {
-      headerMeta.hidden = !sessionState.currentCwd;
+      headerMeta.hidden = !showCwd;
     }
   }
 
@@ -3241,7 +3229,7 @@
   }
 
   function setStatsDisplay(msg) {
-    if (!costDisplay) return;
+    if (!SHOW_SIDEBAR_COST || !costDisplay) return;
     if ((sessionState.currentAgent === 'codex' || sessionState.currentAgent === 'pi') && msg && msg.totalUsage) {
       const usage = msg.totalUsage;
       if ((usage.inputTokens || 0) > 0 || (usage.outputTokens || 0) > 0) {
@@ -3884,7 +3872,7 @@
 
   function handleCostMessage(msg) {
     if (!isEventForCurrentSession(msg)) return;
-    if (costDisplay && typeof msg.costUsd === 'number') {
+    if (SHOW_SIDEBAR_COST && costDisplay && typeof msg.costUsd === 'number') {
       costDisplay.textContent = `$${msg.costUsd.toFixed(4)}`;
       costDisplay.hidden = false;
     }
@@ -3898,7 +3886,7 @@
     if (!isEventForCurrentSession(msg)) return;
     if (msg.totalUsage) {
       const cacheText = msg.totalUsage.cachedInputTokens ? ` · cache ${msg.totalUsage.cachedInputTokens}` : '';
-      if (costDisplay) {
+      if (SHOW_SIDEBAR_COST && costDisplay) {
         costDisplay.textContent = `in ${msg.totalUsage.inputTokens} · out ${msg.totalUsage.outputTokens}${cacheText}`;
         costDisplay.hidden = false;
       }
@@ -6602,6 +6590,8 @@
     const header = document.createElement('div');
     header.className = 'project-group-header' + (isCollapsed ? ' collapsed' : '');
     header.dataset.projectId = project.id;
+    header.setAttribute('role', 'button');
+    header.tabIndex = 0;
     header.setAttribute('aria-expanded', String(!isCollapsed));
     header.setAttribute('aria-label', `${project.name}，${groupSessions.length} 个会话`);
 
@@ -6611,6 +6601,7 @@
     const chevron = document.createElement('span');
     chevron.className = 'project-group-chevron';
     chevron.textContent = '▸';
+    chevron.setAttribute('aria-hidden', 'true');
 
     const copy = document.createElement('div');
     copy.className = 'project-group-copy';
@@ -6792,6 +6783,12 @@
       }
       saveCollapsedProjects();
       renderSessionList();
+    });
+    header.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      if (e.target !== header) return;
+      e.preventDefault();
+      header.click();
     });
     group.appendChild(header);
 
@@ -7459,7 +7456,12 @@
 
     const entries = (Array.isArray(menuEntries) && menuEntries.length > 0)
       ? menuEntries.map((entry) => Object.assign({}, entry, { value: entry.value || entry.alias }))
-      : CLAUDE_MODEL_ENTRIES.map((entry) => Object.assign({}, entry));
+      : [];
+
+    if (!entries.length) {
+      showToast('无法获取模型列表', null);
+      return;
+    }
 
     // If current model isn't in the list, add it
     const isStandard = entries.some((e) => e.alias === activeAlias || (currentFull && (e.value || e.alias) === currentFull));
@@ -7719,6 +7721,11 @@
     sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
   });
 
+  document.querySelectorAll('#color-scheme-btn, #color-scheme-btn-mobile').forEach((btn) => {
+    if (!btn) return;
+    btn.addEventListener('click', () => toggleColorScheme());
+  });
+
   sidebarOverlay.addEventListener('click', closeSidebar);
   if (sidebarResizer) {
     sidebarResizer.addEventListener('pointerdown', handleSidebarResizeStart);
@@ -7915,12 +7922,19 @@
   document.addEventListener('click', handleGlobalDocumentClick);
 
   // Split new-chat button
-  newChatBtn.addEventListener('click', () => showNewSessionModal());
-  newChatArrow.addEventListener('click', (e) => {
-    e.stopPropagation();
-    newChatDropdown.hidden = !newChatDropdown.hidden;
-  });
-  importSessionBtn.addEventListener('click', () => {
+  if (newChatBtn) {
+    newChatBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      showNewSessionModal();
+    });
+  }
+  if (newChatArrow) {
+    newChatArrow.addEventListener('click', (e) => {
+      e.stopPropagation();
+      newChatDropdown.hidden = !newChatDropdown.hidden;
+    });
+  }
+  if (importSessionBtn) importSessionBtn.addEventListener('click', () => {
     newChatDropdown.hidden = true;
     if (selectedAgent === 'codex') {
       showImportCodexSessionModal();
@@ -8209,10 +8223,10 @@
 
   function buildUnifiedSettingsPanelHtml(providerOptions) {
     return `
-      <h3>
-        设置
-        <button class="settings-close" title="关闭">&times;</button>
-      </h3>
+      <div class="settings-header">
+        <h3>设置</h3>
+        <button class="settings-close" title="关闭" aria-label="关闭">&times;</button>
+      </div>
 
       <div class="settings-nav-list" id="settings-nav-list">
         <button class="settings-nav-card" data-settings-page="agent">
@@ -8220,41 +8234,41 @@
             <div class="settings-nav-card-title">代理渠道</div>
             <div class="settings-nav-card-meta">Claude / Codex / Pi 渠道与 AI 提供商</div>
           </div>
-          <span class="settings-nav-card-arrow">›</span>
+          <span class="settings-nav-card-arrow" aria-hidden="true">›</span>
         </button>
         <button class="settings-nav-card" data-settings-page="notify">
           <div class="settings-nav-card-main">
             <div class="settings-nav-card-title">通知设置</div>
             <div class="settings-nav-card-meta">任务完成推送通知</div>
           </div>
-          <span class="settings-nav-card-arrow">›</span>
+          <span class="settings-nav-card-arrow" aria-hidden="true">›</span>
         </button>
         <button class="settings-nav-card" data-settings-page="appearance">
           <div class="settings-nav-card-main">
-            <div class="settings-nav-card-title">界面主题</div>
-            <div class="settings-nav-card-meta">切换工作台外观</div>
+            <div class="settings-nav-card-title">偏好设置</div>
+            <div class="settings-nav-card-meta">发送快捷键等</div>
           </div>
-          <span class="settings-nav-card-arrow">›</span>
+          <span class="settings-nav-card-arrow" aria-hidden="true">›</span>
         </button>
         <button class="settings-nav-card" data-settings-page="system">
           <div class="settings-nav-card-main">
             <div class="settings-nav-card-title">系统</div>
             <div class="settings-nav-card-meta">密码、版本更新</div>
           </div>
-          <span class="settings-nav-card-arrow">›</span>
+          <span class="settings-nav-card-arrow" aria-hidden="true">›</span>
         </button>
         <button class="settings-nav-card" data-settings-page="tunnel">
           <div class="settings-nav-card-main">
             <div class="settings-nav-card-title">远程访问</div>
             <div class="settings-nav-card-meta">Cloudflare Tunnel</div>
           </div>
-          <span class="settings-nav-card-arrow">›</span>
+          <span class="settings-nav-card-arrow" aria-hidden="true">›</span>
         </button>
       </div>
 
       <div class="settings-subpage" id="settings-page-agent" hidden>
         <div class="settings-header settings-subpage-header">
-          <button class="settings-back" id="settings-back-agent" title="返回">←</button>
+          <button class="settings-back" id="settings-back-agent" title="返回" aria-label="返回">←</button>
           <div class="settings-subpage-copy">
             <div class="settings-subpage-kicker">代理</div>
             <h3>渠道与提供商</h3>
@@ -8286,7 +8300,7 @@
 
       <div class="settings-subpage" id="settings-page-notify" hidden>
         <div class="settings-header settings-subpage-header">
-          <button class="settings-back" id="settings-back-notify" title="返回">←</button>
+          <button class="settings-back" id="settings-back-notify" title="返回" aria-label="返回">←</button>
           <div class="settings-subpage-copy">
             <div class="settings-subpage-kicker">通知</div>
             <h3>推送通知</h3>
@@ -8308,21 +8322,13 @@
 
       <div class="settings-subpage" id="settings-page-appearance" hidden>
         <div class="settings-header settings-subpage-header">
-          <button class="settings-back" id="settings-back-appearance" title="返回">←</button>
+          <button class="settings-back" id="settings-back-appearance" title="返回" aria-label="返回">←</button>
           <div class="settings-subpage-copy">
-            <div class="settings-subpage-kicker">外观</div>
-            <h3>界面主题</h3>
+            <div class="settings-subpage-kicker">偏好</div>
+            <h3>偏好设置</h3>
           </div>
         </div>
         <div class="settings-field">
-          <label>配色方案</label>
-          <select class="settings-select" id="theme-select">
-            <option value="default">默认主题</option>
-            <option value="localhost">极简主题</option>
-          </select>
-        </div>
-        <div class="settings-inline-note">切换工作台外观，不影响功能或会话数据。</div>
-        <div class="settings-field" style="margin-top:14px">
           <label>发送快捷键</label>
           <select class="settings-select" id="send-on-enter-select">
             <option value="modifier">⌘/Ctrl + Enter 发送（Enter 换行）</option>
@@ -8335,7 +8341,7 @@
 
       <div class="settings-subpage" id="settings-page-system" hidden>
         <div class="settings-header settings-subpage-header">
-          <button class="settings-back" id="settings-back-system" title="返回">←</button>
+          <button class="settings-back" id="settings-back-system" title="返回" aria-label="返回">←</button>
           <div class="settings-subpage-copy">
             <div class="settings-subpage-kicker">系统</div>
             <h3>系统管理</h3>
@@ -8350,7 +8356,7 @@
 
       <div class="settings-subpage" id="settings-page-tunnel" hidden>
         <div class="settings-header settings-subpage-header">
-          <button class="settings-back" id="settings-back-tunnel" title="返回">←</button>
+          <button class="settings-back" id="settings-back-tunnel" title="返回" aria-label="返回">←</button>
           <div class="settings-subpage-copy">
             <div class="settings-subpage-kicker">远程</div>
             <h3>Cloudflare Tunnel</h3>
@@ -8377,7 +8383,7 @@
     return `
       <div class="settings-header">
         <h3>${current ? `编辑提供商: ${escapeHtml(current.name)}` : '新建 AI 提供商'}</h3>
-        <button class="settings-close" id="unified-template-modal-close">&times;</button>
+        <button class="settings-close" id="unified-template-modal-close" aria-label="关闭">&times;</button>
       </div>
       <div class="settings-field">
         <label>提供商名称</label>
@@ -8441,7 +8447,7 @@
     return `
       <div class="settings-header">
         <h3>修改密码</h3>
-        <button class="settings-close" id="pw-modal-close">&times;</button>
+        <button class="settings-close" id="pw-modal-close" aria-label="关闭">&times;</button>
       </div>
       <div class="settings-field">
         <label>当前密码</label>
@@ -8484,8 +8490,7 @@
     const testBtn = panel.querySelector('#notify-test-btn');
     const saveBtn = panel.querySelector('#notify-save-btn');
 
-    const themeSelect = panel.querySelector('#theme-select');
-    const themeStatusDiv = panel.querySelector('#theme-status');
+    const appearanceStatusDiv = panel.querySelector('#theme-status');
 
     const pwOpenModalBtn = panel.querySelector('#pw-open-modal-btn');
     const checkUpdateBtn = panel.querySelector('#check-update-btn');
@@ -8661,9 +8666,10 @@
       notifyStatusDiv.className = 'settings-status ' + (type || '');
     }
 
-    function showThemeStatus(msg, type) {
-      themeStatusDiv.textContent = msg;
-      themeStatusDiv.className = 'settings-status ' + (type || '');
+    function showAppearanceStatus(msg, type) {
+      if (!appearanceStatusDiv) return;
+      appearanceStatusDiv.textContent = msg;
+      appearanceStatusDiv.className = 'settings-status ' + (type || '');
     }
 
     function renderFields(provider) {
@@ -8949,18 +8955,12 @@
         renderTemplateArea();
       });
     }
-    themeSelect.value = getStoredTheme();
-    themeSelect.addEventListener('change', () => {
-      const nextTheme = applyTheme(themeSelect.value);
-      themeSelect.value = nextTheme;
-      showThemeStatus(`已切换为 ${THEME_LABELS[nextTheme]}`, 'success');
-    });
     const sendOnEnterSelect = panel.querySelector('#send-on-enter-select');
     if (sendOnEnterSelect) {
       sendOnEnterSelect.value = getSendOnEnterMode();
       sendOnEnterSelect.addEventListener('change', () => {
         const next = setSendOnEnterMode(sendOnEnterSelect.value);
-        showThemeStatus(
+        showAppearanceStatus(
           next === 'enter' ? '已切换为 Enter 发送' : '已切换为 ⌘/Ctrl+Enter 发送',
           'success'
         );
@@ -9267,7 +9267,7 @@
       <div class="modal-panel modal-panel-wide">
         <div class="modal-header">
           <span class="modal-title">${escapeHtml(title)}</span>
-          <button class="modal-close-btn" id="${escapeHtml(closeBtnId)}">✕</button>
+          <button class="modal-close-btn" id="${escapeHtml(closeBtnId)}" aria-label="关闭">✕</button>
         </div>
         <div class="modal-body" id="${escapeHtml(bodyId)}">
           ${buildImportModalBody(agent, cardTitle, cardCopy, `<div class="modal-loading">${escapeHtml(loadingText)}</div>`)}
@@ -9617,7 +9617,7 @@
       <div class="modal-panel modal-panel-wide modal-panel-project">
         <div class="modal-header">
           <span class="modal-title">新建 / 打开项目</span>
-          <button class="modal-close-btn" id="ns-close-btn">\u2715</button>
+          <button class="modal-close-btn" id="ns-close-btn" aria-label="关闭">\u2715</button>
         </div>
         <div class="modal-body modal-body-project">
           <div class="modal-stack project-flow-shell" id="ns-step-projects" style="display:none">

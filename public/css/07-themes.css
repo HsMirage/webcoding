@@ -1,0 +1,47 @@
+/* 07-themes.css — minimalist base (always on) */
+
+html {
+  color-scheme: light;
+}
+
+html[data-color-scheme="dark"] {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-pure-white);
+}
+
+.sidebar-footer-label,
+.chat-agent-context,
+.welcome-stats,
+.welcome-panel {
+  display: none;
+}
+
+.sidebar-top-brand strong {
+  font-weight: var(--font-weight-medium);
+}
+
+.msg-bubble {
+  border-color: transparent;
+}
+
+.msg.user .msg-bubble {
+  background: var(--color-sidebar-mist);
+}
+
+.input-area {
+  background: var(--color-pure-white);
+}
+
+.session-item.active {
+  background: var(--color-hover-veil);
+}
+
+.agent-tab.active,
+.mode-tab.active {
+  background: var(--color-hover-veil);
+  color: var(--color-graphite-ink);
+  font-weight: var(--font-weight-medium);
+}

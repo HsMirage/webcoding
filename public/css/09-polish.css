@@ -1,0 +1,496 @@
+/* 09-polish.css — Codex design cohesion layer (loads last) */
+
+/* === Critical overlays (fallback if panels CSS breaks) === */
+.settings-overlay,
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  background: var(--color-deep-charcoal);
+  padding: var(--spacing-16);
+}
+
+.settings-panel,
+.modal-panel {
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  box-shadow: none;
+  max-height: 90vh;
+  overflow: auto;
+}
+
+/* === Reading column === */
+.messages {
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  width: 100%;
+  padding: var(--section-gap) var(--spacing-20);
+  gap: var(--section-gap);
+}
+
+.input-wrapper,
+.attachment-tray,
+.send-queue-bar,
+.cmd-menu,
+.option-picker {
+  max-width: var(--chat-max-width);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.input-area {
+  padding: var(--spacing-16) var(--spacing-20);
+  padding-bottom: max(var(--spacing-16), var(--safe-bottom));
+}
+
+/* === Chat chrome === */
+.chat-header {
+  padding: var(--space-xs) var(--spacing-20);
+  min-height: var(--header-height);
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-pure-white);
+}
+
+.chat-title {
+  font-size: var(--text-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+/* === Sidebar controls === */
+.sidebar-footer .agent-tabs,
+.sidebar-footer .mode-tabs {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  background: transparent;
+  padding: 2px;
+  gap: 2px;
+}
+
+.sidebar-footer .agent-tab,
+.sidebar-footer .mode-tab {
+  flex: 1;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: var(--font-weight-medium);
+  min-height: 30px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-mid-ash);
+}
+
+.sidebar-footer .agent-tab:hover,
+.sidebar-footer .mode-tab:hover {
+  background: var(--color-hover-veil);
+  color: var(--color-graphite-ink);
+}
+
+.sidebar-footer .agent-tab.active,
+.sidebar-footer .mode-tab.active {
+  background: var(--color-hover-veil);
+  color: var(--color-graphite-ink);
+  font-weight: var(--font-weight-semibold);
+}
+
+.topbar-icon-btn {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: var(--radius-nav);
+  color: var(--color-graphite-ink);
+}
+
+.topbar-icon-btn:hover {
+  background: var(--color-hover-veil) !important;
+  transform: none !important;
+}
+
+/* === Welcome (paper theme) === */
+.welcome-msg {
+  text-align: left;
+  padding: 64px 0 var(--section-gap);
+  color: var(--color-mid-ash);
+}
+
+.welcome-msg h3 {
+  font-family: var(--font-ui);
+  font-size: var(--text-heading);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-heading);
+  color: var(--color-graphite-ink);
+  margin-bottom: var(--spacing-8);
+}
+
+.welcome-msg > p {
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  color: var(--color-mid-ash);
+}
+
+.welcome-meta {
+  margin-top: var(--spacing-8);
+  font-size: var(--text-caption) !important;
+  color: var(--color-mid-ash) !important;
+}
+
+.welcome-stats {
+  display: inline-flex;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  margin-top: var(--spacing-20);
+  overflow: hidden;
+}
+
+.welcome-stat {
+  padding: var(--spacing-10) var(--spacing-16);
+  border-right: 1px solid var(--color-hairline);
+  text-align: center;
+}
+
+.welcome-stat strong {
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  font-weight: var(--font-weight-semibold);
+}
+
+.welcome-stat span {
+  font-size: 12px;
+  color: var(--color-mid-ash);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.welcome-actions {
+  margin-top: var(--spacing-16);
+}
+
+.workspace-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-6);
+}
+
+.welcome-panels {
+  margin-top: var(--spacing-20);
+  gap: var(--spacing-12);
+  max-width: 520px;
+}
+
+.welcome-panel {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  padding: var(--card-padding);
+  background: var(--color-pure-white);
+}
+
+.welcome-panel-kicker {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-mid-ash);
+  text-transform: none;
+  letter-spacing: normal;
+  margin-bottom: var(--spacing-8);
+}
+
+.welcome-list {
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  color: var(--color-mid-ash);
+}
+
+.welcome-list code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--color-sidebar-mist);
+  border: 1px solid var(--color-hairline);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+/* === Workspace action buttons === */
+.workspace-action-btn {
+  font-family: var(--font-ui) !important;
+  font-weight: var(--font-weight-medium) !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  border: 1px solid var(--color-hairline) !important;
+  border-radius: var(--radius-nav) !important;
+  box-shadow: none !important;
+  background: var(--color-pure-white) !important;
+  color: var(--color-graphite-ink) !important;
+  min-height: 36px;
+  padding: var(--spacing-8) var(--spacing-12);
+  font-size: var(--text-caption);
+}
+
+.workspace-action-btn:hover {
+  background: var(--color-hover-veil) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.workspace-action-btn.primary {
+  background: var(--color-graphite-ink) !important;
+  color: var(--color-pure-white) !important;
+  border-color: var(--color-graphite-ink) !important;
+}
+
+.workspace-action-btn.primary:hover {
+  background: var(--color-ink-press) !important;
+}
+
+.welcome-actions .workspace-action-btn.primary {
+  background: var(--color-sidebar-mist) !important;
+  color: var(--color-graphite-ink) !important;
+  border-color: var(--color-hairline) !important;
+}
+
+.welcome-actions .workspace-action-btn.primary:hover {
+  background: var(--color-hover-veil) !important;
+}
+
+/* === Status banners (achromatic) === */
+.app-status-banner.is-error,
+.app-status-banner.is-warn,
+.app-status-banner.is-info,
+.app-status-banner.is-success {
+  background: var(--color-sidebar-mist);
+  color: var(--color-graphite-ink);
+  border-bottom: 1px solid var(--color-hairline);
+  font-family: var(--font-ui);
+}
+
+.app-status-banner-action {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  font-family: var(--font-ui);
+  font-weight: var(--font-weight-medium);
+  background: var(--color-pure-white);
+}
+
+.send-queue-bar {
+  background: var(--color-sidebar-mist);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  font-family: var(--font-ui);
+  font-weight: var(--font-weight-medium);
+}
+
+.send-queue-clear {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-nav);
+  font-family: var(--font-ui);
+  background: var(--color-pure-white);
+}
+
+/* === Messages === */
+.msg-bubble {
+  box-shadow: none !important;
+}
+
+.msg.assistant .msg-avatar {
+  background: var(--color-sidebar-mist);
+  color: var(--color-graphite-ink);
+  border: 1px solid var(--color-hairline);
+}
+
+.msg.user .msg-avatar {
+  background: var(--color-graphite-ink);
+  color: var(--color-pure-white);
+}
+
+.msg.assistant .msg-bubble {
+  border-color: transparent;
+}
+
+.msg.user .msg-bubble {
+  border: 1px solid var(--color-hairline);
+}
+
+/* === Git panel (must load last — hide when closed) === */
+aside.git-panel:not(.visible),
+#git-panel:not(.visible) {
+  display: none !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  overflow: hidden !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  pointer-events: none !important;
+}
+
+aside.git-panel.visible,
+#git-panel.visible {
+  display: flex !important;
+  flex-direction: column;
+  width: var(--git-panel-width) !important;
+  min-width: var(--git-panel-width) !important;
+  max-width: none !important;
+  height: 100%;
+  min-height: 0;
+  pointer-events: auto !important;
+  background: var(--color-pure-white);
+  border-left: 1px solid var(--color-hairline);
+  overflow: hidden;
+}
+
+/* Git panel chrome: see 10-git-panel.css */
+
+/* === Modals & settings === */
+.modal-panel,
+.settings-panel,
+.login-box {
+  box-shadow: none !important;
+  border: 1px solid var(--color-hairline) !important;
+  border-radius: var(--radius-nav) !important;
+}
+
+.modal-title,
+.settings-panel h3 {
+  font-family: var(--font-ui) !important;
+  font-weight: var(--font-weight-semibold) !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+}
+
+/* === Scroll button === */
+.scroll-to-bottom-btn {
+  font-family: var(--font-ui);
+  font-weight: var(--font-weight-medium);
+  border: 1px solid var(--color-hairline);
+  box-shadow: none;
+}
+
+.scroll-to-bottom-btn:hover {
+  background: var(--color-hover-veil);
+  transform: translateX(-50%);
+}
+
+/* === Attach button === */
+.attach-btn {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.attach-btn:hover {
+  background: var(--color-hover-veil) !important;
+  box-shadow: none !important;
+}
+
+/* === Sidebar session list (Codex) === */
+.project-group {
+  margin-bottom: var(--spacing-6);
+  border: none !important;
+  border-radius: var(--radius-nav) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.project-group-header {
+  padding: var(--spacing-8) var(--spacing-10) !important;
+  border: none !important;
+  border-radius: var(--radius-nav) !important;
+  background: transparent !important;
+}
+
+.project-group-header:hover {
+  background: var(--color-hover-veil) !important;
+}
+
+.project-group.active-project > .project-group-header {
+  background: var(--color-hover-veil) !important;
+  box-shadow: none !important;
+}
+
+.project-group-body {
+  padding: 0 0 var(--spacing-6) var(--spacing-8);
+}
+
+.project-group-name {
+  font-size: var(--text-caption) !important;
+  font-weight: var(--font-weight-medium) !important;
+}
+
+.project-group-path {
+  font-size: 13px !important;
+  color: var(--color-mid-ash) !important;
+}
+
+.project-group-count {
+  border: none !important;
+  border-radius: var(--radius-badges) !important;
+  background: var(--color-sidebar-mist) !important;
+  font-size: 12px !important;
+  font-weight: var(--font-weight-medium) !important;
+  min-width: 24px !important;
+  height: 24px !important;
+}
+
+.project-group-more-btn {
+  border: none !important;
+  background: transparent !important;
+  border-radius: var(--radius-nav) !important;
+  color: var(--color-mid-ash) !important;
+}
+
+.project-group-more-btn:hover,
+.project-group-more-btn.active {
+  background: var(--color-hover-veil) !important;
+  color: var(--color-graphite-ink) !important;
+}
+
+.project-group-menu {
+  border: 1px solid var(--color-hairline) !important;
+  border-radius: var(--radius-nav) !important;
+  box-shadow: none !important;
+  background: var(--color-pure-white) !important;
+}
+
+.project-group-menu-item {
+  border-radius: 8px !important;
+  font-family: var(--font-ui) !important;
+  font-size: var(--text-caption) !important;
+}
+
+.project-group-menu-item:hover {
+  background: var(--color-hover-veil) !important;
+}
+
+.new-chat-dropdown {
+  border: 1px solid var(--color-hairline) !important;
+  border-radius: var(--radius-nav) !important;
+  box-shadow: none !important;
+  background: var(--color-pure-white) !important;
+}
+
+.new-chat-dropdown button {
+  font-family: var(--font-ui) !important;
+  font-size: var(--text-caption) !important;
+  font-weight: var(--font-weight-medium) !important;
+  text-align: left;
+  width: 100%;
+  padding: var(--spacing-8) var(--spacing-10);
+  border: none;
+  background: transparent;
+  color: var(--color-graphite-ink);
+}
+
+.new-chat-dropdown button:hover {
+  background: var(--color-hover-veil);
+}
+
+:where(button, [role="button"], a, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--color-mid-ash);
+  outline-offset: 2px;
+}

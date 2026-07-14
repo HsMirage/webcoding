@@ -1,0 +1,81 @@
+/* 11-color-scheme.css — dark mode token overrides */
+
+html[data-color-scheme="dark"] {
+  --color-sidebar-mist: #141414;
+  --color-pure-white: #0d0d0d;
+  --color-graphite-ink: #f5f5f5;
+  --color-mid-ash: #a3a3a3;
+  --color-hollow: #737373;
+  --color-hairline: #ffffff1a;
+  --color-hover-veil: #ffffff0d;
+  --color-ink-press: #ffffff;
+  --color-deep-charcoal: #000000b3;
+  --color-edge-gray: #2e2e2e;
+
+  --bg-tertiary: #1a1a1a;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --surface-muted: rgba(13, 13, 13, 0.92);
+  --surface-overlay-strong: rgba(0, 0, 0, 0.75);
+  --force-overlay-background: rgba(0, 0, 0, 0.72);
+  --select-caret-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23737373'/%3E%3C/svg%3E");
+}
+
+/* === Color scheme toggle === */
+.sidebar-top-leading {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-8);
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.sidebar-top-brand {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-scheme-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.color-scheme-btn .color-scheme-icon {
+  display: block;
+}
+
+.color-scheme-btn .color-scheme-icon[hidden] {
+  display: none !important;
+}
+
+.color-scheme-btn-mobile {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-nav);
+  background: transparent;
+  color: var(--color-graphite-ink);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.color-scheme-btn-mobile:hover {
+  background: var(--color-hover-veil);
+}
+
+@media (max-width: 728px) {
+  .color-scheme-btn-mobile {
+    display: flex;
+  }
+}

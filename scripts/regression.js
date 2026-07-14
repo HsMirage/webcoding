@@ -1813,7 +1813,12 @@ async function runHttpSecurityRegressionCase({ port, password, tempRoot }) {
     const csp = String(index.headers['content-security-policy'] || '');
     assert(csp.includes("script-src 'self' https://cdnjs.cloudflare.com"), 'CSP should allow only the application and pinned script CDN');
     assert(!/script-src[^;]*unsafe-inline/.test(csp), 'CSP must block inline script execution');
-    assert(/style\.css\?v=[a-z0-9]+/.test(index.text) && /app\.js\?v=[a-z0-9]+/.test(index.text), 'Index should receive automatic asset cache versions');
+    assert(
+      /css\/00-tokens\.css\?v=[a-z0-9]+/.test(index.text)
+        && /css\/12-cli-integrations\.css\?v=[a-z0-9]+/.test(index.text)
+        && /app\.js\?v=[a-z0-9]+/.test(index.text),
+      'Index should receive automatic asset cache versions',
+    );
 
     const markdownPath = path.join(tempRoot, 'unsafe-preview.md');
     fs.writeFileSync(markdownPath, '# Preview\n\n<img src=x onerror="window.__xss=1">\n\n[bad](javascript:alert(1))\n');
