@@ -4249,6 +4249,33 @@ async function runDynamicProviderModelDiscoveryRegressionCase({ port, password, 
   }
 }
 
+async function runDeploymentScriptsRegressionCase() {
+  const installSh = fs.readFileSync(path.join(REPO_DIR, 'install.sh'), 'utf8');
+  const installPs1 = fs.readFileSync(path.join(REPO_DIR, 'install.ps1'), 'utf8');
+  const startBat = fs.readFileSync(path.join(REPO_DIR, 'start.bat'), 'utf8');
+  const windowsService = fs.readFileSync(path.join(REPO_DIR, 'deploy', 'windows', 'service.ps1'), 'utf8');
+  const macPlist = fs.readFileSync(path.join(REPO_DIR, 'deploy', 'macos', 'com.webcoding.server.plist'), 'utf8');
+  const linuxService = fs.readFileSync(path.join(REPO_DIR, 'deploy', 'linux', 'webcoding.service'), 'utf8');
+  const gitignore = fs.readFileSync(path.join(REPO_DIR, '.gitignore'), 'utf8');
+
+  assert(/systemctl --user enable webcoding\.service/.test(installSh), 'Linux installer should enable a persistent user systemd service');
+  assert(/launchctl bootstrap/.test(installSh) && /LaunchAgents/.test(installSh), 'macOS installer should manage a persistent LaunchAgent');
+  assert(/SERVICE_KIND="nohup"/.test(installSh), 'Unix installer should retain a nohup fallback when no native service manager is available');
+  assert(/webcoding \{start\|restart\|stop\|status\|logs\|foreground\}/.test(installSh), 'Unix launcher should expose service lifecycle commands');
+
+  assert(/安装\/运行目录/.test(installPs1) && /WEBCODING_DIR/.test(installPs1), 'Windows installer should let the user choose an install/runtime directory');
+  assert(/Register-ScheduledTask/.test(windowsService), 'Windows service helper should register a scheduled task');
+  assert(/New-ScheduledTaskTrigger -AtLogOn/.test(windowsService), 'Windows scheduled task should start automatically at user logon');
+  assert(/ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/.test(windowsService), 'Windows scheduled task should not receive a finite execution timeout');
+  assert(/deploy\\windows\\service\.ps1/.test(startBat), 'start.bat should delegate to the persistent Windows service helper');
+  assert(!/^\s*node\s+server\.js\s*$/mi.test(startBat), 'start.bat must not keep Webcoding attached to the terminal');
+
+  assert(!/\/absolute\/path\/to/.test(macPlist), 'macOS template should use explicit replacement placeholders instead of misleading absolute examples');
+  assert(/__WEBCODING_DIR__/.test(macPlist) && /__NODE_PATH__/.test(macPlist), 'macOS template should document required path substitutions');
+  assert(/KillMode=control-group/.test(linuxService) && /WantedBy=default\.target/.test(linuxService), 'Linux template should clean child processes and target the user service manager');
+  assert(/\.webcoding-service\.sh/.test(gitignore) && /webcoding\.cmd/.test(gitignore), 'Generated service launchers should not dirty installed Git checkouts');
+}
+
 async function runBridgeResponsesFallbackRegressionCase({ tempRoot }) {
   const bridgeTempDir = path.join(tempRoot, 'bridge-fallback');
   mkdirp(bridgeTempDir);
@@ -6066,6 +6093,7 @@ async function main() {
       await runner.run('codex app server client lifecycle', () => runCodexAppServerClientLifecycleRegressionCase(ctx));
       await runner.run('pi rpc client lifecycle cleanup', () => runPiRpcClientLifecycleRegressionCase(ctx));
       await runner.run('custom CLI directories and server limits', () => runCustomCliDirectoriesRegressionCase(ctx));
+      await runner.run('cross-platform persistent deployment scripts', () => runDeploymentScriptsRegressionCase(ctx));
       await runner.run('local agent model sources and startup args', () => runLocalAgentModelSourcesRegressionCase(ctx));
       await runner.run('dynamic provider model discovery', () => runDynamicProviderModelDiscoveryRegressionCase(ctx));
       await runner.run('bridge ignores legacy reasoning effort config', () => runBridgeReasoningEffortRegressionCase(ctx));

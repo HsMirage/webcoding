@@ -2,6 +2,9 @@ node_modules/
 sessions/
 logs/
 server.log
+.webcoding-service.sh
+.webcoding-service-kind
+webcoding.cmd
 test-results/
 attachments/
 .DS_Store

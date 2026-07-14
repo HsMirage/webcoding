@@ -49,7 +49,15 @@ Windows PowerShell：
 $s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression $s
 ```
 
-安装器会显示“安装、启动、更新、重装依赖、卸载”等选项。服务启动后：
+安装器会先让你确认安装/运行目录，再显示安装、启动/重启、更新、重装依赖、停止、状态和卸载等选项。启动时会自动配置持久化后台服务：Linux 优先使用用户级 `systemd`，macOS 使用 `LaunchAgent`，Windows 使用当前用户的计划任务。关闭终端不会停止 Webcoding；使用原生服务管理器时，下次登录也会自动启动。
+
+安装后可使用统一管理命令：
+
+```text
+webcoding start | restart | stop | status | logs
+```
+
+服务启动后：
 
 1. 打开 `http://localhost:8001`。
 2. 使用终端打印的 12 位初始密码登录。
@@ -66,7 +74,7 @@ npm install
 npm start
 ```
 
-Windows 也可以在安装依赖后双击 `start.bat`。
+Windows 也可以在安装依赖后双击 `start.bat`；它会注册并启动后台计划任务，不再把服务绑在当前终端窗口上。
 
 </details>
 
@@ -149,8 +157,8 @@ Claude 会自动继承常见的 `ANTHROPIC_*`、`AWS_*` 变量，Codex 继承 `O
 在“设置 → 代理渠道”中可以：
 
 - 分别让 Claude、Codex、Pi 使用本机配置或某个 AI 提供商。
-- 保存多套 API Key、API Base URL、上游协议和模型映射。
-- 从上游获取模型列表，并为三个 Agent 分别切换渠道。
+- 保存多套 API Key、API Base URL、上游协议和默认模型。
+- 仅在会话中输入 `/model` 或点击“切换模型”时，由后端实时获取当前服务商模型列表。
 - 通过隔离的运行时目录使用统一提供商，不覆盖本机 Codex 或 Pi 配置。
 
 API Key 在界面和 WebSocket 响应中都会脱敏。
@@ -214,45 +222,13 @@ server {
 
 ## 常驻部署
 
-### Linux systemd
+一键安装器会自动完成当前用户级别的常驻配置，不需要管理员权限：
 
-<details>
-<summary>查看 service 示例</summary>
+- Linux：写入 `~/.config/systemd/user/webcoding.service` 并启用用户服务；若当前环境没有可用的用户级 `systemd`，自动回退到 `nohup`。
+- macOS：写入 `~/Library/LaunchAgents/com.webcoding.server.plist`，通过 `launchctl` 加载并保持运行。
+- Windows：注册当前用户的 `Webcoding` 计划任务，登录后自动启动；关闭 PowerShell、CMD 或 `start.bat` 窗口不会终止服务。
 
-创建 `/etc/systemd/system/webcoding.service`：
-
-```ini
-[Unit]
-Description=Webcoding browser workspace
-After=network.target
-
-[Service]
-Type=simple
-User=your-user
-WorkingDirectory=/path/to/webcoding
-ExecStart=/usr/bin/node /path/to/webcoding/server.js
-Restart=on-failure
-RestartSec=5
-KillMode=control-group
-Environment=HOST=127.0.0.1
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now webcoding
-```
-
-`KillMode=control-group` 会在服务停止时一并清理常驻 CLI 子进程。正在生成的轮次会中断，但下一次请求仍可通过已保存的原生会话编号续接上下文。
-
-</details>
-
-### macOS 与 Windows
-
-- macOS 提供 [LaunchAgent 模板](./deploy/macos/com.webcoding.server.plist)，使用前替换其中的绝对路径。
-- Windows 可以使用一键安装器或 `start.bat` 常驻启动。
+高级用户也可以参考 [Linux service 模板](./deploy/linux/webcoding.service) 和 [macOS LaunchAgent 模板](./deploy/macos/com.webcoding.server.plist) 手动部署。Linux 服务器若希望退出 SSH 后仍保持用户服务并在开机时运行，可额外执行 `sudo loginctl enable-linger "$USER"`。
 
 ## 更新
 
@@ -264,13 +240,13 @@ npm install
 npm start
 ```
 
-如果使用 systemd、LaunchAgent 或其他进程管理器，请在更新后重启对应服务。
+一键安装器更新完成后会询问是否立即重启后台服务；也可以稍后运行 `webcoding restart`。
 
 ## 开发与验证
 
 ```bash
 npm start             # 启动服务，无构建步骤
-npm run regression    # 46 项隔离 mock 回归，不调用真实模型
+npm run regression    # 48 项隔离 mock 回归，不调用真实模型
 npm run contract:cli  # 检查本机三套 CLI 的参数和协议，不发送模型请求
 npm test              # 依次运行以上两组检查
 ```
@@ -286,10 +262,11 @@ webcoding/
 ├── lib/                   # Agent 适配器、双向客户端、历史解析、本地 API bridge
 ├── public/                # 原生 JavaScript SPA 与模块化 CSS
 ├── scripts/               # 回归、CLI 契约检查和 mock CLI
+├── deploy/                # Linux、macOS、Windows 后台服务模板与管理脚本
 ├── config/                # 运行时配置（自动生成）
 ├── sessions/              # 会话、附件和每轮运行文件（自动生成）
 ├── logs/                  # JSONL 进程日志（自动生成）
-├── install.sh / install.ps1
+├── install.sh / install.ps1 / start.bat
 └── package.json
 ```
 

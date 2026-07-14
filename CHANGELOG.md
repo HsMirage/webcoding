@@ -13,8 +13,16 @@
 
 ### 验证
 
-- 47 项隔离回归全部通过
+- 48 项隔离回归全部通过
 - Claude Code、Codex App Server、Pi RPC 三套真实 CLI 契约检查全部通过
+
+### 跨平台一键部署
+
+- Windows 安装器新增安装/运行目录选择，不再只能默认安装到用户主目录
+- Windows 改为注册当前用户计划任务，关闭 PowerShell、CMD 或 `start.bat` 窗口后服务继续运行，并在下次登录后自动启动
+- Linux 一键安装器自动生成用户级 `systemd` 服务，macOS 自动生成并加载 `LaunchAgent`；不可用时保留 `nohup` 回退
+- 三个平台统一提供 `start`、`restart`、`stop`、`status`、`logs` 管理入口，更新和卸载会同步处理后台服务
+- 新增 Linux systemd、macOS LaunchAgent 和 Windows 计划任务的静态回归覆盖
 
 ## v2.0.3 - 2026-07-14
 

@@ -6,25 +6,27 @@
     <string>com.webcoding.server</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/absolute/path/to/npm</string>
-        <string>start</string>
+        <string>__NODE_PATH__</string>
+        <string>__WEBCODING_DIR__/server.js</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/absolute/path/to/webcoding</string>
+    <string>__WEBCODING_DIR__</string>
     <key>StandardOutPath</key>
-    <string>/absolute/path/to/webcoding/logs/launch-agent.log</string>
+    <string>__WEBCODING_DIR__/logs/server.log</string>
     <key>StandardErrorPath</key>
-    <string>/absolute/path/to/webcoding/logs/launch-agent.log</string>
+    <string>__WEBCODING_DIR__/logs/server.err.log</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/absolute/path/to/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>__NODE_BIN_DIR__:__HOME_DIR__/.local/bin:__HOME_DIR__/.volta/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 </dict>
 </plist>

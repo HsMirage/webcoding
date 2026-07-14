@@ -1,0 +1,16 @@
+[Unit]
+Description=Webcoding browser workspace
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory="__WEBCODING_DIR__"
+ExecStart="__NODE_PATH__" "__WEBCODING_DIR__/server.js"
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+Environment="PATH=__NODE_BIN_DIR__:__HOME_DIR__/.local/bin:__HOME_DIR__/.volta/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=default.target

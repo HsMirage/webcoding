@@ -1,120 +1,185 @@
-# Webcoding 一键安装脚本 (Windows PowerShell)
-# 用法 (在 PowerShell 中运行):
-#   irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1 | iex
-# 或指定安装目录:
-#   $env:WEBCODING_DIR = "C:\webcoding"; irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1 | iex
+# Webcoding 一键安装与服务管理脚本 (Windows PowerShell)
+#
+# 交互安装：
+#   $s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression $s
+# 指定安装目录：
+#   $env:WEBCODING_DIR = 'D:\Apps\webcoding'; $s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression $s
 
 $ErrorActionPreference = 'Stop'
 
-# 检测是否以管道方式运行（irm | iex），此时无法 pause，用 try/catch 兜底防闪退
+$REPO = 'https://github.com/HsMirage/webcoding.git'
+$RAW_BASE = 'https://raw.githubusercontent.com/HsMirage/webcoding/main'
+$SERVICE_SCRIPT_RELATIVE = 'deploy\windows\service.ps1'
 $_isPiped = -not [Environment]::UserInteractive -or ($Host.Name -eq 'ConsoleHost' -and $MyInvocation.InvocationName -eq '')
+
+function Write-Info    { param([string]$Message) Write-Host "[Webcoding] $Message" -ForegroundColor Cyan }
+function Write-Success { param([string]$Message) Write-Host "[Webcoding] $Message" -ForegroundColor Green }
+function Write-Warn    { param([string]$Message) Write-Host "[Webcoding] $Message" -ForegroundColor Yellow }
+function Write-Err     { param([string]$Message) Write-Host "[Webcoding] ERROR: $Message" -ForegroundColor Red; Pause-IfNeeded; exit 1 }
 
 function Pause-IfNeeded {
     if ($_isPiped) {
         Write-Host ''
         Write-Host '按 Enter 键退出...' -ForegroundColor Gray
-        try { Read-Host } catch { }
+        try { Read-Host | Out-Null } catch { }
     }
 }
 
-$REPO        = 'https://github.com/HsMirage/webcoding.git'
-$RAW_BASE    = 'https://raw.githubusercontent.com/HsMirage/webcoding/main'
-$INSTALL_DIR = if ($env:WEBCODING_DIR) { $env:WEBCODING_DIR } else { Join-Path $HOME 'webcoding' }
+function Resolve-InstallDirectory {
+    $defaultDir = Join-Path $HOME 'webcoding'
+    if ($env:WEBCODING_DIR) {
+        $value = $env:WEBCODING_DIR
+    } elseif (-not [Environment]::UserInteractive) {
+        $value = $defaultDir
+    } else {
+        Write-Host "默认安装/运行目录: $defaultDir" -ForegroundColor Gray
+        try { $value = Read-Host '请输入安装/运行目录，直接回车使用默认目录' } catch { $value = '' }
+        if (-not $value) { $value = $defaultDir }
+    }
+    $expanded = [Environment]::ExpandEnvironmentVariables($value)
+    if ($expanded -eq '~') { $expanded = $HOME }
+    elseif ($expanded.StartsWith('~\') -or $expanded.StartsWith('~/')) {
+        $expanded = Join-Path $HOME $expanded.Substring(2)
+    }
+    try {
+        $resolved = [IO.Path]::GetFullPath($expanded)
+        if ($resolved.TrimEnd('\') -ieq ([IO.Path]::GetPathRoot($resolved)).TrimEnd('\')) {
+            Write-Err '安装目录不能是磁盘根目录。'
+        }
+        return $resolved
+    }
+    catch { Write-Err "安装目录无效: $value" }
+}
 
-function Write-Info    { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Cyan   }
-function Write-Success { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Green  }
-function Write-Warn    { param($msg) Write-Host "[Webcoding] $msg" -ForegroundColor Yellow }
-function Write-Err     { param($msg) Write-Host "[Webcoding] ERROR: $msg" -ForegroundColor Red; Pause-IfNeeded; exit 1 }
+$INSTALL_DIR = Resolve-InstallDirectory
+$SERVICE_SCRIPT = Join-Path $INSTALL_DIR $SERVICE_SCRIPT_RELATIVE
+$FALLBACK_SERVICE_SCRIPT = Join-Path $INSTALL_DIR 'logs\webcoding-service.ps1'
 
-# ── 工具函数 ──────────────────────────────────────────────────
 function Get-PackageVersion {
     param([string]$JsonPath)
-    try {
-        $pkg = Get-Content $JsonPath -Raw | ConvertFrom-Json
-        return $pkg.version
-    } catch { return '' }
+    try { return (Get-Content $JsonPath -Raw | ConvertFrom-Json).version }
+    catch { return '' }
 }
 
 function Compare-VersionLt {
-    param([string]$a, [string]$b)
-    if ($a -eq $b) { return $false }
+    param([string]$A, [string]$B)
+    if ($A -eq $B) { return $false }
     try {
-        $va = [System.Version]"$a.0"
-        $vb = [System.Version]"$b.0"
-        return $va -lt $vb
+        return ([Version]("$A.0")) -lt ([Version]("$B.0"))
     } catch { return $false }
 }
 
-# ── 卸载函数 ──────────────────────────────────────────────────
-function Invoke-Uninstall {
-    if (-not (Test-Path $INSTALL_DIR)) {
-        Write-Err "未找到安装目录: $INSTALL_DIR，无法卸载。"
+function Assert-Dependencies {
+    Write-Info '检查依赖环境...'
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Err '未找到 git。请先安装 git: https://git-scm.com/' }
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Err '未找到 Node.js。请先安装 Node.js >= 22: https://nodejs.org/' }
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Write-Err '未找到 npm，请确认 Node.js 安装完整。' }
+    $nodeMajor = node -e 'process.stdout.write(process.versions.node.split(".")[0])' 2>$null
+    if ([int]$nodeMajor -lt 22) {
+        Write-Err "Node.js 版本过低 (当前: $(node -v))，需要 >= 22。请升级: https://nodejs.org/"
     }
-    Write-Warn "即将卸载 Webcoding:"
-    Write-Warn "  安装目录 : $INSTALL_DIR"
-    Write-Warn "  启动脚本 : $INSTALL_DIR\webcoding.cmd"
-    Write-Host ''
-    $confirm = Read-Host '确认卸载? 此操作不可撤销 (y/N)'
-    if ($confirm -notmatch '^[Yy]') {
-        Write-Info '已取消卸载。'
-        exit 0
+    Write-Success "Node.js $(node -v)  npm $(npm -v)  git $(git --version) — 全部就绪"
+
+    $agents = @()
+    if (Get-Command claude -ErrorAction SilentlyContinue) { $agents += 'Claude' }
+    if (Get-Command codex -ErrorAction SilentlyContinue) { $agents += 'Codex' }
+    if (Get-Command pi -ErrorAction SilentlyContinue) { $agents += 'Pi' }
+    if ($agents.Count -gt 0) { Write-Success "检测到 Agent CLI: $($agents -join ', ')" }
+    else { Write-Warn '未检测到 Claude、Codex 或 Pi CLI；安装完成后请至少配置其中一个。' }
+}
+
+function Ensure-ServiceScript {
+    if (Test-Path $SERVICE_SCRIPT) { return $SERVICE_SCRIPT }
+    if (-not (Test-Path (Join-Path $INSTALL_DIR 'server.js'))) {
+        Write-Err '未找到 server.js，请先安装 Webcoding。'
     }
-    # 终止进程
-    $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -like "*$INSTALL_DIR*server.js*"
-    }
-    if ($procs) {
-        $procs | ForEach-Object {
-            Write-Info "终止进程 PID $($_.ProcessId)..."
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    $serviceDir = Split-Path -Parent $FALLBACK_SERVICE_SCRIPT
+    if (-not (Test-Path $serviceDir)) { New-Item -ItemType Directory -Path $serviceDir -Force | Out-Null }
+    $hasCachedFallback = Test-Path $FALLBACK_SERVICE_SCRIPT
+    Write-Warn '当前安装缺少内置 Windows 后台服务脚本，正在获取最新版...'
+    try {
+        Invoke-WebRequest -Uri "$RAW_BASE/deploy/windows/service.ps1" -UseBasicParsing -OutFile $FALLBACK_SERVICE_SCRIPT
+    } catch {
+        if (-not $hasCachedFallback) {
+            Write-Err "下载 Windows 后台服务脚本失败: $($_.Exception.Message)"
         }
-        Start-Sleep -Seconds 1
+        Write-Warn '无法刷新后台服务脚本，将继续使用本地缓存。'
     }
-    # 删除目录
+    return $FALLBACK_SERVICE_SCRIPT
+}
+
+function Invoke-ServiceCommand {
+    param([ValidateSet('start', 'restart', 'stop', 'status', 'logs', 'uninstall')][string]$Command)
+    $script = Ensure-ServiceScript
+    $engine = (Get-Process -Id $PID).Path
+    & $engine -NoProfile -ExecutionPolicy Bypass -File $script -Command $Command -InstallDir $INSTALL_DIR
+    if ($LASTEXITCODE -ne 0) {
+        throw "后台服务命令执行失败: $Command"
+    }
+}
+
+function Install-CommandLauncher {
+    $launcherPath = Join-Path $INSTALL_DIR 'webcoding.cmd'
+    @'
+@echo off
+chcp 65001 >nul 2>&1
+set "ACTION=%~1"
+if "%ACTION%"=="" set "ACTION=start"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0deploy\windows\service.ps1" -Command "%ACTION%" -InstallDir "%~dp0"
+'@ | Set-Content -Encoding ASCII $launcherPath
+
+    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $entries = @($userPath -split ';' | Where-Object { $_ })
+    $exists = $entries | Where-Object { $_.TrimEnd('\') -ieq $INSTALL_DIR.TrimEnd('\') }
+    if (-not $exists) {
+        $newPath = (@($entries) + $INSTALL_DIR) -join ';'
+        [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+        Write-Warn "已将 $INSTALL_DIR 加入用户 PATH，重新打开终端后生效。"
+    }
+    if (($env:PATH -split ';' | ForEach-Object { $_.TrimEnd('\') }) -notcontains $INSTALL_DIR.TrimEnd('\')) {
+        $env:PATH = "$env:PATH;$INSTALL_DIR"
+    }
+}
+
+function Remove-ServiceFallback {
+    try {
+        Stop-ScheduledTask -TaskName 'Webcoding' -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName 'Webcoding' -Confirm:$false -ErrorAction SilentlyContinue
+    } catch { }
+    try {
+        Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object {
+            $_.CommandLine -and $_.CommandLine.IndexOf((Join-Path $INSTALL_DIR 'server.js'), [StringComparison]::OrdinalIgnoreCase) -ge 0
+        } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    } catch { }
+}
+
+function Invoke-Uninstall {
+    if (-not (Test-Path $INSTALL_DIR)) { Write-Err "未找到安装目录: $INSTALL_DIR，无法卸载。" }
+    Write-Warn '即将卸载 Webcoding:'
+    Write-Warn "  安装目录 : $INSTALL_DIR"
+    Write-Warn '  后台服务 : Windows 计划任务 Webcoding'
+    $confirm = Read-Host '确认卸载? 此操作不可撤销 (y/N)'
+    if ($confirm -notmatch '^[Yy]') { Write-Info '已取消卸载。'; exit 0 }
+
+    if ((Test-Path $SERVICE_SCRIPT) -or (Test-Path $FALLBACK_SERVICE_SCRIPT)) {
+        try { Invoke-ServiceCommand 'uninstall' } catch { Remove-ServiceFallback }
+    } else {
+        Remove-ServiceFallback
+    }
+
     Write-Info '删除安装目录...'
     Remove-Item -Recurse -Force $INSTALL_DIR
-    # 清理用户 PATH
     $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
-    if ($userPath -like "*$INSTALL_DIR*") {
-        $newPath = ($userPath -split ';' | Where-Object { $_ -ne $INSTALL_DIR }) -join ';'
-        [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
-        Write-Info '已从用户 PATH 移除安装目录。'
-    }
-    Write-Host ''
-    Write-Success '================================================'
-    Write-Success ' Webcoding 已成功卸载！'
-    Write-Success '================================================'
+    $newPath = ($userPath -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ine $INSTALL_DIR.TrimEnd('\') }) -join ';'
+    [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+    Write-Success 'Webcoding 已成功卸载。'
+    Pause-IfNeeded
     exit 0
 }
 
-# ── 检查依赖 ──────────────────────────────────────────────────
-Write-Info '检查依赖环境...'
-if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { Write-Err '未找到 git。请先安装 git: https://git-scm.com/' }
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Err '未找到 Node.js。请先安装 Node.js >= 22: https://nodejs.org/' }
-if (-not (Get-Command npm  -ErrorAction SilentlyContinue)) { Write-Err '未找到 npm，请确认 Node.js 安装完整。' }
-$nodeVer = (node -e 'process.stdout.write(process.versions.node.split(".")[0])' 2>$null)
-if ([int]$nodeVer -lt 22) {
-    Write-Err "Node.js 版本过低 (当前: $(node -v))，需要 >= 22。请升级: https://nodejs.org/"
-}
-Write-Success "Node.js $(node -v)  npm $(npm -v)  git $(git --version) — 全部就绪"
-
-# ── 检测 AI CLI ────────────────────────────────────────────────
-$hasClaude = [bool](Get-Command claude -ErrorAction SilentlyContinue)
-$hasCodex  = [bool](Get-Command codex  -ErrorAction SilentlyContinue)
-if ($hasClaude -and $hasCodex)    { Write-Success '检测到 Claude CLI 和 Codex CLI' }
-elseif ($hasClaude)                { Write-Warn '仅检测到 Claude CLI（未找到 codex），Codex 功能将不可用' }
-elseif ($hasCodex)                 { Write-Warn '仅检测到 Codex CLI（未找到 claude），Claude 功能将不可用' }
-else {
-    Write-Warn '未检测到 Claude CLI 或 Codex CLI'
-    Write-Warn '  Claude CLI : https://docs.anthropic.com/en/docs/claude-code'
-    Write-Warn '  Codex CLI  : https://github.com/openai/codex'
-}
-
-# ── 获取版本信息 ───────────────────────────────────────────────
-$localVer   = ''
-$remoteVer  = ''
+$localVer = ''
+$remoteVer = ''
 $isInstalled = $false
-
 $localPkg = Join-Path $INSTALL_DIR 'package.json'
 if ((Test-Path (Join-Path $INSTALL_DIR '.git')) -and (Test-Path $localPkg)) {
     $isInstalled = $true
@@ -123,23 +188,21 @@ if ((Test-Path (Join-Path $INSTALL_DIR '.git')) -and (Test-Path $localPkg)) {
 
 try {
     $remoteJson = (Invoke-WebRequest -Uri "$RAW_BASE/package.json" -UseBasicParsing).Content
-    $remoteVer  = ($remoteJson | ConvertFrom-Json).version
+    $remoteVer = ($remoteJson | ConvertFrom-Json).version
 } catch {
     Write-Warn '无法获取远端版本信息。'
 }
 
-# ── 显示状态 ───────────────────────────────────────────────────
 Write-Host ''
 if ($isInstalled) {
     Write-Host "  已安装目录 : $INSTALL_DIR" -ForegroundColor White
-    if ($localVer)  { Write-Host "  本地版本   : v$localVer"  -ForegroundColor Cyan }
+    if ($localVer) { Write-Host "  本地版本   : v$localVer" -ForegroundColor Cyan }
 } else {
     Write-Host "  安装目录   : $INSTALL_DIR（尚未安装）" -ForegroundColor White
 }
 if ($remoteVer) { Write-Host "  最新版本   : v$remoteVer" -ForegroundColor Cyan }
 Write-Host ''
 
-# ── 交互菜单 ───────────────────────────────────────────────────
 $updateLabel = '更新到最新版'
 if ($remoteVer) { $updateLabel = "更新到最新版 v$remoteVer" }
 if ($localVer -and $remoteVer -and -not (Compare-VersionLt $localVer $remoteVer)) {
@@ -147,161 +210,103 @@ if ($localVer -and $remoteVer -and -not (Compare-VersionLt $localVer $remoteVer)
 }
 
 Write-Host '请选择操作:' -ForegroundColor White
-Write-Host '  1) 安装'                          -ForegroundColor White
-Write-Host '  2) 启动'                          -ForegroundColor White
-Write-Host "  3) $updateLabel"                  -ForegroundColor White
-Write-Host '  4) 安装依赖'                      -ForegroundColor White
-Write-Host '  5) 卸载 Webcoding'               -ForegroundColor White
-Write-Host '  6) 退出'                          -ForegroundColor White
+Write-Host '  1) 安装' -ForegroundColor White
+Write-Host '  2) 启动或重启持久化后台服务' -ForegroundColor White
+Write-Host "  3) $updateLabel" -ForegroundColor White
+Write-Host '  4) 重装依赖' -ForegroundColor White
+Write-Host '  5) 停止当前后台服务' -ForegroundColor White
+Write-Host '  6) 查看服务状态' -ForegroundColor White
+Write-Host '  7) 卸载 Webcoding' -ForegroundColor White
+Write-Host '  8) 退出' -ForegroundColor White
 Write-Host ''
-$choice = Read-Host '请输入选项 [1-6]'
+$choice = Read-Host '请输入选项 [1-8]'
 if (-not $choice) { $choice = '1' }
 
+$action = ''
+$startAction = 'start'
 switch ($choice) {
-    '1' {
-        if ($isInstalled) {
-            Write-Warn "已安装，如需重装请先卸载（选项 5）或手动删除: Remove-Item -Recurse -Force '$INSTALL_DIR'"
-            exit 0
-        }
-        Write-Info "克隆仓库到 $INSTALL_DIR ..."
-        git clone --depth 1 $REPO $INSTALL_DIR
-    }
-    '2' {
-        $srv = Join-Path $INSTALL_DIR 'server.js'
-        if (-not (Test-Path $srv)) { Write-Err '未找到 server.js，请先安装（选项 1）。' }
-        Write-Info '启动 Webcoding...'
-        $logDir = Join-Path $INSTALL_DIR 'logs'
-        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
-        $logFile = Join-Path $logDir 'server.log'
-        $p = Start-Process -FilePath 'node' -ArgumentList $srv -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError "$logDir\server.err.log" -PassThru
-        $_port = if ($env:PORT) { $env:PORT } else { '8001' }
-        Write-Success "Webcoding 已在后台启动 (PID: $($p.Id))，访问 http://localhost:$_port"
-        Write-Info "停止服务: Stop-Process -Id $($p.Id)"
-        Start-Sleep -Seconds 2
-        if (Test-Path $logFile) {
-            $initPw = Get-Content $logFile | Select-String '自动生成初始密码' | Select-Object -Last 1
-            if ($initPw) {
-                $pw = ($initPw.Line -replace '.*自动生成初始密码:[\s]*', '').Trim()
-                Write-Host ''
-                Write-Success '================================================'
-                Write-Success "  初始登录密码: $pw"
-                Write-Success '  首次登录后将要求修改密码'
-                Write-Success '================================================'
-                Write-Host ''
-            }
-        }
+    '1' { $action = 'install' }
+    '2' { $action = 'start'; $startAction = 'restart' }
+    '3' { $action = 'update'; $startAction = 'restart' }
+    '4' { $action = 'deps' }
+    '5' {
+        try { Invoke-ServiceCommand 'stop' } catch { Write-Err $_.Exception.Message }
         Pause-IfNeeded
         exit 0
     }
-    '3' {
-        if (-not (Test-Path (Join-Path $INSTALL_DIR '.git'))) {
-            Write-Err '未找到安装目录，请先安装（选项 1）。'
+    '6' {
+        try { Invoke-ServiceCommand 'status' } catch { Write-Warn $_.Exception.Message }
+        Pause-IfNeeded
+        exit 0
+    }
+    '7' { Invoke-Uninstall }
+    '8' { Write-Info '已退出。'; Pause-IfNeeded; exit 0 }
+    default { Write-Err '无效选项。' }
+}
+
+Assert-Dependencies
+
+if ($action -eq 'start') {
+    try { Invoke-ServiceCommand $startAction } catch { Write-Err $_.Exception.Message }
+    Pause-IfNeeded
+    exit 0
+}
+
+switch ($action) {
+    'install' {
+        if ($isInstalled) { Write-Err '已安装。如需覆盖，请选择更新或先卸载。' }
+        Write-Info "克隆仓库到 $INSTALL_DIR ..."
+        $parentDir = Split-Path -Parent $INSTALL_DIR
+        if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
+        git clone --depth 1 $REPO $INSTALL_DIR
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Git 克隆失败。' }
+    }
+    'update' {
+        if (-not (Test-Path (Join-Path $INSTALL_DIR '.git'))) { Write-Err '未找到安装目录，请先安装。' }
+        if ($localVer -and $remoteVer -and -not (Compare-VersionLt $localVer $remoteVer)) {
+            Write-Warn '当前已是最新版，仍会校准代码、依赖和服务配置。'
         }
         Write-Info '拉取最新代码...'
         git -C $INSTALL_DIR fetch --depth=1 origin main
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Git fetch 失败。' }
         git -C $INSTALL_DIR reset --hard origin/main
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Git 更新失败。' }
     }
-    '4' {
-        if (-not (Test-Path $INSTALL_DIR)) { Write-Err '未找到安装目录，请先安装（选项 1）。' }
-        Write-Info '安装 Node.js 依赖...'
-        Set-Location $INSTALL_DIR
-        npm install --omit=dev
-        Write-Success '依赖安装完成。'
-        exit 0
+    'deps' {
+        if (-not (Test-Path (Join-Path $INSTALL_DIR 'package.json'))) { Write-Err '未找到安装目录，请先安装。' }
     }
-    '5' { Invoke-Uninstall }
-    '6' { Write-Info '已退出。'; exit 0 }
-    default { Write-Warn '无效选项，退出。'; exit 1 }
 }
-
-# 选项 1/3 后继续：安装依赖 + 写入 launcher
-Set-Location $INSTALL_DIR
 
 Write-Info '安装 Node.js 依赖...'
-npm install --omit=dev
-
-# ── 写入快捷启动脚本 ───────────────────────────────────────────
-$launcherPath = Join-Path $INSTALL_DIR 'webcoding.cmd'
-@"
-@echo off
-node ""$INSTALL_DIR\server.js"" %*
-"@ | Set-Content -Encoding ASCII $launcherPath
-
-$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
-if ($userPath -notlike "*$INSTALL_DIR*") {
-    [Environment]::SetEnvironmentVariable('PATH', "$userPath;$INSTALL_DIR", 'User')
-    Write-Warn "已将 $INSTALL_DIR 加入用户 PATH，重新打开终端后生效。"
+Push-Location $INSTALL_DIR
+try {
+    npm install --omit=dev
+    if ($LASTEXITCODE -ne 0) { Write-Err '依赖安装失败。' }
+} finally {
+    Pop-Location
 }
 
-# ── 完成提示 ───────────────────────────────────────────────────
+Ensure-ServiceScript | Out-Null
+Install-CommandLauncher
+
 Write-Host ''
 Write-Success '================================================'
-if ($isInstalled) {
-    Write-Success ' Webcoding 更新完成！'
-} else {
-    Write-Success ' Webcoding 安装完成！'
-}
+if ($action -eq 'install') { Write-Success ' Webcoding 安装完成！' }
+elseif ($action -eq 'deps') { Write-Success ' Webcoding 依赖与服务配置完成！' }
+else { Write-Success ' Webcoding 更新完成！' }
 Write-Success '================================================'
 Write-Host ''
-Write-Host '  启动命令 : webcoding'                       -ForegroundColor White
-Write-Host "  或双击   : $INSTALL_DIR\webcoding.cmd"      -ForegroundColor White
-Write-Host "  或直接   : node $INSTALL_DIR\server.js"     -ForegroundColor White
-Write-Host '  访问地址 : http://localhost:8001'            -ForegroundColor White
-Write-Host ''
-Write-Info '首次启动时会自动生成登录密码并打印在控制台。'
+Write-Host "  安装目录 : $INSTALL_DIR" -ForegroundColor White
+Write-Host '  管理命令 : webcoding start | restart | stop | status | logs' -ForegroundColor White
+Write-Host '  运行方式 : Windows 计划任务（登录后自动启动，关闭终端不停止）' -ForegroundColor White
+Write-Host '  访问地址 : http://localhost:8001' -ForegroundColor White
 Write-Host ''
 
-$startNow = Read-Host '现在立即启动 Webcoding? (Y/n)'
+$startNow = Read-Host '现在立即启动持久化后台服务? (Y/n)'
 if ($startNow -notmatch '^[Nn]') {
-    # 检测端口是否已被占用
-    $_port = if ($env:PORT) { [int]$env:PORT } else { 8001 }
-    $_listener = $null
-    try {
-        $_listener = Get-NetTCPConnection -LocalPort $_port -State Listen -ErrorAction SilentlyContinue
-    } catch { }
-    if ($_listener) {
-        $_pid = $_listener | Select-Object -First 1 -ExpandProperty OwningProcess
-        # 判断占用进程是否是 Webcoding 自身
-        $_proc = Get-CimInstance Win32_Process -Filter "ProcessId=$_pid" -ErrorAction SilentlyContinue
-        if ($_proc -and $_proc.CommandLine -like '*server.js*') {
-            Write-Warn "Webcoding 已在运行 (PID: $_pid，端口 $_port)。"
-            $_restart = Read-Host '是否重启 Webcoding? (Y/n)'
-            if ($_restart -notmatch '^[Nn]') {
-                Stop-Process -Id $_pid -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 1
-                $p = Start-Process -FilePath 'node' -ArgumentList "$INSTALL_DIR\server.js" -WindowStyle Hidden -PassThru
-                Write-Success "Webcoding 已在后台启动 (PID: $($p.Id))，访问 http://localhost:$_port"
-                Write-Info "停止服务: Stop-Process -Id $($p.Id)"
-            } else {
-                Write-Info '已跳过启动，现有实例继续运行。'
-            }
-        } else {
-            Write-Warn "端口 $_port 已被其他进程占用 (PID: $_pid)，无法启动。"
-            Write-Info "请先释放端口，或使用其他端口: `$env:PORT=<端口号>; node '$INSTALL_DIR\server.js'"
-        }
-    } else {
-        $logDir = Join-Path $INSTALL_DIR 'logs'
-        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
-        $logFile = Join-Path $logDir 'server.log'
-        $p = Start-Process -FilePath 'node' -ArgumentList "$INSTALL_DIR\server.js" -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError "$logDir\server.err.log" -PassThru
-        Write-Success "Webcoding 已在后台启动 (PID: $($p.Id))，访问 http://localhost:$_port"
-        Write-Info "停止服务: Stop-Process -Id $($p.Id)"
-        # 等待服务初始化，提取初始密码
-        Start-Sleep -Seconds 2
-        if (Test-Path $logFile) {
-            $initPw = Get-Content $logFile | Select-String '自动生成初始密码' | Select-Object -Last 1
-            if ($initPw) {
-                $pw = ($initPw.Line -replace '.*自动生成初始密码:[\s]*', '').Trim()
-                Write-Host ''
-                Write-Success '================================================'
-                Write-Success "  初始登录密码: $pw"
-                Write-Success '  首次登录后将要求修改密码'
-                Write-Success '================================================'
-                Write-Host ''
-            }
-        }
-    }
+    try { Invoke-ServiceCommand $startAction } catch { Write-Err $_.Exception.Message }
 } else {
-    Write-Info "稍后运行 'webcoding' 或双击 webcoding.cmd 启动。"
+    Write-Info "稍后运行 '$INSTALL_DIR\webcoding.cmd start' 即可启动。"
 }
+
 Pause-IfNeeded

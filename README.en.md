@@ -49,7 +49,15 @@ Windows PowerShell:
 $s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression $s
 ```
 
-The installer offers install, start, update, dependency reinstall, and uninstall actions. After startup:
+The installer first asks for the install/runtime directory, then offers install, start/restart, update, dependency reinstall, stop, status, and uninstall actions. Startup automatically configures a persistent background service: user-level `systemd` on Linux, a LaunchAgent on macOS, and a per-user Scheduled Task on Windows. Closing the terminal no longer stops Webcoding; native service-manager setups also start again after the next login.
+
+The installed service uses the same lifecycle commands on every platform:
+
+```text
+webcoding start | restart | stop | status | logs
+```
+
+After startup:
 
 1. Open `http://localhost:8001`.
 2. Sign in with the 12-character password printed in the terminal.
@@ -66,7 +74,7 @@ npm install
 npm start
 ```
 
-On Windows, you can also run `start.bat` after installing dependencies.
+On Windows, you can also run `start.bat` after installing dependencies. It registers and starts the background Scheduled Task instead of attaching the server to the current terminal.
 
 </details>
 
@@ -149,8 +157,8 @@ Claude automatically receives common `ANTHROPIC_*` and `AWS_*` variables, Codex 
 Under **Settings → Agent Channels**, you can:
 
 - Let Claude, Codex, and Pi independently use local configuration or an AI provider.
-- Save multiple API keys, base URLs, upstream protocols, and model mappings.
-- Fetch the upstream model list and switch channels independently for each agent.
+- Save multiple API keys, base URLs, upstream protocols, and default models.
+- Fetch the current provider's model list from the backend only when `/model` or **Switch Model** is opened in a session.
 - Use isolated runtime directories for managed providers without overwriting local Codex or Pi configuration.
 
 API keys are masked in both the UI and WebSocket responses.
@@ -214,45 +222,13 @@ Browser ←WebSocket→ Node.js (server.js) ─┬─stream-json→ Claude CLI
 
 ## Long-running Deployment
 
-### Linux systemd
+The one-line installer configures persistence for the current user without requiring administrator access:
 
-<details>
-<summary>Show service example</summary>
+- Linux: writes `~/.config/systemd/user/webcoding.service` and enables the user service; falls back to `nohup` when a user systemd manager is unavailable.
+- macOS: writes `~/Library/LaunchAgents/com.webcoding.server.plist` and loads it with `launchctl`.
+- Windows: registers the per-user `Webcoding` Scheduled Task. Closing PowerShell, CMD, or the `start.bat` window does not stop the server.
 
-Create `/etc/systemd/system/webcoding.service`:
-
-```ini
-[Unit]
-Description=Webcoding browser workspace
-After=network.target
-
-[Service]
-Type=simple
-User=your-user
-WorkingDirectory=/path/to/webcoding
-ExecStart=/usr/bin/node /path/to/webcoding/server.js
-Restart=on-failure
-RestartSec=5
-KillMode=control-group
-Environment=HOST=127.0.0.1
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now webcoding
-```
-
-`KillMode=control-group` cleans up persistent CLI children when the service stops. The active turn is interrupted, but the next request can resume context through the saved native session ID.
-
-</details>
-
-### macOS and Windows
-
-- macOS includes a [LaunchAgent template](./deploy/macos/com.webcoding.server.plist). Replace its absolute-path placeholders before loading it.
-- Windows can use the one-line installer or `start.bat` for persistent startup.
+Advanced users can also use the [Linux service template](./deploy/linux/webcoding.service) or [macOS LaunchAgent template](./deploy/macos/com.webcoding.server.plist). On a headless Linux server, run `sudo loginctl enable-linger "$USER"` if the user service must survive SSH logout and start during boot.
 
 ## Updating
 
@@ -264,13 +240,13 @@ npm install
 npm start
 ```
 
-Restart the systemd, LaunchAgent, or other process-manager service after updating.
+The installer offers to restart the background service after an update. You can also run `webcoding restart` later.
 
 ## Development and Verification
 
 ```bash
 npm start             # Start the server; there is no build step
-npm run regression    # 46 isolated mock regressions; no real model calls
+npm run regression    # 48 isolated mock regressions; no real model calls
 npm run contract:cli  # Validate local CLI flags and protocols; no model calls
 npm test              # Run both suites in sequence
 ```
@@ -286,10 +262,11 @@ webcoding/
 ├── lib/                   # Agent adapters, bidirectional clients, history parsers, local API bridge
 ├── public/                # Vanilla JavaScript SPA and modular CSS
 ├── scripts/               # Regression suite, CLI contracts, and mock CLIs
+├── deploy/                # Linux, macOS, and Windows background-service assets
 ├── config/                # Runtime config (generated)
 ├── sessions/              # Sessions, attachments, and per-turn run files (generated)
 ├── logs/                  # JSONL process logs (generated)
-├── install.sh / install.ps1
+├── install.sh / install.ps1 / start.bat
 └── package.json
 ```
 
