@@ -1,12 +1,29 @@
 # 更新记录
 
+## v2.1.0 - 2026-07-15
+
+### 三协议兼容
+
+- AI 提供商可明确选择 OpenAI Chat Completions、OpenAI Responses 或 Anthropic Messages；新建 OpenAI 提供商默认使用兼容范围更广的 Chat Completions
+- 本地 API 桥接支持 Responses 与 Chat Completions 双向回退，并可在 OpenAI 与 Anthropic 协议之间转换消息、推理内容、图片、工具定义、工具调用及工具结果
+- 完整接口地址会被正确识别和替换，不再产生 `/responses/v1/...`、重复 `/chat/completions` 等错误路径；查询参数会继续保留
+- 兼容 Responses 字符串输入、缺少 `type: "message"` 的消息，以及要求 `messages` 或 `input` 字段的第三方兼容服务
+- Chat Completions 转换保持实时流式输出，支持推理内容和多个连续工具调用，不再因桥接层强制非流式而长时间无反馈
+
+### Agent 运行可靠性
+
+- Claude Code 自定义渠道同时固定 `ANTHROPIC_API_KEY` 与 `ANTHROPIC_AUTH_TOKEN`，避免宿主 OAuth 登录绕过当前选择的本地桥接
+- Claude Code、Codex 和 Pi 统一通过同一桥接策略使用自定义提供商，并保留各自原生的会话、交互与工具调用方式
+- 前端会保留当前轮次的真实错误，不再被紧随其后的 `done` 同步覆盖；Pi 收到外部终止信号时不再误报为“退出码 1”
+- Windows 后台任务改由无控制台的 Windows Script Host 启动隐藏 PowerShell，关闭终端或误关窗口不再终止 Webcoding
+
+### 验证
+
+- 55 项隔离回归全部通过，依赖安全审计为 0 个已知漏洞
+- Claude Code `2.1.209`、Codex CLI `0.144.1`、Pi `0.80.3` 契约检查全部通过
+- Claude Code、Codex、Pi 分别通过 Chat Completions、Responses、Anthropic Messages，共 9 种真实 CLI 协议组合全部通过
+
 ## v2.0.9 - 2026-07-15
-
-### Windows 后台持久化
-
-- 修复部分 Windows 环境中计划任务即使使用 `-WindowStyle Hidden` 仍会显示 PowerShell 窗口，关闭窗口后连带终止 Webcoding 的问题
-- 计划任务改由无控制台的 Windows Script Host 启动隐藏 PowerShell，既不再产生可误关的后台窗口，也继续保留任务状态监控和异常重启能力
-- 隐藏启动器使用 Unicode 写入，兼容中文、空格等安装路径
 
 ### 模型提供商设置
 

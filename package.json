@@ -1,6 +1,6 @@
 {
   "name": "webcoding",
-  "version": "2.0.9",
+  "version": "2.1.0",
   "private": true,
   "engines": {
     "node": ">=22"
@@ -9,7 +9,8 @@
     "start": "node server.js",
     "regression": "node scripts/regression.js",
     "contract:cli": "node scripts/cli-contract.js",
-    "test": "npm run regression && npm run contract:cli"
+    "contract:protocol": "node scripts/protocol-contract.js",
+    "test": "npm run regression && npm run contract:cli && npm run contract:protocol"
   },
   "dependencies": {
     "ws": "^8.21.0"
