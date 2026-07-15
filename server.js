@@ -199,7 +199,14 @@ const CLAUDE_RUNTIME_SETTINGS_PATH = path.join(CONFIG_DIR, 'claude-runtime-setti
 const BRIDGE_SCRIPT_PATH = path.join(__dirname, 'lib', 'local-api-bridge.js');
 const PUBLIC_ROOT = path.resolve(PUBLIC_DIR);
 const USER_HOME = process.env.HOME || process.env.USERPROFILE || '';
-const BROWSE_ROOTS = USER_HOME ? [path.resolve(USER_HOME)] : [path.resolve(process.cwd())];
+const BROWSE_ROOTS = (USER_HOME ? [USER_HOME] : [process.cwd()]).map((root) => {
+  const resolved = path.resolve(root);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+});
 const AUTH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTH_TOKEN_CLEANUP_MS = 60 * 60 * 1000;
 const HISTORY_CHUNK_BUFFER_LIMIT = 512 * 1024;
@@ -6278,6 +6285,9 @@ wss.on('connection', (ws, req) => {
       case 'browse_directory':
         handleBrowseDirectory(ws, msg);
         break;
+      case 'create_directory':
+        handleCreateDirectory(ws, msg);
+        break;
       case 'get_projects':
         wsSend(ws, { type: 'projects_config', projects: loadProjectsConfig().projects });
         break;
@@ -11952,6 +11962,84 @@ async function handleGitCommand(ws, msg) {
   } catch (error) {
     return sendGitResult(false, null, error?.message || 'Git 操作失败。');
   }
+}
+
+function handleCreateDirectory(ws, msg) {
+  const requestedParent = typeof msg?.parentPath === 'string' ? msg.parentPath.trim() : '';
+  const directoryName = typeof msg?.name === 'string' ? msg.name.trim() : '';
+
+  function sendResult(success, { parentPath = requestedParent || null, createdPath = null, error = null } = {}) {
+    wsSend(ws, {
+      type: 'directory_created',
+      success: !!success,
+      parentPath,
+      path: success ? createdPath : null,
+      name: directoryName,
+      error: success ? null : (error || '新建文件夹失败'),
+    });
+  }
+
+  if (!requestedParent) {
+    return sendResult(false, { error: '缺少父目录' });
+  }
+  if (!directoryName) {
+    return sendResult(false, { error: '文件夹名称不能为空' });
+  }
+  if (
+    directoryName === '.'
+    || directoryName === '..'
+    || directoryName.includes('\u0000')
+    || directoryName.includes('/')
+    || directoryName.includes('\\')
+  ) {
+    return sendResult(false, { error: '文件夹名称不能包含路径分隔符' });
+  }
+  if (directoryName.length > 255 || Buffer.byteLength(directoryName, 'utf8') > 255) {
+    return sendResult(false, { error: '文件夹名称过长' });
+  }
+
+  let parentPath;
+  try {
+    parentPath = fs.realpathSync(path.resolve(requestedParent));
+  } catch {
+    return sendResult(false, { error: '父目录不存在或无法访问' });
+  }
+
+  if (!BROWSE_ROOTS.some((root) => isPathInside(parentPath, root))) {
+    return sendResult(false, { parentPath, error: '父目录不在允许范围内' });
+  }
+
+  try {
+    if (!fs.statSync(parentPath).isDirectory()) {
+      return sendResult(false, { parentPath, error: '指定的父路径不是目录' });
+    }
+  } catch {
+    return sendResult(false, { parentPath, error: '无法读取父目录信息' });
+  }
+
+  const targetPath = path.resolve(parentPath, directoryName);
+  if (
+    path.dirname(targetPath) !== parentPath
+    || !BROWSE_ROOTS.some((root) => isPathInside(targetPath, root))
+  ) {
+    return sendResult(false, { parentPath, error: '文件夹名称不合法' });
+  }
+
+  try {
+    fs.mkdirSync(targetPath);
+  } catch (error) {
+    let message = '新建文件夹失败';
+    if (error?.code === 'EEXIST') message = '同名文件或文件夹已存在';
+    else if (error?.code === 'EACCES' || error?.code === 'EPERM') message = '权限不足，无法新建文件夹';
+    else if (error?.code === 'ENOSPC') message = '磁盘空间不足，无法新建文件夹';
+    return sendResult(false, { parentPath, error: message });
+  }
+
+  let createdPath = targetPath;
+  try {
+    createdPath = fs.realpathSync(targetPath);
+  } catch {}
+  return sendResult(true, { parentPath, createdPath });
 }
 
 function handleBrowseDirectory(ws, msg) {

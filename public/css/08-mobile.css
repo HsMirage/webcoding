@@ -265,11 +265,14 @@
   .project-picker-actions {
     grid-template-columns: 1fr;
   }
-  .dir-browser-manual {
+  .dir-browser-manual,
+  .dir-browser-create {
     flex-direction: column;
   }
   .dir-browser-manual .modal-text-input,
-  .dir-browser-go-btn {
+  .dir-browser-create .modal-text-input,
+  .dir-browser-go-btn,
+  .dir-browser-inline-cancel {
     width: 100%;
   }
   .dir-browser-list {
@@ -280,6 +283,10 @@
     align-items: flex-start;
     flex-direction: column;
   }
+  .dir-browser-toolbar-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
   .dir-browser-selection-hint {
     max-width: none;
     width: 100%;
@@ -287,7 +294,9 @@
   .dir-browser-crumb,
   .dir-browser-crumb-current,
   .dir-browser-edit-btn,
-  .dir-browser-go-btn {
+  .dir-browser-go-btn,
+  .dir-browser-inline-cancel,
+  .dir-browser-create-btn {
     min-height: 44px;
   }
   .dir-browser-crumb,

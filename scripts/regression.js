@@ -1320,6 +1320,88 @@ async function withAuthedClient(port, password, fn, options = {}) {
   }
 }
 
+async function runDirectoryBrowserRegressionCase({ port, password, tempRoot, homeDir }) {
+  const appSource = fs.readFileSync(path.join(REPO_DIR, 'public', 'app.js'), 'utf8');
+  assert(!appSource.includes('crypto.randomUUID()'), 'Browser UI should not require secure-context randomUUID to open a directory');
+  assert(appSource.includes("type: 'create_directory'"), 'New-session browser should expose the create-directory action');
+
+  await withAuthedClient(port, password, async ({ client }) => {
+    const homeRealPath = fs.realpathSync(homeDir);
+    const homeListing = await client.sendAndWaitType(
+      { type: 'browse_directory', path: homeDir },
+      'directory_listing',
+      (msg) => msg.path === homeRealPath,
+    );
+    assert(!homeListing.error, `Home directory should be browseable: ${homeListing.error || ''}`);
+
+    const folderName = 'new-project-folder';
+    const expectedPath = path.join(homeRealPath, folderName);
+    const created = await client.sendAndWaitType(
+      { type: 'create_directory', parentPath: homeDir, name: folderName },
+      'directory_created',
+      (msg) => msg.name === folderName,
+    );
+    assert(created.success === true && created.path === expectedPath, 'create_directory should return the created child path');
+    assert(fs.statSync(expectedPath).isDirectory(), 'create_directory should create a real directory');
+
+    const createdListing = await client.sendAndWaitType(
+      { type: 'browse_directory', path: expectedPath },
+      'directory_listing',
+      (msg) => msg.path === expectedPath,
+    );
+    assert(!createdListing.error, 'The newly created directory should be immediately browseable');
+
+    const projectsConfig = await client.sendAndWaitType(
+      { type: 'save_project', path: expectedPath, name: folderName },
+      'projects_config',
+      (msg) => msg.projects?.some((project) => project.path === expectedPath),
+    );
+    const savedProject = projectsConfig.projects.find((project) => project.path === expectedPath);
+    assert(savedProject?.id, 'Server should generate the project ID when the browser omits it');
+
+    const session = await client.sendAndWaitType(
+      { type: 'new_session', agent: 'codex', cwd: expectedPath, mode: 'yolo' },
+      'session_info',
+      (msg) => msg.agent === 'codex' && msg.cwd === expectedPath,
+    );
+    assert(session.projectId === savedProject.id, 'Opening a directory should attach the new session to the server-generated project');
+
+    const duplicate = await client.sendAndWaitType(
+      { type: 'create_directory', parentPath: homeDir, name: folderName },
+      'directory_created',
+      (msg) => msg.name === folderName && msg.success === false,
+    );
+    assert(/同名/.test(duplicate.error || ''), 'Duplicate directory names should return a clear error');
+
+    const traversal = await client.sendAndWaitType(
+      { type: 'create_directory', parentPath: homeDir, name: '../escape' },
+      'directory_created',
+      (msg) => msg.name === '../escape',
+    );
+    assert(traversal.success === false, 'create_directory should reject path traversal names');
+    assert(!fs.existsSync(path.join(tempRoot, 'escape')), 'Path traversal must not create a directory outside HOME');
+
+    const outside = await client.sendAndWaitType(
+      { type: 'create_directory', parentPath: tempRoot, name: 'outside-home' },
+      'directory_created',
+      (msg) => msg.name === 'outside-home',
+    );
+    assert(outside.success === false, 'create_directory should reject parent paths outside the browse root');
+    assert(!fs.existsSync(path.join(tempRoot, 'outside-home')), 'Rejected outside-root requests must not create a directory');
+
+    await client.sendAndWaitType(
+      { type: 'delete_session', sessionId: session.sessionId },
+      'session_list',
+      (msg) => !msg.sessions.some((item) => item.id === session.sessionId),
+    );
+    await client.sendAndWaitType(
+      { type: 'delete_project', projectId: savedProject.id },
+      'projects_config',
+      (msg) => !msg.projects?.some((project) => project.id === savedProject.id),
+    );
+  });
+}
+
 function findProcessLogLine(logsDir, sessionId, eventName) {
   const processLogPath = path.join(logsDir, 'process.log');
   if (!fs.existsSync(processLogPath)) return '';
@@ -6093,6 +6175,7 @@ async function main() {
       await runner.run('codex app server client lifecycle', () => runCodexAppServerClientLifecycleRegressionCase(ctx));
       await runner.run('pi rpc client lifecycle cleanup', () => runPiRpcClientLifecycleRegressionCase(ctx));
       await runner.run('custom CLI directories and server limits', () => runCustomCliDirectoriesRegressionCase(ctx));
+      await runner.run('directory browser open and create folder', () => runDirectoryBrowserRegressionCase(ctx));
       await runner.run('cross-platform persistent deployment scripts', () => runDeploymentScriptsRegressionCase(ctx));
       await runner.run('local agent model sources and startup args', () => runLocalAgentModelSourcesRegressionCase(ctx));
       await runner.run('dynamic provider model discovery', () => runDynamicProviderModelDiscoveryRegressionCase(ctx));

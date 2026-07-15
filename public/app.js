@@ -4511,6 +4511,7 @@
     pi_fork_options: showPiForkPicker,
     cwd_suggestions: (msg) => { if (typeof _onCwdSuggestions === 'function') _onCwdSuggestions(msg.paths || []); },
     directory_listing: (msg) => { if (typeof _onDirectoryListing === 'function') _onDirectoryListing(msg); },
+    directory_created: (msg) => { if (typeof _onDirectoryCreated === 'function') _onDirectoryCreated(msg); },
     update_info: (msg) => { if (typeof window._ccOnUpdateInfo === 'function') window._ccOnUpdateInfo(msg); },
     git_result: handleGitResultMessage,
     projects_config: handleProjectsConfigMessage,
@@ -9457,6 +9458,7 @@
   // --- New Session Modal ---
   let _onCwdSuggestions = null;
   let _onDirectoryListing = null;
+  let _onDirectoryCreated = null;
 
   function buildNewSessionModalHtml() {
     return `
@@ -9497,14 +9499,23 @@
                 <input type="text" id="ns-manual-input" class="modal-text-input" placeholder="输入绝对路径后回车">
                 <button class="dir-browser-go-btn" id="ns-manual-go">前往</button>
               </div>
+              <div class="dir-browser-create" id="ns-create-dir-row" style="display:none">
+                <input type="text" id="ns-create-dir-input" class="modal-text-input" maxlength="255" autocomplete="off" placeholder="输入新文件夹名称">
+                <button class="dir-browser-go-btn" id="ns-create-dir-confirm">创建</button>
+                <button class="dir-browser-inline-cancel" id="ns-create-dir-cancel">取消</button>
+              </div>
+              <div class="dir-browser-create-status" id="ns-create-dir-status" role="status" aria-live="polite"></div>
               <div class="dir-browser-list" id="ns-dir-list">
                 <div class="dir-browser-empty">正在加载…</div>
               </div>
               <div class="dir-browser-toolbar">
-                <label class="dir-browser-toggle">
-                  <input type="checkbox" id="ns-show-hidden">
-                  <span>显示隐藏目录</span>
-                </label>
+                <div class="dir-browser-toolbar-actions">
+                  <label class="dir-browser-toggle">
+                    <input type="checkbox" id="ns-show-hidden">
+                    <span>显示隐藏目录</span>
+                  </label>
+                  <button type="button" class="dir-browser-create-btn" id="ns-create-dir-btn" disabled>＋ 新建文件夹</button>
+                </div>
                 <div class="dir-browser-selection-hint" id="ns-selection-hint">选中后会直接使用当前目录。</div>
               </div>
             </div>
@@ -9734,6 +9745,25 @@
     const currentNameEl = overlay.querySelector('#ns-current-name');
     const currentPathEl = overlay.querySelector('#ns-current-path');
     const selectionHintEl = overlay.querySelector('#ns-selection-hint');
+    const createDirBtn = overlay.querySelector('#ns-create-dir-btn');
+    const createDirRow = overlay.querySelector('#ns-create-dir-row');
+    const createDirInput = overlay.querySelector('#ns-create-dir-input');
+    const createDirConfirm = overlay.querySelector('#ns-create-dir-confirm');
+    const createDirStatus = overlay.querySelector('#ns-create-dir-status');
+
+    let createDirMode = false;
+    function setCreateDirMode(enabled) {
+      createDirMode = enabled;
+      createDirRow.style.display = enabled ? 'flex' : 'none';
+      createDirStatus.textContent = '';
+      createDirStatus.classList.remove('error');
+      createDirInput.disabled = false;
+      createDirConfirm.disabled = false;
+      if (enabled) {
+        createDirInput.value = '';
+        createDirInput.focus();
+      }
+    }
 
     // --- Step 1: Render project list ---
     function renderProjectPicker() {
@@ -9781,7 +9811,9 @@
     }
 
     function navigateTo(dirPath) {
+      if (createDirMode) setCreateDirMode(false);
       selectBtn.disabled = true;
+      createDirBtn.disabled = true;
       updateNewSessionPathCard(currentNameEl, currentPathEl, dirPath || currentBrowsePath);
       dirListEl.innerHTML = '<div class="dir-browser-empty">正在加载…</div>';
       send({ type: 'browse_directory', path: dirPath, showHidden });
@@ -9800,12 +9832,28 @@
       });
       updateNewSessionPathCard(currentNameEl, currentPathEl, currentBrowsePath, Boolean(msg.error));
       selectBtn.disabled = Boolean(msg.error);
+      createDirBtn.disabled = Boolean(msg.error);
+    };
+
+    _onDirectoryCreated = (msg) => {
+      createDirInput.disabled = false;
+      createDirConfirm.disabled = false;
+      if (!msg.success) {
+        createDirStatus.textContent = msg.error || '新建文件夹失败';
+        createDirStatus.classList.add('error');
+        createDirInput.focus();
+        return;
+      }
+      setCreateDirMode(false);
+      showToast('文件夹已创建');
+      navigateTo(msg.path);
     };
 
     // Manual path toggle
     let manualMode = false;
     overlay.querySelector('#ns-edit-path-btn').addEventListener('click', () => {
       manualMode = !manualMode;
+      if (manualMode && createDirMode) setCreateDirMode(false);
       setManualPathMode(manualMode, manualRow, pathbar, manualInput, currentBrowsePath);
     });
 
@@ -9832,9 +9880,43 @@
       navigateTo(currentBrowsePath);
     });
 
+    function createDirectory() {
+      const name = createDirInput.value.trim();
+      if (!name || !currentBrowsePath) {
+        createDirStatus.textContent = name ? '当前目录尚未加载完成' : '请输入文件夹名称';
+        createDirStatus.classList.add('error');
+        return;
+      }
+      createDirStatus.textContent = '正在创建…';
+      createDirStatus.classList.remove('error');
+      createDirInput.disabled = true;
+      createDirConfirm.disabled = true;
+      send({ type: 'create_directory', parentPath: currentBrowsePath, name });
+    }
+
+    createDirBtn.addEventListener('click', () => {
+      const nextMode = !createDirMode;
+      if (nextMode && manualMode) {
+        manualMode = false;
+        setManualPathMode(false, manualRow, pathbar, manualInput, currentBrowsePath);
+      }
+      setCreateDirMode(nextMode);
+    });
+    overlay.querySelector('#ns-create-dir-cancel').addEventListener('click', () => setCreateDirMode(false));
+    createDirConfirm.addEventListener('click', createDirectory);
+    createDirInput.addEventListener('input', () => {
+      createDirStatus.textContent = '';
+      createDirStatus.classList.remove('error');
+    });
+    createDirInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') createDirectory();
+      if (e.key === 'Escape') setCreateDirMode(false);
+    });
+
     function close() {
       overlay.remove();
       _onDirectoryListing = null;
+      _onDirectoryCreated = null;
     }
 
     overlay.querySelector('#ns-close-btn').addEventListener('click', close);
@@ -9857,11 +9939,10 @@
       if (!cwd) return;
       const normalizedCwd = normalizeComparablePath(cwd);
       const existingProject = projects.find((project) => normalizeComparablePath(project?.path) === normalizedCwd) || null;
-      const projectId = existingProject?.id || crypto.randomUUID();
       close();
       send(existingProject
-        ? { type: 'save_project', id: projectId, path: cwd }
-        : { type: 'save_project', id: projectId, path: cwd, name: getPathLeaf(cwd) || cwd });
+        ? { type: 'save_project', id: existingProject.id, path: cwd }
+        : { type: 'save_project', path: cwd, name: getPathLeaf(cwd) || cwd });
       send({ type: 'new_session', cwd, agent: targetAgent, mode: getSavedModeForAgent(targetAgent) });
     });
 

@@ -888,7 +888,9 @@
   font-size: 11px;
 }
 .dir-browser-edit-btn,
-.dir-browser-go-btn {
+.dir-browser-go-btn,
+.dir-browser-inline-cancel,
+.dir-browser-create-btn {
   appearance: none;
   min-width: 38px;
   min-height: 38px;
@@ -906,15 +908,41 @@
   touch-action: manipulation;
 }
 .dir-browser-edit-btn:hover,
-.dir-browser-go-btn:hover {
+.dir-browser-go-btn:hover,
+.dir-browser-inline-cancel:hover,
+.dir-browser-create-btn:hover {
   background: var(--yellow);
   box-shadow: none;
 }
-.dir-browser-manual {
+.dir-browser-edit-btn:disabled,
+.dir-browser-go-btn:disabled,
+.dir-browser-inline-cancel:disabled,
+.dir-browser-create-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.dir-browser-manual,
+.dir-browser-create {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 10px;
+}
+.dir-browser-create-status {
+  margin-top: 7px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-nav);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.dir-browser-create-status:empty {
+  display: none;
+}
+.dir-browser-create-status.error {
+  color: var(--danger);
 }
 .dir-browser-list {
   display: flex;
@@ -1058,6 +1086,12 @@
   flex-wrap: wrap;
   margin-top: 8px;
 }
+.dir-browser-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .dir-browser-toggle {
   display: inline-flex;
   align-items: center;
@@ -1088,6 +1122,8 @@
 .dir-browser-item:focus-visible,
 .dir-browser-edit-btn:focus-visible,
 .dir-browser-go-btn:focus-visible,
+.dir-browser-inline-cancel:focus-visible,
+.dir-browser-create-btn:focus-visible,
 .dir-browser-crumb:focus-visible,
 .dir-browser-error-back:focus-visible {
   outline: 2px solid var(--color-mid-ash);
