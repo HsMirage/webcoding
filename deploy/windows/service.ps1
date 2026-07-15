@@ -39,6 +39,7 @@ $ServerPath = Join-Path $InstallDir 'server.js'
 $LogDir = Join-Path $InstallDir 'logs'
 $LogFile = Join-Path $LogDir 'server.log'
 $ErrorLogFile = Join-Path $LogDir 'server.err.log'
+$TaskLauncherFile = Join-Path $LogDir 'webcoding-task.vbs'
 $ScriptPath = $MyInvocation.MyCommand.Path
 
 function Write-Info    { param([string]$Message) Write-Host "[Webcoding] $Message" -ForegroundColor Cyan }
@@ -112,6 +113,50 @@ function Stop-WebcodingProcesses {
     Start-Sleep -Milliseconds 300
 }
 
+function Write-HiddenTaskLauncher {
+    $launcher = @'
+Option Explicit
+
+Function QuoteArgument(value)
+    QuoteArgument = Chr(34) & CStr(value) & Chr(34)
+End Function
+
+Dim args, i, engine, scriptPath, installDir, nodePath, shell, commandLine, exitCode
+Set args = WScript.Arguments
+If args.Count <> 8 Then WScript.Quit 87
+
+For i = 0 To args.Count - 1 Step 2
+    Select Case LCase(CStr(args(i)))
+        Case "-engine"
+            engine = CStr(args(i + 1))
+        Case "-scriptpath"
+            scriptPath = CStr(args(i + 1))
+        Case "-installdir"
+            installDir = CStr(args(i + 1))
+        Case "-nodepath"
+            nodePath = CStr(args(i + 1))
+    End Select
+Next
+
+If Len(engine) = 0 Or Len(scriptPath) = 0 Or Len(installDir) = 0 Or Len(nodePath) = 0 Then
+    WScript.Quit 87
+End If
+
+commandLine = QuoteArgument(engine) & _
+    " -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " & QuoteArgument(scriptPath) & _
+    " -Command run -InstallDir " & QuoteArgument(installDir) & _
+    " -NodePath " & QuoteArgument(nodePath)
+
+Set shell = CreateObject("WScript.Shell")
+exitCode = shell.Run(commandLine, 0, True)
+WScript.Quit exitCode
+'@
+    $tempLauncher = "$TaskLauncherFile.tmp"
+    [IO.File]::WriteAllText($tempLauncher, $launcher, [Text.Encoding]::Unicode)
+    Move-Item -LiteralPath $tempLauncher -Destination $TaskLauncherFile -Force
+    return $TaskLauncherFile
+}
+
 function Register-WebcodingTask {
     if (-not (Test-Path $ServerPath)) {
         throw "未找到 $ServerPath，请先完成安装。"
@@ -125,10 +170,16 @@ function Register-WebcodingTask {
 
     $node = Resolve-NodePath $NodePath
     $engine = (Get-Process -Id $PID).Path
-    # Interactive scheduled tasks otherwise expose the PowerShell console. Closing that
-    # window also closes the Node.js child process, defeating persistent operation.
-    $arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Command run -InstallDir `"$InstallDir`" -NodePath `"$node`""
-    $action = New-ScheduledTaskAction -Execute $engine -Argument $arguments -WorkingDirectory $InstallDir
+    $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    if (-not (Test-Path -LiteralPath $wscript)) {
+        throw "未找到 Windows Script Host: $wscript"
+    }
+    # PowerShell's -WindowStyle Hidden is applied after a console process starts and is
+    # not reliable for interactive scheduled tasks. Launch through the GUI-based WSH
+    # host so no closable console is created in the first place.
+    $launcher = Write-HiddenTaskLauncher
+    $arguments = "//B //Nologo `"$launcher`" -Engine `"$engine`" -ScriptPath `"$ScriptPath`" -InstallDir `"$InstallDir`" -NodePath `"$node`""
+    $action = New-ScheduledTaskAction -Execute $wscript -Argument $arguments -WorkingDirectory $InstallDir
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
     $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
@@ -246,6 +297,7 @@ switch ($Command) {
     'uninstall' {
         Stop-WebcodingProcesses
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $TaskLauncherFile -Force -ErrorAction SilentlyContinue
         Write-Success 'Webcoding 后台计划任务已移除。'
     }
 }

@@ -4467,7 +4467,11 @@ async function runDeploymentScriptsRegressionCase() {
   assert(/New-ScheduledTaskTrigger -AtLogOn/.test(windowsService), 'Windows scheduled task should start automatically at user logon');
   assert(/ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/.test(windowsService), 'Windows scheduled task should not receive a finite execution timeout');
   assert(/-StartWhenAvailable/.test(windowsService), 'Windows scheduled task should run after logon even when its original trigger was briefly unavailable');
-  assert(/-WindowStyle Hidden/.test(windowsService), 'Windows scheduled task should hide its PowerShell host so closing a console cannot stop the server');
+  assert(/System32\\wscript\.exe/.test(windowsService), 'Windows scheduled task should use the GUI-based Windows Script Host instead of opening a console host');
+  assert(/CreateObject\("WScript\.Shell"\)/.test(windowsService) && /shell\.Run\(commandLine, 0, True\)/.test(windowsService), 'Windows scheduled task launcher should run PowerShell hidden and wait so task supervision remains active');
+  assert(/\[Text\.Encoding\]::Unicode/.test(windowsService), 'Windows task launcher should preserve non-ASCII install paths when written for Windows Script Host');
+  assert(/-WindowStyle Hidden/.test(windowsService), 'Windows scheduled task should retain hidden PowerShell startup as a second layer of protection');
+  assert(/New-ScheduledTaskAction -Execute \$wscript/.test(windowsService) && !/New-ScheduledTaskAction -Execute \$engine/.test(windowsService), 'Windows scheduled task must not directly execute a console-based PowerShell host');
   assert(installPs1.includes('-InstallDir "%~dp0."') && startBat.includes('-InstallDir "%~dp0."'), 'Windows launchers should keep a trailing backslash away from the closing InstallDir quote');
   assert(!installPs1.includes('-InstallDir "%~dp0"') && !startBat.includes('-InstallDir "%~dp0"'), 'Windows launchers must not pass a quoted InstallDir ending in a backslash');
   assert([installPs1, windowsService].every((text) => text.includes("$expanded = $expanded.Trim('\"')") && text.includes('$resolved = $resolved.TrimEnd($separators)')), 'Windows PowerShell scripts should normalize stray quotes and trailing separators before re-launching services');
