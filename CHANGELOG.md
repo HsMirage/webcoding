@@ -1,5 +1,18 @@
 # 更新记录
 
+## v2.0.7 - 2026-07-15
+
+### Windows 一键安装
+
+- 修复带 UTF-8 BOM 的 `install.ps1` 经 `irm` 下载后，BOM 字符被保留在字符串开头，导致 `Invoke-Expression` 将首行注释误判为命令的问题
+- 一键安装命令在执行脚本前显式移除开头的 BOM，同时继续保留本地 `powershell.exe -File install.ps1` 所需的 PowerShell 5.1 编码兼容性
+- 中英文 README 与安装脚本内示例统一使用新的兼容命令
+
+### 验证
+
+- 49 项隔离回归全部通过
+- Claude Code、Codex App Server、Pi RPC 契约检查全部通过
+
 ## v2.0.6 - 2026-07-15
 
 ### Windows 持久化运行

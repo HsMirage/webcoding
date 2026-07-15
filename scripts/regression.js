@@ -4343,6 +4343,8 @@ async function runDeploymentScriptsRegressionCase() {
   const macPlist = fs.readFileSync(path.join(REPO_DIR, 'deploy', 'macos', 'com.webcoding.server.plist'), 'utf8');
   const linuxService = fs.readFileSync(path.join(REPO_DIR, 'deploy', 'linux', 'webcoding.service'), 'utf8');
   const gitignore = fs.readFileSync(path.join(REPO_DIR, '.gitignore'), 'utf8');
+  const readmeZh = fs.readFileSync(path.join(REPO_DIR, 'README.md'), 'utf8');
+  const readmeEn = fs.readFileSync(path.join(REPO_DIR, 'README.en.md'), 'utf8');
 
   assert(/systemctl --user enable webcoding\.service/.test(installSh), 'Linux installer should enable a persistent user systemd service');
   assert(/launchctl bootstrap/.test(installSh) && /LaunchAgents/.test(installSh), 'macOS installer should manage a persistent LaunchAgent');
@@ -4351,6 +4353,9 @@ async function runDeploymentScriptsRegressionCase() {
 
   assert(/安装\/运行目录/.test(installPs1) && /WEBCODING_DIR/.test(installPs1), 'Windows installer should let the user choose an install/runtime directory');
   assert(installPs1Bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), 'Windows installer should include a UTF-8 BOM for Windows PowerShell 5.1');
+  assert(/Invoke-Expression \(\$s\.TrimStart\(\[char\]0xFEFF\)\)/.test(installPs1), 'Windows installer examples should strip a downloaded UTF-8 BOM before Invoke-Expression');
+  assert([readmeZh, readmeEn].every((readme) => /Invoke-Expression \(\$s\.TrimStart\(\[char\]0xFEFF\)\)/.test(readme)), 'Bilingual README install commands should strip a downloaded UTF-8 BOM');
+  assert(![installPs1, readmeZh, readmeEn].some((text) => /Invoke-Expression \$s/.test(text)), 'Windows install documentation must not retain the BOM-sensitive Invoke-Expression form');
   assert(/& node --version/.test(installPs1) && !/node -e/.test(installPs1), 'Windows installer should detect Node.js without PowerShell 5.1-sensitive inline JavaScript quoting');
   assert(/Test-DirectoryHasEntries/.test(installPs1) && /Join-Path \$resolved 'webcoding'/.test(installPs1), 'Windows installer should redirect a non-empty parent directory to a webcoding subdirectory');
   assert(/安装目录不是空目录，已停止以避免覆盖现有文件/.test(installPs1), 'Windows installer should recheck the clone target before writing files');

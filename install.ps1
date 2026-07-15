@@ -1,9 +1,9 @@
 ﻿# Webcoding 一键安装与服务管理脚本 (Windows PowerShell)
 #
 # 交互安装：
-#   $s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression $s
+#   $s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression ($s.TrimStart([char]0xFEFF))
 # 指定安装目录：
-#   $env:WEBCODING_DIR = 'D:\Apps\webcoding'; $s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression $s
+#   $env:WEBCODING_DIR = 'D:\Apps\webcoding'; $s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression ($s.TrimStart([char]0xFEFF))
 
 $ErrorActionPreference = 'Stop'
 

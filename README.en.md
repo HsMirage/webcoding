@@ -6,7 +6,7 @@ Control local Claude Code, Codex, and Pi CLI agents from a browser.
 ![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)
 ![Agents](https://img.shields.io/badge/Agents-Claude%20%7C%20Codex%20%7C%20Pi-111111)
 
-[简体中文](./README.md) | [English](./README.en.md) | [v2.0.6 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.6) | [Changelog](./CHANGELOG.md)
+[简体中文](./README.md) | [English](./README.en.md) | [v2.0.7 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.7) | [Changelog](./CHANGELOG.md)
 
 <p align="center">
   <a href="https://ai.hsnb.fun/"><strong>Welcome to MirageAI</strong></a>
@@ -16,7 +16,7 @@ Control local Claude Code, Codex, and Pi CLI agents from a browser.
 
 Webcoding is a lightweight local browser workspace. It connects to CLI agents that are already installed and authenticated on your machine, then lets a desktop, phone, or tablet manage sessions, answer runtime interactions, inspect tool activity, and reconnect to tasks that continued after the browser closed.
 
-> `v2.0.6` hides the Windows background-task console, prevents window closure from stopping the service, and fixes PowerShell 5.1 script decoding failures.
+> `v2.0.7` fixes the Windows one-line installer when the downloaded script contains a BOM while preserving local PowerShell 5.1 script compatibility.
 
 <p align="center">
   <img src="./webcoding-refactored-ui.png" alt="Webcoding v2 workspace" width="100%" />
@@ -46,7 +46,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/HsMirage/webcoding/main/inst
 Windows PowerShell:
 
 ```powershell
-$s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression $s
+$s = irm https://raw.githubusercontent.com/HsMirage/webcoding/main/install.ps1; Invoke-Expression ($s.TrimStart([char]0xFEFF))
 ```
 
 The installer first asks for the install/runtime directory, then offers install, start/restart, update, dependency reinstall, stop, status, and uninstall actions. On Windows, if the selected parent directory already contains files (for example, `D:\AI\Tools`), the installer automatically uses its `webcoding` subdirectory so existing files are not overwritten and Git clone does not fail. Startup automatically configures a persistent background service: user-level `systemd` on Linux, a LaunchAgent on macOS, and a per-user Scheduled Task on Windows. Closing the terminal no longer stops Webcoding; native service-manager setups also start again after the next login.
@@ -284,6 +284,6 @@ webcoding/
 
 ## Releases and Documentation
 
-- [v2.0.6 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.6)
+- [v2.0.7 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.7)
 - [Full changelog](./CHANGELOG.md)
 - [简体中文 README](./README.md)
