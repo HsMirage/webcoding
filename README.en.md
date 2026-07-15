@@ -6,7 +6,7 @@ Control local Claude Code, Codex, and Pi CLI agents from a browser.
 ![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)
 ![Agents](https://img.shields.io/badge/Agents-Claude%20%7C%20Codex%20%7C%20Pi-111111)
 
-[简体中文](./README.md) | [English](./README.en.md) | [v2.0.4 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.4) | [Changelog](./CHANGELOG.md)
+[简体中文](./README.md) | [English](./README.en.md) | [v2.0.5 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.5) | [Changelog](./CHANGELOG.md)
 
 <p align="center">
   <a href="https://ai.hsnb.fun/"><strong>Welcome to MirageAI</strong></a>
@@ -16,7 +16,7 @@ Control local Claude Code, Codex, and Pi CLI agents from a browser.
 
 Webcoding is a lightweight local browser workspace. It connects to CLI agents that are already installed and authenticated on your machine, then lets a desktop, phone, or tablet manage sessions, answer runtime interactions, inspect tool activity, and reconnect to tasks that continued after the browser closed.
 
-> `v2.0.4` unifies model selection across Claude, Codex, and Pi: local mode reads real configuration, while dynamically discovered models apply only to the current session. Legacy one-shot transports remain available through environment variables.
+> `v2.0.5` fixes Windows one-click installation on PowerShell 5.1 and inside existing non-empty parent directories, repairs the directory picker on non-secure connections, and adds in-place folder creation.
 
 <p align="center">
   <img src="./webcoding-refactored-ui.png" alt="Webcoding v2 workspace" width="100%" />
@@ -284,6 +284,6 @@ webcoding/
 
 ## Releases and Documentation
 
-- [v2.0.4 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.4)
+- [v2.0.5 release notes](https://github.com/HsMirage/webcoding/releases/tag/v2.0.5)
 - [Full changelog](./CHANGELOG.md)
 - [简体中文 README](./README.md)
