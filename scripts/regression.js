@@ -4363,6 +4363,7 @@ async function runDeploymentScriptsRegressionCase() {
   assert(windowsServiceBytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), 'Windows service helper should include a UTF-8 BOM for Windows PowerShell 5.1');
   assert(/New-ScheduledTaskTrigger -AtLogOn/.test(windowsService), 'Windows scheduled task should start automatically at user logon');
   assert(/ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/.test(windowsService), 'Windows scheduled task should not receive a finite execution timeout');
+  assert(/-StartWhenAvailable/.test(windowsService), 'Windows scheduled task should run after logon even when its original trigger was briefly unavailable');
   assert(/-WindowStyle Hidden/.test(windowsService), 'Windows scheduled task should hide its PowerShell host so closing a console cannot stop the server');
   assert(installPs1.includes('-InstallDir "%~dp0."') && startBat.includes('-InstallDir "%~dp0."'), 'Windows launchers should keep a trailing backslash away from the closing InstallDir quote');
   assert(!installPs1.includes('-InstallDir "%~dp0"') && !startBat.includes('-InstallDir "%~dp0"'), 'Windows launchers must not pass a quoted InstallDir ending in a backslash');

@@ -137,6 +137,7 @@ function Register-WebcodingTask {
         -DontStopIfGoingOnBatteries `
         -RestartCount 999 `
         -RestartInterval (New-TimeSpan -Minutes 1) `
+        -StartWhenAvailable `
         -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -MultipleInstances IgnoreNew
 
