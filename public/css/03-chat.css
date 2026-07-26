@@ -1356,3 +1356,16 @@
   flex-shrink: 0;
   vertical-align: middle;
 }
+
+/* Shown when the vendored marked bundle fails to load: the message still reads as
+   plain text instead of the app dying on an undefined global. */
+.md-fallback {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  background: none;
+  padding: 0;
+}

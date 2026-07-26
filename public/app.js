@@ -58,8 +58,8 @@
   const SEND_ON_ENTER_STORAGE_KEY = 'webcoding-send-on-enter';
   const PI_STREAMING_BEHAVIOR_STORAGE_KEY = 'webcoding-pi-streaming-behavior';
   const DEFAULT_COLOR_SCHEME = 'light';
-  const HLJS_THEME_LIGHT = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
-  const HLJS_THEME_DARK = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css';
+  const HLJS_THEME_LIGHT = 'vendor/hljs-github.min.css';
+  const HLJS_THEME_DARK = 'vendor/hljs-github-dark.min.css';
 
   // --- State ---
   let ws = null;
@@ -3326,6 +3326,73 @@
   }
 
   // --- marked config ---
+  // marked and highlight.js are vendored under public/vendor/ and loaded before this
+  // script. They are still reached through guarded locals: if either asset fails to
+  // load, rendering degrades to escaped plain text instead of aborting module
+  // initialization and leaving the user with a blank page.
+  const markedLib = (window.marked && typeof window.marked.parse === 'function'
+    && typeof window.marked.Renderer === 'function')
+    ? window.marked
+    : null;
+  const hljsLib = (window.hljs && typeof window.hljs.highlight === 'function')
+    ? window.hljs
+    : null;
+  if (!markedLib) console.error('[webcoding] marked 未能加载，Markdown 将以纯文本显示');
+  if (!hljsLib) console.error('[webcoding] highlight.js 未能加载，代码块将不着色');
+
+  // Streaming re-parses the whole message text on every debounce tick, so a turn
+  // holding N code blocks used to re-highlight all N of them per tick — quadratic
+  // in the length of the turn, with `highlightAuto` (the slowest hljs path) hit for
+  // every block lacking a language tag. Highlighting is pure, so memoize it on
+  // (lang, code): mid-stream only the trailing block is new and every preceding
+  // block is a cache hit. LRU eviction keeps the stable blocks resident while the
+  // growing block's superseded revisions age out first. A turn with more distinct
+  // blocks than the limit degrades to sequential-scan thrashing and re-highlights
+  // every tick — that is exactly the old behaviour, so it is a floor, not a cliff.
+  const HIGHLIGHT_CACHE_LIMIT = 240;
+  // Entry count alone does not bound memory: a code block growing from 1 MB to 2 MB
+  // would retain ~240 superseded revisions of both the source and its highlighted
+  // HTML. Cap total retained characters, and skip caching blocks large enough to
+  // evict everything else on their own — those re-highlight each tick, which is no
+  // worse than the behaviour this replaced.
+  const HIGHLIGHT_CACHE_MAX_CHARS = 2_000_000;
+  const HIGHLIGHT_MAX_CACHEABLE_CHARS = 100_000;
+  const highlightCache = new Map();
+  let highlightCacheChars = 0;
+
+  function highlightCode(code, lang) {
+    if (!hljsLib) return escapeHtml(code);
+    const key = `${lang.length}:${lang}${code}`;
+    if (highlightCache.has(key)) {
+      const cached = highlightCache.get(key);
+      highlightCache.delete(key);
+      highlightCache.set(key, cached);
+      return cached;
+    }
+    let highlighted;
+    try {
+      highlighted = hljsLib.getLanguage(lang)
+        ? hljsLib.highlight(code, { language: lang }).value
+        : hljsLib.highlightAuto(code).value;
+    } catch {
+      highlighted = escapeHtml(code);
+    }
+    if (code.length <= HIGHLIGHT_MAX_CACHEABLE_CHARS) {
+      highlightCache.set(key, highlighted);
+      highlightCacheChars += key.length + highlighted.length;
+      while (
+        highlightCache.size > HIGHLIGHT_CACHE_LIMIT
+        || highlightCacheChars > HIGHLIGHT_CACHE_MAX_CHARS
+      ) {
+        const oldestKey = highlightCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        highlightCacheChars -= oldestKey.length + highlightCache.get(oldestKey).length;
+        highlightCache.delete(oldestKey);
+      }
+    }
+    return highlighted;
+  }
+
   const PREVIEW_LANGS = new Set(['html', 'svg']);
   const RENDER_LANGS = new Set(['md', 'markdown', 'json', 'csv']);
   const _previewCodeMap = new Map();
@@ -3350,7 +3417,7 @@
 
   function buildMarkdownSrcdoc(code) {
     let html;
-    try { html = marked.parse(code); } catch { html = escapeHtml(code); }
+    try { html = markedLib ? markedLib.parse(code) : escapeHtml(code); } catch { html = escapeHtml(code); }
     return `${PREVIEW_SRCDOC_CSP}<style>body{font-family:system-ui,sans-serif;font-size:14px;line-height:1.6;padding:16px 20px;margin:0;color:#222;word-wrap:break-word}pre{background:#f5f5f5;padding:10px;border-radius:4px;overflow-x:auto}code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:0.9em}pre code{background:none;padding:0}img{max-width:100%}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px 10px;text-align:left}th{background:#f5f5f5}blockquote{border-left:3px solid #ccc;margin:0;padding-left:12px;color:#555}a{color:#0066cc}</style>${html}`;
   }
 
@@ -3363,7 +3430,7 @@
     return `${PREVIEW_SRCDOC_CSP}<style>body{margin:0;padding:12px;font-family:system-ui,sans-serif;font-size:13px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:5px 10px;text-align:left}th{background:#f5f5f5;font-weight:600}tr:nth-child(even){background:#fafafa}</style><table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`;
   }
 
-  const renderer = new marked.Renderer();
+  const renderer = markedLib ? new markedLib.Renderer() : {};
   renderer.html = function (html) {
     return escapeHtml(html || '');
   };
@@ -3393,16 +3460,7 @@
   };
   renderer.code = function (code, language) {
     const lang = (language || 'plaintext').toLowerCase();
-    let highlighted;
-    try {
-      if (hljs.getLanguage(lang)) {
-        highlighted = hljs.highlight(code, { language: lang }).value;
-      } else {
-        highlighted = hljs.highlightAuto(code).value;
-      }
-    } catch {
-      highlighted = escapeHtml(code);
-    }
+    const highlighted = highlightCode(code, lang);
     const canPreview = PREVIEW_LANGS.has(lang);
     const canRender = RENDER_LANGS.has(lang);
     const hasAction = canPreview || canRender;
@@ -3426,7 +3484,7 @@
       ${previewPane}<pre><code class="hljs language-${escapeHtml(lang)}">${highlighted}</code></pre>
     </div>`;
   };
-  marked.setOptions({ renderer, breaks: true, gfm: true });
+  if (markedLib) markedLib.setOptions({ renderer, breaks: true, gfm: true });
 
   window.ccCopyCode = function (btn) {
     const wrapper = btn.closest('.code-block-wrapper');
@@ -4743,7 +4801,8 @@
 
   function renderMarkdown(text) {
     if (!text) return '<div class="typing-indicator"><span></span><span></span><span></span></div>';
-    try { return marked.parse(text); }
+    if (!markedLib) return `<pre class="md-fallback">${escapeHtml(text)}</pre>`;
+    try { return markedLib.parse(text); }
     catch { return escapeHtml(text); }
   }
 

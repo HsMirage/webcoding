@@ -5,6 +5,7 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 const { spawn, spawnSync } = require('child_process');
 const WebSocket = require('ws');
 const { createAgentRuntime } = require('../lib/agent-runtime');
@@ -282,6 +283,32 @@ function requestHttpJson({ port, path: reqPath, method = 'GET', headers = {}, bo
     req.on('error', reject);
     req.on('timeout', () => req.destroy(new Error('timeout')));
     if (body) req.write(body);
+    req.end();
+  });
+}
+
+// requestHttpJson accumulates the response as a string, which mangles compressed
+// bodies. Static-asset assertions need the raw bytes.
+function requestHttpBuffer({ port, path: reqPath, headers = {} }) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: reqPath,
+      method: 'GET',
+      headers,
+      timeout: 10000,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({
+        statusCode: res.statusCode || 0,
+        headers: res.headers || {},
+        body: Buffer.concat(chunks),
+      }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('timeout')));
     req.end();
   });
 }
@@ -2224,13 +2251,20 @@ async function runHttpSecurityRegressionCase({ port, password, tempRoot }) {
     const index = await requestHttpJson({ port, path: '/' });
     assert(index.statusCode === 200, 'Index should be served successfully');
     const csp = String(index.headers['content-security-policy'] || '');
-    assert(csp.includes("script-src 'self' https://cdnjs.cloudflare.com"), 'CSP should allow only the application and pinned script CDN');
+    assert(csp.includes("script-src 'self';"), 'CSP should confine script execution to the application origin');
+    assert(!csp.includes('cdnjs.cloudflare.com'), 'CSP should not grant any third-party script or style origin');
     assert(!/script-src[^;]*unsafe-inline/.test(csp), 'CSP must block inline script execution');
     assert(
       /css\/00-tokens\.css\?v=[a-z0-9]+/.test(index.text)
         && /css\/12-cli-integrations\.css\?v=[a-z0-9]+/.test(index.text)
         && /app\.js\?v=[a-z0-9]+/.test(index.text),
       'Index should receive automatic asset cache versions',
+    );
+    assert(
+      index.text.includes('vendor/marked.min.js')
+        && index.text.includes('vendor/highlight.min.js')
+        && !index.text.includes('cdnjs.cloudflare.com'),
+      'Index should load marked and highlight.js from the bundled vendor directory, not a CDN',
     );
     assert(
       index.text.includes('id="mobile-agent-trigger"')
@@ -2272,6 +2306,100 @@ async function runHttpSecurityRegressionCase({ port, password, tempRoot }) {
     assert(
       (appAsset.text.match(/rel="noopener noreferrer"/g) || []).length >= 3,
       'External settings promotions should prevent opener access',
+    );
+
+    // --- Static delivery: compression, revalidation, immutable versioned URLs ---
+    const assetVersion = (index.text.match(/app\.js\?v=([a-z0-9]+)/) || [])[1];
+    assert(!!assetVersion, 'Index should stamp app.js with a cache version');
+
+    const versionedApp = await requestHttpJson({ port, path: `/app.js?v=${assetVersion}` });
+    assert(
+      String(versionedApp.headers['cache-control'] || '').includes('immutable'),
+      'Version-stamped assets should be cached immutably',
+    );
+    assert(
+      String(appAsset.headers['cache-control'] || '') === 'no-cache' && !!appAsset.headers.etag,
+      'Unversioned assets should revalidate and carry an ETag',
+    );
+
+    // The ?v= value is client-supplied. Only a version matching the served bytes may
+    // earn a year-long immutable cache entry, otherwise any URL could pin content.
+    const forgedVersion = await requestHttpJson({ port, path: '/app.js?v=not-a-real-version' });
+    assert(
+      forgedVersion.statusCode === 200
+        && !String(forgedVersion.headers['cache-control'] || '').includes('immutable'),
+      'A mismatched ?v= must not be served as immutable',
+    );
+    assert(
+      /^[0-9a-f]{16}$/.test(assetVersion),
+      'Asset versions should be content fingerprints, not filesystem timestamps',
+    );
+
+    const revalidated = await requestHttpJson({
+      port,
+      path: '/app.js',
+      headers: { 'If-None-Match': appAsset.headers.etag },
+    });
+    assert(revalidated.statusCode === 304, 'A matching ETag should return 304 Not Modified');
+    assert(revalidated.text === '', '304 responses must not carry a body');
+
+    const wildcardMatch = await requestHttpJson({
+      port,
+      path: '/app.js',
+      headers: { 'If-None-Match': '*' },
+    });
+    assert(wildcardMatch.statusCode === 304, 'If-None-Match: * should match an existing resource');
+
+    const weakMatch = await requestHttpJson({
+      port,
+      path: '/app.js',
+      headers: { 'If-None-Match': `W/${appAsset.headers.etag}` },
+    });
+    assert(weakMatch.statusCode === 304, 'Conditional GET should use weak ETag comparison');
+
+    const headResponse = await requestHttpJson({ port, path: '/app.js', method: 'HEAD' });
+    assert(
+      headResponse.statusCode === 200 && headResponse.text === '',
+      'HEAD should return headers with no body',
+    );
+
+    const gzipped = await requestHttpBuffer({
+      port,
+      path: '/app.js',
+      headers: { 'Accept-Encoding': 'gzip' },
+    });
+    assert(gzipped.headers['content-encoding'] === 'gzip', 'Large text assets should be gzipped when accepted');
+    assert(
+      String(gzipped.headers.vary || '').includes('Accept-Encoding'),
+      'Negotiated responses must vary on Accept-Encoding',
+    );
+    const identity = await requestHttpBuffer({
+      port,
+      path: '/app.js',
+      headers: { 'Accept-Encoding': 'gzip;q=0' },
+    });
+    assert(
+      !identity.headers['content-encoding'],
+      'A client refusing gzip should receive the identity encoding',
+    );
+    assert(
+      !!gzipped.headers.etag && gzipped.headers.etag !== identity.headers.etag,
+      'gzip and identity are distinct representations and need distinct ETags',
+    );
+
+    const inflated = zlib.gunzipSync(gzipped.body);
+    assert(inflated.length > gzipped.body.length, 'gzip should measurably shrink the payload');
+    // Compare buffers, not strings: chunked reads split multi-byte UTF-8 sequences.
+    assert(
+      inflated.equals(identity.body),
+      'The inflated asset should be byte-identical to the identity response',
+    );
+
+    const vendorAsset = await requestHttpJson({ port, path: '/vendor/marked.min.js' });
+    assert(vendorAsset.statusCode === 200, 'Bundled marked runtime should be served locally');
+    assert(
+      vendorAsset.text.includes('marked'),
+      'Bundled marked runtime should contain the library source',
     );
 
     const markdownPath = path.join(tempRoot, 'unsafe-preview.md');

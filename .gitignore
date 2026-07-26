@@ -54,6 +54,9 @@ __pycache__/
 venv/
 target/
 vendor/
+# public/vendor holds the pinned marked + highlight.js bundles the frontend loads
+# instead of a CDN. They are required for the app to boot, so they ship with the repo.
+!public/vendor/
 *.log
 coverage/
 .cache/

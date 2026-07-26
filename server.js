@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { spawn, execFile } = require('child_process');
 const { WebSocketServer } = require('ws');
 const {
@@ -237,7 +238,10 @@ const SECURITY_HEADERS = {
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
   'X-XSS-Protection': '0',
   'Cross-Origin-Resource-Policy': 'same-origin',
-  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; script-src 'self' https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; frame-ancestors 'none'; base-uri 'none'",
+  // marked and highlight.js are vendored under public/vendor/, so no third-party
+  // script or style origin is required. Keeping script-src at 'self' means a broken
+  // or hijacked CDN can no longer execute in this origin.
+  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'",
 };
 
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -1402,8 +1406,17 @@ const importedSessionIdsCache = {
   ids: new Set(),
 };
 
+// Per-file summary cache behind the session list; see readSessionSummary(). Declared
+// alongside the other caches so saveSession() can invalidate it without depending on
+// module evaluation order.
+const sessionSummaryCache = new Map();
+
 function invalidateSessionListCache() {
   sessionListCache.expiresAt = 0;
+}
+
+function invalidateSessionSummary(sessionId) {
+  sessionSummaryCache.delete(`${sanitizeId(sessionId)}.json`);
 }
 
 function invalidateImportedSessionIdsCache() {
@@ -3309,13 +3322,187 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
 };
 
-function getPublicAssetVersion(name) {
+// Asset versions are content fingerprints rather than mtimes. An mtime stamp breaks
+// on any deploy that preserves timestamps (rsync -t, tar extraction, a restored
+// backup): the version string would not change, and because versioned URLs are now
+// served `immutable`, every client would stay pinned to the stale copy for a year.
+// Hashing the actual bytes makes the version change whenever the content does.
+//
+// The fingerprint is memoized on (mtime, size) so rendering the shell does not
+// re-hash every asset. A same-mtime same-size in-place edit can therefore reuse a
+// fingerprint within one process lifetime; a deploy restarts the process, which is
+// the case that matters.
+const assetFingerprintCache = new Map();
+
+function fingerprintBytes(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 16);
+}
+
+function getAssetFingerprint(absPath) {
+  let stat;
   try {
-    const stat = fs.statSync(path.join(PUBLIC_ROOT, name));
-    return Math.trunc(stat.mtimeMs).toString(36);
+    stat = fs.statSync(absPath);
   } catch {
-    return 'dev';
+    return null;
   }
+  const cached = assetFingerprintCache.get(absPath);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.fingerprint;
+  }
+  let fingerprint;
+  try {
+    fingerprint = fingerprintBytes(fs.readFileSync(absPath));
+  } catch {
+    return null;
+  }
+  assetFingerprintCache.set(absPath, { mtimeMs: stat.mtimeMs, size: stat.size, fingerprint });
+  return fingerprint;
+}
+
+function getPublicAssetVersion(name) {
+  return getAssetFingerprint(path.join(PUBLIC_ROOT, name)) || 'dev';
+}
+
+// === Static Asset Delivery ===
+// The frontend ships unbundled: ~415 KB of app.js plus 13 stylesheets. Serving that
+// uncompressed and uncacheable meant every reload re-fetched ~640 KB, which is the
+// dominant cost over a tunnel or a phone connection.
+const COMPRESSIBLE_MIME_RE = /^(?:text\/|application\/(?:json|javascript|xml)|image\/svg\+xml)/;
+const COMPRESSION_MIN_BYTES = 1024;
+const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+// gzip output is memoized per (path, mtime, size). Bounded by total bytes as well as
+// entry count so an unexpectedly large file under PUBLIC_ROOT cannot pin arbitrary
+// memory: raw and gzip buffers are both retained per entry.
+const STATIC_ASSET_CACHE_LIMIT = 64;
+const STATIC_ASSET_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const STATIC_ASSET_MAX_CACHEABLE_BYTES = 8 * 1024 * 1024;
+const staticAssetCache = new Map();
+let staticAssetCacheBytes = 0;
+
+function acceptsGzip(req) {
+  const header = String(req.headers['accept-encoding'] || '');
+  if (!header) return false;
+  let wildcard = null;
+  for (const part of header.split(',')) {
+    const [rawToken, ...params] = part.trim().split(';');
+    const token = rawToken.trim().toLowerCase();
+    if (token !== 'gzip' && token !== '*') continue;
+    const qParam = params.map((p) => p.trim()).find((p) => /^q=/i.test(p));
+    const q = qParam === undefined ? 1 : Number(qParam.slice(2));
+    const acceptable = Number.isNaN(q) ? true : q > 0;
+    if (token === 'gzip') return acceptable;
+    wildcard = acceptable;
+  }
+  return wildcard === true;
+}
+
+function etagMatches(req, etag) {
+  const header = req.headers['if-none-match'];
+  if (!header) return false;
+  const candidates = String(header).split(',').map((value) => value.trim());
+  if (candidates.includes('*')) return true;
+  // Conditional GET uses the weak comparison function (RFC 9110 §13.1.2), so a
+  // W/-prefixed candidate matches the same underlying validator.
+  const normalize = (value) => value.replace(/^W\//, '');
+  return candidates.some((candidate) => normalize(candidate) === normalize(etag));
+}
+
+function buildEtag(fingerprint, encoding) {
+  // Distinct representations need distinct validators, otherwise a cache can hand a
+  // gzip body to a client that revalidated an identity copy (RFC 9110 §8.8.3).
+  return `"${fingerprint}${encoding ? `-${encoding}` : ''}"`;
+}
+
+function rememberStaticAsset(cacheKey, entry) {
+  const bytes = entry.raw.length + (entry.gzipped ? entry.gzipped.length : 0);
+  if (entry.raw.length > STATIC_ASSET_MAX_CACHEABLE_BYTES) return;
+  staticAssetCache.set(cacheKey, entry);
+  staticAssetCacheBytes += bytes;
+  while (
+    staticAssetCache.size > STATIC_ASSET_CACHE_LIMIT
+    || staticAssetCacheBytes > STATIC_ASSET_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = staticAssetCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = staticAssetCache.get(oldestKey);
+    staticAssetCacheBytes -= oldest.raw.length + (oldest.gzipped ? oldest.gzipped.length : 0);
+    staticAssetCache.delete(oldestKey);
+  }
+}
+
+// Compresses unconditionally rather than only for gzip-capable clients: the result
+// is memoized for the next request, and clients that refuse gzip are vanishingly
+// rare. Yields null whenever the identity payload should be served as-is.
+function compressAsset(raw, mime, callback) {
+  if (!COMPRESSIBLE_MIME_RE.test(mime) || raw.length < COMPRESSION_MIN_BYTES) return callback(null);
+  zlib.gzip(raw, (error, gzipped) => {
+    callback(error || !gzipped || gzipped.length >= raw.length ? null : gzipped);
+  });
+}
+
+function writeAssetResponse(req, res, { raw, gzipped, mime, headers = {} }) {
+  const useGzip = !!gzipped && acceptsGzip(req);
+  const body = useGzip ? gzipped : raw;
+  writeHeadWithSecurity(res, 200, {
+    'Content-Type': mime,
+    'Content-Length': body.length,
+    Vary: 'Accept-Encoding',
+    ...(useGzip ? { 'Content-Encoding': 'gzip' } : {}),
+    ...headers,
+  });
+  res.end(req.method === 'HEAD' ? undefined : body);
+}
+
+function sendStaticBuffer(req, res, raw, mime, headers = {}) {
+  compressAsset(raw, mime, (gzipped) => writeAssetResponse(req, res, { raw, gzipped, mime, headers }));
+}
+
+function serveStaticFile(req, res, filePath, { requestedVersion }) {
+  fs.stat(filePath, (statError, stat) => {
+    if (statError || !stat.isFile()) {
+      writeHeadWithSecurity(res, 404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('Not Found');
+    }
+
+    const mime = MIME_TYPES[path.extname(filePath)] || 'application/octet-stream';
+
+    const respond = ({ raw, gzipped, fingerprint }) => {
+      // `immutable` is granted only when the requested version actually matches the
+      // bytes being served. The client controls the ?v= value, so trusting its mere
+      // presence would let any URL pin arbitrary content in shared caches for a year.
+      const cacheControl = requestedVersion && requestedVersion === fingerprint
+        ? IMMUTABLE_CACHE_CONTROL
+        : 'no-cache';
+      const useGzip = !!gzipped && acceptsGzip(req);
+      const etag = buildEtag(fingerprint, useGzip ? 'gzip' : null);
+      const headers = { ETag: etag, 'Cache-Control': cacheControl };
+
+      if (etagMatches(req, etag)) {
+        writeHeadWithSecurity(res, 304, { ...headers, Vary: 'Accept-Encoding' });
+        return res.end();
+      }
+      writeAssetResponse(req, res, { raw, gzipped, mime, headers });
+    };
+
+    const cacheKey = `${filePath}:${stat.mtimeMs}:${stat.size}`;
+    const cached = staticAssetCache.get(cacheKey);
+    if (cached) return respond(cached);
+
+    fs.readFile(filePath, (readError, raw) => {
+      if (readError) {
+        writeHeadWithSecurity(res, 404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Not Found');
+      }
+      // Fingerprint the bytes actually read, not the earlier stat(): the file may
+      // have been replaced in between, and the validator must describe what is sent.
+      const fingerprint = fingerprintBytes(raw);
+      compressAsset(raw, mime, (gzipped) => {
+        const entry = { raw, gzipped, fingerprint };
+        rememberStaticAsset(cacheKey, entry);
+        respond(entry);
+      });
+    });
+  });
 }
 
 function renderIndexHtml() {
@@ -4147,6 +4334,11 @@ function loadSession(id) {
 function saveSession(session) {
   normalizeSession(session);
   writeJsonAtomic(sessionPath(session.id), session);
+  // Drop the summary explicitly rather than relying on (mtime, size) to differ. A
+  // same-length edit — renaming a title "AAAA" -> "BBBB" — is invisible to both on a
+  // coarse-timestamp filesystem (FAT, some SMB/NFS mounts), which would otherwise
+  // leave the sidebar showing the old title indefinitely.
+  invalidateSessionSummary(session.id);
   invalidateSessionListCache();
   invalidateImportedSessionIdsCache();
 }
@@ -5280,30 +5472,68 @@ function deletePiLocalSession(sessionId) {
   } catch {}
 }
 
+// Building the session list used to read and JSON.parse *every* session file on a
+// synchronous path — 13 MB across 86 sessions, ~67 ms of blocked event loop, plus a
+// full ~/.claude transcript scan per Claude session missing a cwd. The 300 ms TTL
+// above is invalidated on every session update, so an active conversation paid that
+// cost over and over and stalled streaming for all connected clients.
+//
+// Summaries are keyed on (mtime, size) so only files that actually changed are
+// re-parsed. saveSession() additionally evicts by id, which covers same-size edits on
+// filesystems whose timestamps are too coarse to notice them.
+function readSessionSummary(fileName) {
+  const filePath = path.join(SESSIONS_DIR, fileName);
+  const stat = fs.statSync(filePath);
+  const cached = sessionSummaryCache.get(fileName);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.summary;
+  }
+
+  const s = normalizeSession(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+  const agent = getSessionAgent(s);
+  const preferredClaudeRuntimeId = agent === 'claude'
+    ? getPreferredRuntimeSessionId(s, 'claude')
+    : null;
+  const needsLocalMeta = agent === 'claude' && !!preferredClaudeRuntimeId && (!s.cwd || !s.importedFrom);
+  const localMeta = needsLocalMeta ? resolveClaudeSessionLocalMeta(preferredClaudeRuntimeId) : null;
+
+  const summary = {
+    id: s.id,
+    title: s.title || 'Untitled',
+    updated: s.updated,
+    hasUnread: !!s.hasUnread,
+    agent,
+    projectId: s.projectId || null,
+    cwd: s.cwd || localMeta?.cwd || null,
+    importedFrom: s.importedFrom || localMeta?.projectDir || null,
+  };
+
+  // cwd/importedFrom may come from ~/.claude/projects/*.jsonl, which changes
+  // independently of this file. Caching an unresolved lookup would pin the wrong
+  // answer forever: the transcript is often written after the session JSON, so the
+  // first scan legitimately finds nothing. Only memoize once the lookup settled.
+  if (!needsLocalMeta || localMeta) {
+    sessionSummaryCache.set(fileName, { mtimeMs: stat.mtimeMs, size: stat.size, summary });
+  }
+  return summary;
+}
+
 function collectSessionListSnapshot() {
   const files = fs.readdirSync(SESSIONS_DIR).filter((f) => f.endsWith('.json'));
   const sessions = [];
+  const present = new Set(files);
   for (const f of files) {
     try {
-      const s = normalizeSession(JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, f), 'utf8')));
-      const preferredClaudeRuntimeId = getSessionAgent(s) === 'claude'
-        ? getPreferredRuntimeSessionId(s, 'claude')
-        : null;
-      const localMeta = getSessionAgent(s) === 'claude' && preferredClaudeRuntimeId && (!s.cwd || !s.importedFrom)
-        ? resolveClaudeSessionLocalMeta(preferredClaudeRuntimeId)
-        : null;
-      sessions.push({
-        id: s.id,
-        title: s.title || 'Untitled',
-        updated: s.updated,
-        hasUnread: !!s.hasUnread,
-        agent: getSessionAgent(s),
-        isRunning: activeProcesses.has(s.id),
-        projectId: s.projectId || null,
-        cwd: s.cwd || localMeta?.cwd || null,
-        importedFrom: s.importedFrom || localMeta?.projectDir || null,
-      });
+      // isRunning is live process state and must never be cached alongside the file
+      // summary, so it is stamped on every snapshot.
+      const summary = readSessionSummary(f);
+      sessions.push({ ...summary, isRunning: activeProcesses.has(summary.id) });
     } catch {}
+  }
+  // Prune unconditionally. A size comparison looks cheaper but misses the case where
+  // a deleted session and an unreadable one cancel out, leaving the stale entry.
+  for (const key of sessionSummaryCache.keys()) {
+    if (!present.has(key)) sessionSummaryCache.delete(key);
   }
   sessions.sort((a, b) => new Date(b.updated) - new Date(a.updated));
   return sessions;
@@ -6077,11 +6307,12 @@ const server = http.createServer((req, res) => {
           .replace(/>/g, '\\u003e')
           .replace(/&/g, '\\u0026');
         const viewerVersion = getPublicAssetVersion('markdown-viewer.js');
+        const markedVersion = getPublicAssetVersion('vendor/marked.min.js');
         const htmlContent = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${path.basename(absPath).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</title>
 <style>body{font-family:system-ui,sans-serif;font-size:15px;line-height:1.7;max-width:860px;margin:0 auto;padding:32px 24px;color:#222}pre{background:#f5f5f5;padding:12px;border-radius:4px;overflow-x:auto}code{background:#f0f0f0;padding:1px 5px;border-radius:3px;font-size:0.9em}pre code{background:none;padding:0}img{max-width:100%}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px 10px}th{background:#f5f5f5}blockquote{border-left:3px solid #ccc;margin:0;padding-left:14px;color:#666}a{color:#0066cc}hr{border:none;border-top:1px solid #ddd}</style>
 </head><body><main id="content"></main>
 <script type="application/json" id="markdown-source">${encodedMarkdown}</script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+<script src="/vendor/marked.min.js?v=${markedVersion}"></script>
 <script src="/markdown-viewer.js?v=${viewerVersion}"></script>
 </body></html>`;
         writeHeadWithSecurity(res, 200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
@@ -6118,30 +6349,19 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === '/' || url.pathname === '/index.html') {
     try {
+      // The shell stays uncacheable — it carries the ?v= stamps that invalidate
+      // every other asset — but it still compresses.
       const html = renderIndexHtml();
-      writeHeadWithSecurity(res, 200, {
-        'Content-Type': 'text/html; charset=utf-8',
+      return sendStaticBuffer(req, res, Buffer.from(html, 'utf8'), 'text/html; charset=utf-8', {
         'Cache-Control': 'no-cache',
       });
-      return res.end(html);
     } catch {
       writeHeadWithSecurity(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' });
       return res.end('Internal Server Error');
     }
   }
 
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      writeHeadWithSecurity(res, 404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      return res.end('Not Found');
-    }
-    const ext = path.extname(filePath);
-    writeHeadWithSecurity(res, 200, {
-      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
-    });
-    res.end(data);
-  });
+  serveStaticFile(req, res, filePath, { requestedVersion: url.searchParams.get('v') });
 });
 
 // === WebSocket Server ===
