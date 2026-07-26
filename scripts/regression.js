@@ -198,10 +198,28 @@ async function waitForPort(port, timeoutMs = 10000) {
   throw new Error(`Timed out waiting for port ${port}`);
 }
 
+// Cases isolate per-run state by pointing HOME at a temp directory. Host variables
+// that redirect the server to a different config root silently defeat that: with
+// CLAUDE_CONFIG_DIR exported, getClaudeConfigDir() ignores HOME entirely and the
+// fixture ~/.claude/settings.json is never read. Running this suite from inside an
+// agent CLI exports exactly those variables, so results would otherwise depend on who
+// runs the tests. CLI path overrides are preserved — cases use them to reach the mocks.
+const HOST_ENV_BLOCKED = /^(?:ANTHROPIC_|CLAUDECODE|CLAUDE_CODE|CLAUDE_CONFIG_DIR|CLAUDE_EFFORT|CLAUDE_PID|CODEX_HOME|PI_CONFIG_DIR|CC_WEB_)/;
+const HOST_ENV_PRESERVED = new Set(['CLAUDE_PATH', 'CODEX_PATH', 'PI_PATH']);
+
+function buildIsolatedServerEnv(env) {
+  const base = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (HOST_ENV_BLOCKED.test(key) && !HOST_ENV_PRESERVED.has(key)) continue;
+    base[key] = value;
+  }
+  return { ...base, ...env };
+}
+
 async function startServer(env) {
   const child = spawn(process.execPath, [SERVER_PATH], {
     cwd: REPO_DIR,
-    env: { ...process.env, ...env },
+    env: buildIsolatedServerEnv(env),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';

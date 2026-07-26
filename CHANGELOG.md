@@ -25,7 +25,8 @@
 
 ### 验证
 
-- 55 项回归中 50 项通过，5 项为改动前既有失败（4 项 Claude 本地模型、1 项 happy path 超时），本次未引入新增失败
+- 55 项回归全部通过
+- 回归套件不再受宿主环境污染：此前若从 Claude Code 等 agent CLI 内运行，宿主导出的 `CLAUDE_CONFIG_DIR` 会覆盖用例用于隔离的临时 `HOME`，导致 4 项 Claude 本地模型用例与 1 项 happy path 用例失败；现已在派生服务进程前剥离这类变量（按用例显式传入的值仍然优先）
 - CLI 契约与 9 种真实协议组合全部通过
 - 新增断言覆盖：内容指纹版本、伪造 `?v=` 不得 immutable、ETag 304 与弱比较、`If-None-Match: *`、HEAD、gzip 协商与解压一致性、gzip/identity ETag 区分
 
